@@ -456,7 +456,7 @@ pub const CPU = struct {
 
     pub fn tick(self: *Self) bool {
         const code = self.mem_read(self.pc);
-        const opcode = opcodes.get_opcode(code);
+        const opcode = opcodes.OP_CODES[code];
         self.pc += 1;
         const pc_state = self.pc;
 
