@@ -1,4 +1,5 @@
 const std = @import("std");
+const Controller = @import("controller.zig").Controller;
 const Rom = @import("rom.zig").Rom;
 const PPU = @import("ppu.zig").PPU;
 
@@ -45,6 +46,8 @@ pub const Bus = struct {
     ram: [2048]u8,
     rom: Rom,
     ppu: PPU,
+    controller1: Controller,
+    controller2: Controller,
 
     const Self = @This();
 
@@ -53,6 +56,8 @@ pub const Bus = struct {
             .ram = [_]u8{0} ** 2048,
             .rom = rom,
             .ppu = PPU.init(rom.chr_rom, rom.prg_rom),
+            .controller1 = Controller.init(),
+            .controller2 = Controller.init(),
         };
     }
 
@@ -72,6 +77,13 @@ pub const Bus = struct {
         } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;
             return self.mem_read(mirror_down_addr);
+        } else if (addr >= 0x4000 and addr <= 0x4015) {
+            // TODO: implement APU
+            return 0;
+        } else if (addr == 0x4016) {
+            return self.controller1.read();
+        } else if (addr == 0x4017) {
+            return self.controller2.read();
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             return self.read_prg_rom(addr);
         } else {
@@ -101,6 +113,10 @@ pub const Bus = struct {
         } else if (addr >= 0x2008 and addr <= PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;
             self.mem_write(mirror_down_addr, data);
+        } else if (addr == 0x4016) {
+            self.controller1.write(data);
+        } else if (addr == 0x4017) {
+            self.controller2.write(data);
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             @panic("Attempt to write to cartridge ROM memory space");
         } else {
