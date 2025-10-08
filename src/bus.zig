@@ -62,6 +62,7 @@ pub const Bus = struct {
     }
 
     pub fn mem_read(self: Self, addr: u16) u8 {
+    pub fn mem_read(self: *Self, addr: u16) u8 {
         if (addr >= RAM and addr < RAM_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00000111_11111111;
             return self.ram[mirror_down_addr];
@@ -69,7 +70,7 @@ pub const Bus = struct {
             std.log.warn("Attempt to read from write-only PPU address {X:04}", .{addr});
             return 0;
         } else if (addr == 0x2002) {
-            return self.ppu.status_read();
+            return @bitCast(self.ppu.status_read());
         } else if (addr == 0x2004) {
             return self.ppu.oam_data_read();
         } else if (addr == 0x2007) {
@@ -93,7 +94,7 @@ pub const Bus = struct {
     }
 
     pub fn mem_write(self: *Self, addr: u16, data: u8) void {
-        if (addr >= RAM and addr <= RAM_MIRRORS_END) {
+        if (addr >= RAM and addr < RAM_MIRRORS_END) {
             const mirror_down_addr = addr & 0b11111111111;
             self.ram[mirror_down_addr] = data;
         } else if (addr == 0x2000) {
@@ -101,7 +102,7 @@ pub const Bus = struct {
         } else if (addr == 0x2001) {
             self.ppu.mask_write(data);
         } else if (addr == 0x2003) {
-            self.ppu.oam_write(data);
+            self.ppu.oam_addr_write(data);
         } else if (addr == 0x2004) {
             self.ppu.oam_data_write(data);
         } else if (addr == 0x2005) {
@@ -110,7 +111,7 @@ pub const Bus = struct {
             self.ppu.addr_write(data);
         } else if (addr == 0x2007) {
             self.ppu.data_write(data);
-        } else if (addr >= 0x2008 and addr <= PPU_REGISTERS_MIRRORS_END) {
+        } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;
             self.mem_write(mirror_down_addr, data);
         } else if (addr == 0x4016) {
@@ -124,8 +125,8 @@ pub const Bus = struct {
         }
     }
 
-    pub fn mem_read_u16(self: Self, addr: u16) u16 {
-        const lo = @as(u16, self.mem_read(addr));
+    pub fn mem_read_u16(self: *Self, addr: u16) u16 {
+        const lo = self.mem_read(addr);
         const hi = @as(u16, self.mem_read(addr + 1));
         return (hi << 8) | lo;
     }

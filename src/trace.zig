@@ -4,7 +4,7 @@ const CPU = @import("cpu.zig").CPU;
 const opcodes = @import("opcodes.zig");
 const OpCode = opcodes.OpCode;
 
-pub fn trace(cpu: CPU) []const u8 {
+pub fn trace(cpu: *CPU) []const u8 {
     const allocator = std.heap.page_allocator;
 
     var string: std.ArrayList(u8) = .empty;
@@ -13,7 +13,7 @@ pub fn trace(cpu: CPU) []const u8 {
     var str_writer = string.writer(allocator);
 
     const code = cpu.mem_read(cpu.pc);
-    const opcode = opcodes.get_opcode(code);
+    const opcode = opcodes.OP_CODES[code];
 
     const mnemonic = switch (code) {
         // zig fmt: off
@@ -186,7 +186,7 @@ test "format trace" {
     bus.mem_write(103, 0x88);
     bus.mem_write(104, 0x00);
 
-    var cpu = CPU.init(bus);
+    var cpu = CPU.init(&bus);
     cpu.pc = 100;
     cpu.register_a = 1;
     cpu.register_x = 2;
@@ -195,25 +195,25 @@ test "format trace" {
     try std.testing.expect(std.mem.eql(
         u8,
         "0064  A2 01     LDX #$01                        A:01 X:02 Y:03 P:24 SP:FD",
-        trace(cpu),
+        trace(&cpu),
     ));
     _ = cpu.tick();
     try std.testing.expect(std.mem.eql(
         u8,
         "0066  CA        DEX                             A:01 X:01 Y:03 P:24 SP:FD",
-        trace(cpu),
+        trace(&cpu),
     ));
     _ = cpu.tick();
     try std.testing.expect(std.mem.eql(
         u8,
         "0067  88        DEY                             A:01 X:00 Y:03 P:26 SP:FD",
-        trace(cpu),
+        trace(&cpu),
     ));
     _ = cpu.tick();
     try std.testing.expect(std.mem.eql(
         u8,
         "0068  00        BRK                             A:01 X:00 Y:02 P:24 SP:FD",
-        trace(cpu),
+        trace(&cpu),
     ));
 }
 
@@ -239,19 +239,19 @@ test "format mem access" {
     //target cell
     bus.mem_write(0x400, 0xAA);
 
-    var cpu = CPU.init(bus);
+    var cpu = CPU.init(&bus);
     cpu.pc = 100;
     cpu.register_y = 0;
 
     try std.testing.expect(std.mem.eql(
         u8,
         "0064  11 33     ORA ($33),Y = 0400 @ 0400 = AA  A:00 X:00 Y:00 P:24 SP:FD",
-        trace(cpu),
+        trace(&cpu),
     ));
     _ = cpu.tick();
     try std.testing.expect(std.mem.eql(
         u8,
         "0066  00        BRK                             A:AA X:00 Y:00 P:A4 SP:FD",
-        trace(cpu),
+        trace(&cpu),
     ));
 }
