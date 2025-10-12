@@ -73,9 +73,8 @@ pub const CPU = struct {
     status: ProcessorStatus,
 
     bus: *Bus,
+    cycles: usize,
 
-    /// The size in bytes of the program being currently executed by the CPU.
-    program_len: usize,
     program_start_addr: u16,
 
     const Self = @This();
@@ -83,6 +82,29 @@ pub const CPU = struct {
     const STACK_TOP: u8 = 0xFD;
     const STACK_START: u16 = 0x0100;
     const STACK_END: u16 = 0x01FF;
+
+    const InterruptType = enum {
+        NMI,
+        IRQ,
+    };
+    const Interrupt = struct {
+        type: InterruptType,
+        vector_addr: u16,
+        flags: ProcessorStatus,
+        cycles: u8,
+    };
+    const IRQ = Interrupt{
+        .type = .IRQ,
+        .vector_addr = 0xFFFE,
+        .flags = .{ .break_command = false, .break2 = true },
+        .cycles = 7,
+    };
+    pub const NMI = Interrupt{
+        .type = .NMI,
+        .vector_addr = 0xFFFA,
+        .flags = .{ .break_command = false, .break2 = true },
+        .cycles = 8,
+    };
 
     pub fn init(bus: *Bus) CPU {
         var initial_status = ProcessorStatus{};
@@ -96,10 +118,9 @@ pub const CPU = struct {
             .register_x = 0,
             .register_y = 0,
             .status = initial_status,
-            .program_len = bus.rom.prg_rom.len,
             .program_start_addr = 0x8000,
-            // .program_start_addr = 0x0000,
             .bus = bus,
+            .cycles = 0,
         };
     }
 
@@ -125,8 +146,8 @@ pub const CPU = struct {
         self.bus.mem_write_u16(addr, data);
     }
 
+    // TODO remove
     pub fn load(self: *Self, program: []const u8) void {
-        self.program_len = program.len;
         // @memcpy(self.bus.ram[self.program_start_addr..(self.program_start_addr + program.len)], program);
         for (0..program.len) |i| {
             self.mem_write(self.program_start_addr + @as(u16, @intCast(i)), program[i]);
@@ -147,6 +168,7 @@ pub const CPU = struct {
         self.pc = self.mem_read_u16(0xFFFC);
     }
 
+    // TODO: remove
     pub fn load_and_run(self: *Self, program: []const u8) void {
         self.load(program);
         self.reset();
@@ -160,7 +182,7 @@ pub const CPU = struct {
 
         // TODO: how to handle stack overflow properly??
         if (addr < STACK_START) {
-            std.log.warn("stack overflow while pushing!\n", .{});
+            std.log.warn("stack overflow while pushing!", .{});
         }
         self.sp = @truncate(addr);
     }
@@ -172,7 +194,7 @@ pub const CPU = struct {
 
         // TODO: how to handle stack overflow properly??
         if (addr > STACK_END) {
-            std.log.warn("stack overflow while poping!\n", .{});
+            std.log.warn("stack overflow while poping!", .{});
         }
 
         return data;
@@ -454,7 +476,12 @@ pub const CPU = struct {
         }
     }
 
-    pub fn tick(self: *Self) bool {
+    pub fn tick(self: *Self) void {
+        if (self.cycles != 0) {
+            self.cycles -= 1;
+            return;
+        }
+
         const code = self.mem_read(self.pc);
         const opcode = opcodes.OP_CODES[code];
         self.pc += 1;
@@ -644,7 +671,7 @@ pub const CPU = struct {
                 // self.stack_push_u16(self.pc);
                 // self.stack_push(@bitCast(self.status));
                 // self.pc = self.mem_read_u16(0xFFFE);
-                return false;
+                return;
             },
 
             // UNOFFICIAL OPCODES:
@@ -747,13 +774,70 @@ pub const CPU = struct {
             },
         }
 
+        var cycles = opcode.cycles();
+        const branch_succeeded = self.pc != pc_state;
+        // Add an extra cycle if the branching instruction succeeds
+        if (opcode.is_branching() and branch_succeeded) {
+            cycles += 1;
+            // Check if the page was crossed by veryfying if the upper byte of the address has changed.
+            // Accessing data on a different page costs two extra cycles on branching instructions.
+            if (does_page_cross(self, opcode)) {
+                cycles += 2;
+            }
+        }
+        // Check if the page was crossed by veryfying if the upper byte of the address has changed.
+        // Accessing data on a different page costs an extra cycle.
+        else if (does_page_cross(self, opcode)) {
+            cycles += 1;
+        }
+
+        self.cycles = cycles;
+
         if (self.pc == pc_state) {
             self.pc += opcode.size() - 1;
         }
 
-        return true;
+        self.cycles -= 1;
+    }
+
+    pub fn interrupt(self: *Self, interru: Interrupt) void {
+        if (interru.type == .IRQ and self.status.interrupt_disable) {
+            return;
+        }
+        self.stack_push_u16(self.pc);
+        var status = self.status;
+        status.break_command = interru.flags.break_command;
+        status.break2 = interru.flags.break2;
+
+        self.stack_push(@bitCast(status));
+        self.status.interrupt_disable = true;
+
+        self.pc = self.mem_read_u16(interru.vector_addr);
+
+        self.cycles = interru.cycles;
     }
 };
+
+fn does_page_cross(cpu: *CPU, opcode: opcodes.OpCode) bool {
+    const mode = opcode.addressing_mode();
+    switch (mode) {
+        .AbsoluteX, .AbsoluteY => switch (opcode) {
+            .ADC, .AND, .CMP, .EOR, .LDA, .LDX, .LDY, .ORA, .SBC, .LAS, .LAX, .TOP => {
+                const base = cpu.mem_read_u16(cpu.pc);
+                return @as(u8, @truncate(base >> 8)) != @as(u8, @truncate(cpu.operand_address(mode) >> 8));
+            },
+            else => return false,
+        },
+        .IndirectY => switch (opcode) {
+            .ADC, .SBC, .AND, .EOR, .ORA, .LDA, .LAX => {
+                const base = @as(u16, cpu.mem_read(cpu.pc +% 1)) << 8 | cpu.mem_read(cpu.pc);
+                return @as(u8, @truncate(base >> 8)) != @as(u8, @truncate(cpu.operand_address(mode) >> 8));
+            },
+            else => return false,
+        },
+        else => return false,
+    }
+}
 
 // test "0x00: BRK Force Interrupt" {
 //     const allocator = std.testing.allocator;
@@ -2908,4 +2992,36 @@ test "0x9B: XAS" {
 
     try std.testing.expectEqual(0, cpu.mem_read(0x1005));
     try std.testing.expectEqual(2, cpu.sp);
+}
+
+test "0xBD: LDA AbsoluteX - page cross" {
+    // This test demonstrates the correct address calculation when an indexed
+    // addressing mode crosses a page boundary. On a real 6502, this operation
+    // would incur an extra clock cycle penalty.
+    const allocator = std.testing.allocator;
+    const test_rom = try rom.TestRom.testRom(
+        allocator,
+        //      LDA   $02F0,X     BRK
+        &[_]u8{ 0xBD, 0xF0, 0x02, 0x00 },
+    );
+    var bus = Bus.init(try Rom.load(test_rom));
+    defer allocator.free(test_rom);
+
+    var cpu = CPU.init(&bus);
+
+    // Set up the memory and registers for the page cross.
+    // The base address is $02F0 (near the end of page 2).
+    // We'll add an offset of $20 using the X register.
+    // The final address will be $02F0 + $20 = $0310.
+    // This crosses the boundary from page $02 to page $03.
+    cpu.register_x = 0x20;
+    cpu.mem_write(0x0310, 0x42); // Place the value to be loaded at the target address.
+
+    cpu.run();
+
+    // Verify that the accumulator was loaded with the correct value
+    // from the address in the next memory page, and flags are set correctly.
+    try std.testing.expectEqual(0x42, cpu.register_a);
+    try std.testing.expect(!cpu.status.zero_flag);
+    try std.testing.expect(!cpu.status.negative_flag);
 }

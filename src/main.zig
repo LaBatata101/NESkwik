@@ -2,50 +2,112 @@ const std = @import("std");
 
 const ness = @import("8bit_emulator");
 const Bus = ness.Bus;
+const PPU = ness.PPU;
 const CPU = ness.CPU;
 const Rom = ness.Rom;
+const Frame = ness.render.Frame;
+const ControllerButton = ness.controller.ControllerButton;
+const SYSTEM_PALLETE = ness.SYSTEM_PALLETE;
+const trace = ness.trace;
 
 const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_main.h");
 });
 
-const Color = struct {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
+pub const FPSManager = struct {
+    framecount: u32,
+    rateticks: f32,
+    baseticks: u32,
+    lastticks: u32,
+    rate: u32,
 
-    fn RGBA(r: u8, g: u8, b: u8, a: u8) @This() {
-        return .{ .r = r, .g = g, .b = b, .a = a };
+    const Self = @This();
+    const FPS_DEFAULT = 30;
+    const FPS_LOWER_LIMIT = 1;
+
+    fn getTicks() u32 {
+        const ticks: u32 = @intCast(c.SDL_GetTicks());
+        return if (ticks == 0) 1 else ticks;
+    }
+
+    pub fn init() Self {
+        const baseticks = Self.getTicks();
+        return .{
+            .framecount = 0,
+            .rate = FPS_DEFAULT,
+            .rateticks = @divTrunc(1000.0, FPS_DEFAULT),
+            .baseticks = baseticks,
+            .lastticks = baseticks,
+        };
+    }
+
+    pub fn setFramerate(self: *Self, rate: u32) void {
+        if (rate < FPS_LOWER_LIMIT) {
+            @panic("Framerate can't be lower than 1.");
+        }
+
+        self.framecount = 0;
+        self.rate = rate;
+        self.rateticks = @divExact(1000.0, @as(f32, @floatFromInt(rate)));
+    }
+
+    pub fn delay(self: *Self) u32 {
+        self.framecount += 1;
+
+        const current_ticks = Self.getTicks();
+        const time_passed = current_ticks - self.lastticks;
+        const target_ticks = self.baseticks + self.framecount * @as(u32, @intFromFloat(self.rateticks));
+
+        if (current_ticks <= target_ticks) {
+            c.SDL_Delay(target_ticks - current_ticks);
+        } else {
+            self.framecount = 0;
+            self.baseticks = Self.getTicks();
+        }
+
+        return time_passed;
     }
 };
 
-const WHITE = Color.RGBA(255, 255, 255, 255);
-const BLACK = Color.RGBA(0, 0, 0, 255);
-const GRAY = Color.RGBA(128, 128, 128, 255);
-const RED = Color.RGBA(255, 0, 0, 255);
-const GREEN = Color.RGBA(0, 255, 0, 255);
-const BLUE = Color.RGBA(0, 0, 255, 255);
-const MAGENTA = Color.RGBA(255, 0, 255, 255);
-const YELLOW = Color.RGBA(255, 255, 0, 255);
-const CYAN = Color.RGBA(0, 255, 255, 255);
+const System = struct {
+    cpu: CPU,
+    bus: *Bus,
+    system_clock_counter: usize,
 
-fn color(byte: u8) Color {
-    return switch (byte) {
-        0 => BLACK,
-        1 => WHITE,
-        2, 9 => GRAY,
-        3, 10 => RED,
-        4, 11 => GREEN,
-        5, 12 => BLUE,
-        6, 13 => MAGENTA,
-        7, 14 => YELLOW,
-        else => CYAN,
-    };
-}
+    const Self = @This();
 
-const SCREEN_BUFFER_SIZE = 32 * 32 * 3;
+    fn init(bus: *Bus, cpu: CPU) Self {
+        return .{
+            .bus = bus,
+            .cpu = cpu,
+            .system_clock_counter = 0,
+        };
+    }
+
+    pub fn tick(self: *Self) void {
+        self.bus.ppu.tick();
+
+        // The CPU runs 3 times slower than the PPU, so only execute the CPU every 3 times.
+        if (self.system_clock_counter % 3 == 0) {
+            // if (self.bus.dma_transfer) {} else {
+            self.cpu.tick();
+            // }
+        }
+
+        if (self.bus.ppu.nmi_interrupt) {
+            self.bus.ppu.nmi_interrupt = false;
+            self.cpu.interrupt(CPU.NMI);
+        }
+
+        self.system_clock_counter += 1;
+    }
+
+    pub fn reset(self: *Self) void {
+        self.cpu.reset();
+        self.system_clock_counter = 0;
+    }
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -89,68 +151,82 @@ pub fn main() !void {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("Snake Game Test", 320, 320, 0) orelse sdlPanic();
+    const window = c.SDL_CreateWindow("NESS 0.1", 256 * 3, 240 * 3, 0) orelse sdlPanic();
     defer c.SDL_DestroyWindow(window);
 
     const renderer = c.SDL_CreateRenderer(window, null) orelse sdlPanic();
     defer c.SDL_DestroyRenderer(renderer);
 
-    _ = c.SDL_SetRenderScale(renderer, 10.0, 10.0);
+    _ = c.SDL_SetRenderScale(renderer, 3.0, 3.0);
 
-    const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_TARGET, 32, 32);
+    const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_TARGET, 256, 240);
     defer c.SDL_DestroyTexture(texture);
 
     _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
-
-    const T = struct {
-        rnd: std.Random,
-        screen_state: *[SCREEN_BUFFER_SIZE]u8,
-        renderer: *c.struct_SDL_Renderer,
-        texture: *c.struct_SDL_Texture,
-
-        pub fn callback(self: @This(), cpu: *CPU) void {
-            processInput(cpu);
-            cpu.mem_write(0xFE, self.rnd.intRangeLessThan(u8, 1, 16));
-
-            if (readScreenState(cpu, self.screen_state)) {
-                _ = c.SDL_RenderClear(self.renderer);
-                _ = c.SDL_UpdateTexture(self.texture, null, self.screen_state, 32 * 3);
-                _ = c.SDL_RenderTexture(self.renderer, self.texture, null, null);
-                _ = c.SDL_RenderPresent(self.renderer);
-            }
-
-            std.Thread.sleep(33_000);
-        }
-    };
-
-    var seed: u64 = undefined;
-    try std.posix.getrandom(std.mem.asBytes(&seed));
-    var prng = std.Random.DefaultPrng.init(seed);
-    const rnd = prng.random();
-
-    var screen_state = [_]u8{0} ** SCREEN_BUFFER_SIZE;
-    const t = T{
-        .rnd = rnd,
-        .screen_state = &screen_state,
-        .renderer = renderer,
-        .texture = texture,
-    };
 
     const rom = Rom.load(buffer) catch |err| switch (err) {
         error.InvalidNesFormat => {
             std.debug.print("ROM format not supported!\n", .{});
             std.process.exit(1);
         },
-        error.InvalidNesFormatVersion => {
-            std.debug.print("NES2.0 format is not supported\n", .{});
-            std.process.exit(1);
-        },
     };
-    const bus = Bus.init(rom);
-    var cpu = CPU.init(bus);
 
-    cpu.reset();
-    cpu.run_with(t);
+    var keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
+    defer keymap.deinit();
+
+    try keymap.put(c.SDLK_DOWN, .{ .DOWN = true });
+    try keymap.put(c.SDLK_UP, .{ .UP = true });
+    try keymap.put(c.SDLK_RIGHT, .{ .RIGHT = true });
+    try keymap.put(c.SDLK_LEFT, .{ .LEFT = true });
+    try keymap.put(c.SDLK_RETURN, .{ .START = true });
+    try keymap.put(c.SDLK_SPACE, .{ .SELECT = true });
+    try keymap.put(c.SDLK_A, .{ .BUTTON_A = true });
+    try keymap.put(c.SDLK_S, .{ .BUTTON_B = true });
+
+    var bus = Bus.init(rom);
+    const cpu = CPU.init(&bus);
+    var system = System.init(&bus, cpu);
+    system.reset();
+
+    var fps_manager = FPSManager.init();
+    fps_manager.setFramerate(60);
+
+    var continue_exec = true;
+    while (continue_exec) {
+        var event: c.SDL_Event = undefined;
+        while (c.SDL_PollEvent(&event)) {
+            switch (event.type) {
+                c.SDL_EVENT_QUIT => continue_exec = false,
+                c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
+                    c.SDLK_ESCAPE => continue_exec = false,
+                    else => |key_code| {
+                        if (keymap.get(key_code)) |key| {
+                            system.bus.controller1.button_status.insert(key);
+                        }
+                    },
+                },
+                c.SDL_EVENT_KEY_UP => switch (event.key.key) {
+                    else => |key_code| {
+                        if (keymap.get(key_code)) |key| {
+                            system.bus.controller1.button_status.remove(key);
+                        }
+                    },
+                },
+                else => {},
+            }
+        }
+
+        while (!system.bus.ppu.frame_complete) {
+            system.tick();
+        }
+        system.bus.ppu.frame_complete = false;
+
+        _ = c.SDL_RenderClear(renderer);
+        _ = c.SDL_UpdateTexture(texture, null, &bus.ppu.frame_buffer.data, 256 * 3);
+        _ = c.SDL_RenderTexture(renderer, texture, null, null);
+        _ = c.SDL_RenderPresent(renderer);
+        _ = fps_manager.delay();
+    }
 }
 
 fn processInput(cpu: *CPU) void {
@@ -169,26 +245,6 @@ fn processInput(cpu: *CPU) void {
             else => {},
         }
     }
-}
-
-fn readScreenState(cpu: *CPU, frames: *[SCREEN_BUFFER_SIZE]u8) bool {
-    var frame_idx: usize = 0;
-    var update = false;
-
-    for (0x0200..0x0600) |i| {
-        const color_idx = cpu.mem_read(@intCast(i));
-        const rgba = color(color_idx);
-
-        if (frames[frame_idx] != rgba.r or frames[frame_idx + 1] != rgba.g or frames[frame_idx + 2] != rgba.b) {
-            frames[frame_idx] = rgba.r;
-            frames[frame_idx + 1] = rgba.g;
-            frames[frame_idx + 2] = rgba.b;
-            update = true;
-        }
-        frame_idx += 3;
-    }
-
-    return update;
 }
 
 fn sdlPanic() noreturn {

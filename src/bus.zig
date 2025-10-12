@@ -1,5 +1,6 @@
 const std = @import("std");
 const Controller = @import("controller.zig").Controller;
+const CPU = @import("cpu.zig").CPU;
 const Rom = @import("rom.zig").Rom;
 const PPU = @import("ppu.zig").PPU;
 
@@ -49,19 +50,21 @@ pub const Bus = struct {
     controller1: Controller,
     controller2: Controller,
 
+    dma_transfer: bool,
+
     const Self = @This();
 
     pub fn init(rom: Rom) Self {
         return .{
             .ram = [_]u8{0} ** 2048,
             .rom = rom,
-            .ppu = PPU.init(rom.chr_rom, rom.prg_rom),
+            .ppu = PPU.init(rom.chr_rom, rom.mirroring),
             .controller1 = Controller.init(),
             .controller2 = Controller.init(),
+            .dma_transfer = false,
         };
     }
 
-    pub fn mem_read(self: Self, addr: u16) u8 {
     pub fn mem_read(self: *Self, addr: u16) u8 {
         if (addr >= RAM and addr < RAM_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00000111_11111111;
@@ -124,6 +127,7 @@ pub const Bus = struct {
                 buffer[i] = self.mem_read(hi + @as(u16, @intCast(i)));
             }
             self.ppu.oam_dma_write(buffer);
+            self.dma_transfer = true;
 
             // TODO: handle this eventually
             // let add_cycles: u16 = if self.cycles % 2 == 1 { 514 } else { 513 };

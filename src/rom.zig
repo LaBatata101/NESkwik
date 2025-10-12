@@ -20,7 +20,7 @@ pub const Rom = struct {
 
     const Self = @This();
 
-    pub const InitError = error{ InvalidNesFormat, InvalidNesFormatVersion };
+    pub const InitError = error{InvalidNesFormat};
 
     pub fn load(raw: []u8) InitError!Self {
         if (!std.mem.eql(u8, raw[0..4], &NES_TAG)) {
@@ -31,12 +31,6 @@ pub const Rom = struct {
         // The uppper 4 bits of byte 6 contains the 4 lower bits of the ROM Mapper type and
         // the upper 4 bits of byte 7 contains the 4 upper bits of the ROM Mapper type.
         const mapper = raw[7] & 0b1111_0000 | raw[6] >> 4;
-
-        // bits 2 and 3 of byte 7 contains information about the version of the NES file format. If these bits are
-        // set, it means it's using the format version 2.0 which we don't support.
-        if ((raw[7] >> 2) & 0b11 != 0) {
-            return InitError.InvalidNesFormatVersion;
-        }
 
         const is_four_screen = raw[6] & 0b1000 != 0;
         const is_vertical_mirroring = raw[6] & 0b1 != 0;
@@ -49,9 +43,9 @@ pub const Rom = struct {
             screen_mirroring = Mirroring.HORIZONTAL;
         }
 
-        // Byte 4 contains the number of 16KB ROM banks
+        // Byte 4 contains the number of 16KB PGR-ROM banks
         const prg_rom_size = @as(usize, raw[4]) * PRG_ROM_PAGE_SIZE;
-        // Byte 5 contains the number of 8KB VROM banks
+        // Byte 5 contains the number of 8KB CHR-ROM banks
         const chr_rom_size = @as(usize, raw[5]) * CHR_ROM_PAGE_SIZE;
 
         // If bit 2 of byte 6 is set, there's a 512-byte trainer section in the file to skip
@@ -59,6 +53,11 @@ pub const Rom = struct {
 
         const prg_rom_start: usize = 16 + @as(usize, if (skip_trainer) 512 else 0);
         const chr_rom_start = prg_rom_start + prg_rom_size;
+
+        std.log.info(
+            "Number of 16KB PRG-ROM banks: {}\nNumber of 8KB CHR-ROM banks: {}\niNes version: {s}\nMirroring type: {s}",
+            .{ raw[4], raw[5], if ((raw[7] >> 2) & 0b11 != 0) "2.0" else "1.0", @tagName(screen_mirroring) },
+        );
 
         return .{
             .mapper = mapper,
