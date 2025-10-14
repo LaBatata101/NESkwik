@@ -50,6 +50,9 @@ pub const Bus = struct {
     controller1: Controller,
     controller2: Controller,
 
+    dma_page: u8,
+    dma_data: u8,
+    dma_dummy: bool,
     dma_transfer: bool,
 
     const Self = @This();
@@ -62,6 +65,9 @@ pub const Bus = struct {
             .controller1 = Controller.init(),
             .controller2 = Controller.init(),
             .dma_transfer = false,
+            .dma_dummy = true,
+            .dma_page = 0,
+            .dma_data = 0,
         };
     }
 
@@ -121,20 +127,12 @@ pub const Bus = struct {
             // TODO: implement APU
         } else if (addr == 0x4014) {
             // https://www.nesdev.org/wiki/PPU_programmer_reference#OAMDMA_-_Sprite_DMA_($4014_write)
-            var buffer = [_]u8{0} ** 256;
-            const hi = @as(u16, data) << 8;
-            for (0..256) |i| {
-                buffer[i] = self.mem_read(hi + @as(u16, @intCast(i)));
-            }
-            self.ppu.oam_dma_write(buffer);
+            self.dma_page = data;
             self.dma_transfer = true;
-
-            // TODO: handle this eventually
-            // let add_cycles: u16 = if self.cycles % 2 == 1 { 514 } else { 513 };
-            // self.tick(add_cycles); //todo this will cause weird effects as PPU will have 513/514 * 3 ticks
-        } else if (addr == 0x4016) {
+            self.ppu.oam_dma_addr = 0;
+        } else if (addr >= 0x4016 and addr <= 0x4017) {
+            // FIX: this is wrong, need to select the correct controller
             self.controller1.write(data);
-        } else if (addr == 0x4017) {
             self.controller2.write(data);
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             @panic("Attempt to write to cartridge ROM memory space");
@@ -165,5 +163,29 @@ pub const Bus = struct {
             new_addr = new_addr % 0x4000;
         }
         return self.rom.prg_rom[new_addr];
+    }
+
+    pub fn handle_dma_transfer(self: *Self, clock_counter: usize) bool {
+        if (self.dma_transfer) {
+            if (self.dma_dummy) {
+                // waiting to synchronise the CPU to the DMA
+                if (clock_counter % 2 == 1) self.dma_dummy = false;
+            } else if (clock_counter % 2 == 0) {
+                // on even cycles, read data from the CPU address space
+                self.dma_data = self.mem_read(@as(u16, self.dma_page) << 8 | self.ppu.oam_dma_addr);
+            } else {
+                // on odd cycles, write data to the PPU's OAM
+                self.ppu.oam_data_register[self.ppu.oam_dma_addr] = self.dma_data;
+                self.ppu.oam_dma_addr +%= 1;
+                // address wapped to 0; DMA transfer is over
+                if (self.ppu.oam_dma_addr == 0) {
+                    self.dma_dummy = true;
+                    self.dma_transfer = false;
+                }
+            }
+            return true;
+        } else {
+            return false;
+        }
     }
 };
