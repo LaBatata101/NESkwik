@@ -1,113 +1,17 @@
 const std = @import("std");
-
 const ness = @import("8bit_emulator");
+
+const c = ness.c;
+const System = ness.System;
 const Bus = ness.Bus;
 const PPU = ness.PPU;
 const CPU = ness.CPU;
 const Rom = ness.Rom;
 const Frame = ness.render.Frame;
+const FPSManager = ness.render.FPSManager;
 const ControllerButton = ness.controller.ControllerButton;
 const SYSTEM_PALLETE = ness.SYSTEM_PALLETE;
 const trace = ness.trace;
-
-const c = @cImport({
-    @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3/SDL_main.h");
-});
-
-pub const FPSManager = struct {
-    framecount: u32,
-    rateticks: f32,
-    baseticks: u32,
-    lastticks: u32,
-    rate: u32,
-
-    const Self = @This();
-    const FPS_DEFAULT = 30;
-    const FPS_LOWER_LIMIT = 1;
-
-    fn getTicks() u32 {
-        const ticks: u32 = @intCast(c.SDL_GetTicks());
-        return if (ticks == 0) 1 else ticks;
-    }
-
-    pub fn init() Self {
-        const baseticks = Self.getTicks();
-        return .{
-            .framecount = 0,
-            .rate = FPS_DEFAULT,
-            .rateticks = @divTrunc(1000.0, FPS_DEFAULT),
-            .baseticks = baseticks,
-            .lastticks = baseticks,
-        };
-    }
-
-    pub fn setFramerate(self: *Self, rate: u32) void {
-        if (rate < FPS_LOWER_LIMIT) {
-            @panic("Framerate can't be lower than 1.");
-        }
-
-        self.framecount = 0;
-        self.rate = rate;
-        self.rateticks = @divExact(1000.0, @as(f32, @floatFromInt(rate)));
-    }
-
-    pub fn delay(self: *Self) u32 {
-        self.framecount += 1;
-
-        const current_ticks = Self.getTicks();
-        const time_passed = current_ticks - self.lastticks;
-        const target_ticks = self.baseticks + self.framecount * @as(u32, @intFromFloat(self.rateticks));
-
-        if (current_ticks <= target_ticks) {
-            c.SDL_Delay(target_ticks - current_ticks);
-        } else {
-            self.framecount = 0;
-            self.baseticks = Self.getTicks();
-        }
-
-        return time_passed;
-    }
-};
-
-const System = struct {
-    cpu: CPU,
-    bus: *Bus,
-    system_clock_counter: usize,
-
-    const Self = @This();
-
-    fn init(bus: *Bus, cpu: CPU) Self {
-        return .{
-            .bus = bus,
-            .cpu = cpu,
-            .system_clock_counter = 0,
-        };
-    }
-
-    pub fn tick(self: *Self) void {
-        self.bus.ppu.tick();
-
-        // The CPU runs 3 times slower than the PPU, so only execute the CPU every 3 times.
-        if (self.system_clock_counter % 3 == 0) {
-            // if (self.bus.dma_transfer) {} else {
-            self.cpu.tick();
-            // }
-        }
-
-        if (self.bus.ppu.nmi_interrupt) {
-            self.bus.ppu.nmi_interrupt = false;
-            self.cpu.interrupt(CPU.NMI);
-        }
-
-        self.system_clock_counter += 1;
-    }
-
-    pub fn reset(self: *Self) void {
-        self.cpu.reset();
-        self.system_clock_counter = 0;
-    }
-};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -216,34 +120,15 @@ pub fn main() !void {
             }
         }
 
-        while (!system.bus.ppu.frame_complete) {
+        while (!system.is_frame_complete()) {
             system.tick();
         }
-        system.bus.ppu.frame_complete = false;
 
         _ = c.SDL_RenderClear(renderer);
         _ = c.SDL_UpdateTexture(texture, null, &bus.ppu.frame_buffer.data, 256 * 3);
         _ = c.SDL_RenderTexture(renderer, texture, null, null);
         _ = c.SDL_RenderPresent(renderer);
         _ = fps_manager.delay();
-    }
-}
-
-fn processInput(cpu: *CPU) void {
-    var event: c.SDL_Event = undefined;
-    while (c.SDL_PollEvent(&event)) {
-        switch (event.type) {
-            c.SDL_EVENT_QUIT => std.process.exit(0),
-            c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                c.SDLK_ESCAPE => std.process.exit(0),
-                c.SDLK_W => cpu.mem_write(0xFF, 0x77),
-                c.SDLK_S => cpu.mem_write(0xFF, 0x73),
-                c.SDLK_A => cpu.mem_write(0xFF, 0x61),
-                c.SDLK_D => cpu.mem_write(0xFF, 0x64),
-                else => {},
-            },
-            else => {},
-        }
     }
 }
 
