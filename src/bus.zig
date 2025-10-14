@@ -104,7 +104,7 @@ pub const Bus = struct {
 
     pub fn mem_write(self: *Self, addr: u16, data: u8) void {
         if (addr >= RAM and addr < RAM_MIRRORS_END) {
-            const mirror_down_addr = addr & 0b11111111111;
+            const mirror_down_addr = addr & 0x07FF;
             self.ram[mirror_down_addr] = data;
         } else if (addr == 0x2000) {
             self.ppu.ctrl_write(data);

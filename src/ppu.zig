@@ -53,10 +53,10 @@ const MaskRegister = packed struct(u8) {
     greyscale: bool = false,
 
     /// `true`: Show background in leftmost 8 pixels of screen, `false`: Hide
-    show_background: bool = false,
+    render_background_left: bool = false,
 
     /// `true`: Show sprites in leftmost 8 pixels of screen, `false`: Hide
-    show_sprites: bool = false,
+    render_sprite_left: bool = false,
 
     /// `true`: Enable background rendering
     render_background: bool = false,
@@ -214,6 +214,36 @@ const BgData = struct {
     shifter_attr_hi: u16 = 0,
 };
 
+const OamEntry = struct {
+    /// Y position of sprite
+    y: u8 = 0,
+    /// ID of tile from pattern memory
+    id: u8 = 0,
+    /// Flags define how sprite should be rendered
+    attr: u8 = 0,
+    /// X position of sprite
+    x: u8 = 0,
+
+    fn init(data: []const u8) @This() {
+        return .{
+            .y = data[0],
+            .id = data[1],
+            .attr = data[2],
+            .x = data[3],
+        };
+    }
+};
+
+const FgData = struct {
+    sprite_scanline: [8]OamEntry = [_]OamEntry{.{}} ** 8,
+    sprite_count: u8 = 0,
+    shifter_pattern_lo: [8]u8 = [_]u8{0} ** 8,
+    shifter_pattern_hi: [8]u8 = [_]u8{0} ** 8,
+
+    sprite_zero_hit_possible: bool = false,
+    sprite_zero_being_rendered: bool = false,
+};
+
 /// - PPU memory map
 /// The PPU addresses a 14-bit (16kB) address space, `0x0000-0x3FFF`, completely separate from the CPU's address bus. It
 /// is either directly accessed by the PPU itself, or via the CPU with memory mapped registers at `0x2006` and `0x2007`.
@@ -283,7 +313,7 @@ pub const PPU = struct {
     /// internally by the `w register`, which is shared with `PPUADDR`.
     scroll_register: ScrollRegister,
 
-    /// `0x2006` - write : `PPUADDR` - VRAM address (two writes: most significant byte, then least significant byte).
+    /// `0x2006` - write: `PPUADDR` - VRAM address (two writes: most significant byte, then least significant byte).
     ///
     /// The 16-bit address is written to PPUADDR one byte at a time. Whether this is the first or second write is
     /// tracked by the PPU's internal `w` register.
@@ -295,12 +325,19 @@ pub const PPU = struct {
     write_toggle: bool,
     fine_x: u8,
 
+    /// `0x4014` - write: `Sprite DMA`
+    /// OAMDMA is a CPU register that suspends the CPU so it can quickly copy a page of CPU memory to PPU OAM using DMA.
+    /// The value written to this register is the high byte of the source address, and the copy begins on the cycle
+    /// immediately after the write.
+    oam_dma_addr: u8,
+
     internal_data_buf: u8,
 
     cycle: i16,
     scanline: i16,
 
     bg_data: BgData,
+    fg: FgData,
 
     nmi_interrupt: bool,
 
@@ -321,6 +358,7 @@ pub const PPU = struct {
             .status_register = .{},
             .oam_addr_register = 0,
             .oam_data_register = [_]u8{0} ** 256,
+            .oam_dma_addr = 0,
             .scroll_register = .{},
             .addr_register = .{},
             .tmp_addr = .{},
@@ -329,6 +367,7 @@ pub const PPU = struct {
             .cycle = 0,
             .nmi_interrupt = false,
             .bg_data = .{},
+            .fg = .{},
             .fine_x = 0,
             .frame_buffer = Frame.init(),
             .frame_complete = false,
@@ -369,9 +408,14 @@ pub const PPU = struct {
                 self.cycle = 1;
             }
 
-            // Start of new frame, clear VBlank flag
+            // Start of new frame, clear flags
             if (self.scanline == -1 and self.cycle == 1) {
                 self.status_register.vblank = false;
+                self.status_register.sprite_overflow = false;
+                self.status_register.sprite_zero_hit = false;
+
+                @memset(&self.fg.shifter_pattern_lo, 0);
+                @memset(&self.fg.shifter_pattern_hi, 0);
             }
 
             if (self.cycle >= 2 and self.cycle < 258 or self.cycle >= 321 and self.cycle < 338) {
@@ -439,6 +483,135 @@ pub const PPU = struct {
             if (self.scanline == -1 and self.cycle >= 280 and self.cycle < 305) {
                 self.transfer_addr_y();
             }
+
+            // Foreground rendering - NOTE: NOT CYCLE ACCURATE
+            if (self.cycle == 257 and self.scanline >= 0) {
+                // We've reached the end of a visible scanline. It is now time to determine
+                // which sprites are visible on the next scanline, and preload this info
+                // into buffers that we can work with while the scanline scans the row.
+
+                // clear out the sprite memory. This memory is used to store the sprites to be rendered.
+                @memset(&self.fg.sprite_scanline, .{});
+
+                self.fg.sprite_count = 0;
+
+                // clear out any residual information in sprite pattern shifters.
+                @memset(&self.fg.shifter_pattern_lo, 0);
+                @memset(&self.fg.shifter_pattern_hi, 0);
+
+                // Evaluate which sprites are visible in the next scanline. We need to iterate through the OAM until we
+                // have found 8 sprites that have Y-positions and heights that are within vertical range of the next
+                // scanline. Once we have found 8 or exhausted the OAM we stop.
+                var oam_index: usize = 0;
+
+                self.fg.sprite_zero_hit_possible = false;
+
+                // count to 9 sprites to set the sprite overflow flag in the event of there being > 8 sprites.
+                while (oam_index < 64 and self.fg.sprite_count < 9) {
+                    const diff = self.scanline - @as(i16, OamEntry.init(self.oam_data_register[oam_index * 4 .. oam_index * 4 + 4]).y);
+                    const sprite_size: i16 = if (self.ctrl_register.sprite_size) 16 else 8;
+
+                    if (diff >= 0 and diff < sprite_size) {
+                        // Sprite is visible, so copy the attribute entry over to our scanline sprite cache.
+                        if (self.fg.sprite_count < 8) {
+                            // is sprite zero?
+                            if (oam_index == 0) {
+                                self.fg.sprite_zero_hit_possible = true;
+                            }
+
+                            self.fg.sprite_scanline[self.fg.sprite_count] = OamEntry.init(self.oam_data_register[oam_index * 4 .. oam_index * 4 + 4]);
+                            self.fg.sprite_count += 1;
+                        }
+                    }
+
+                    oam_index += 1;
+                }
+
+                self.status_register.sprite_overflow = self.fg.sprite_count > 8;
+            }
+
+            if (self.cycle == 340) {
+                // We're at the end of the scanline, prepare the sprite shifters with the 8 or less selected sprites.
+                for (0..self.fg.sprite_count) |i| {
+                    var sprite_pattern_bits_lo: u8 = 0;
+                    var sprite_pattern_bits_hi: u8 = 0;
+                    var sprite_pattern_addr_lo: u16 = 0;
+                    var sprite_pattern_addr_hi: u16 = 0;
+
+                    const sprite_tile_id: u16 = self.fg.sprite_scanline[i].id;
+                    const sprite_y_pos: i16 = self.fg.sprite_scanline[i].y;
+                    if (!self.ctrl_register.sprite_size) {
+                        // 8x8 Sprite Mode
+                        if ((self.fg.sprite_scanline[i].attr & 0x80) == 0) {
+                            // Sprite is NOT flipped vertically
+                            sprite_pattern_addr_lo = self.ctrl_register.sprt_pattern_addr() |
+                                sprite_tile_id << 4 |
+                                @as(u16, @bitCast(self.scanline -% sprite_y_pos));
+                        } else {
+                            // Sprite is flipped vertically, i.e. upside down
+                            sprite_pattern_addr_lo = self.ctrl_register.sprt_pattern_addr() |
+                                sprite_tile_id << 4 |
+                                (7 -% @as(u16, @bitCast(self.scanline -% sprite_y_pos)));
+                        }
+                    } else {
+                        // 8x16 Sprite Mode
+                        if (self.fg.sprite_scanline[i].attr & 0x80 == 0) {
+                            // Sprite is NOT flipped vertically
+                            if (self.scanline - sprite_y_pos < 8) {
+                                // read top half tile
+                                // Which Pattern Table? 0KB or 4KB offset
+                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
+                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
+                                    (sprite_tile_id & 0xFE) << 4 |
+                                    // Which Row in cell? (0->7)
+                                    @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
+                            } else {
+                                // read bottom half tile
+                                // Which Pattern Table? 0KB or 4KB offset
+                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
+                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
+                                    ((sprite_tile_id & 0xFE) + 1) << 4 |
+                                    // Which Row in cell? (0->7)
+                                    @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
+                            }
+                        } else {
+                            // Sprite is flipped vertically
+                            if (self.scanline - sprite_y_pos < 8) {
+                                // read top half tile
+                                // Which Pattern Table? 0KB or 4KB offset
+                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
+                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
+                                    ((sprite_tile_id & 0xFE) + 1) << 4 |
+                                    // Which Row in cell? (0->7)
+                                    7 -% @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
+                            } else {
+                                // read bottom half tile
+                                // Which Pattern Table? 0KB or 4KB offset
+                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
+                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
+                                    (sprite_tile_id & 0xFE) << 4 |
+                                    // Which Row in cell? (0->7)
+                                    7 -% @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
+                            }
+                        }
+                    }
+
+                    sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8;
+
+                    sprite_pattern_bits_lo = self.mem_read(sprite_pattern_addr_lo);
+                    sprite_pattern_bits_hi = self.mem_read(sprite_pattern_addr_hi);
+
+                    if (self.fg.sprite_scanline[i].attr & 0x40 != 0) {
+                        // flip patterns horizontally
+                        sprite_pattern_bits_lo = flip_byte(sprite_pattern_bits_lo);
+                        sprite_pattern_bits_hi = flip_byte(sprite_pattern_bits_hi);
+                    }
+
+                    // load the pattern into the sprite shift registers
+                    self.fg.shifter_pattern_lo[i] = sprite_pattern_bits_lo;
+                    self.fg.shifter_pattern_hi[i] = sprite_pattern_bits_hi;
+                }
+            }
         }
 
         if (self.scanline == 240) {
@@ -469,13 +642,88 @@ pub const PPU = struct {
             bg_palette = (bg_pal1 << 1) | bg_pal0;
         }
 
+        var fg_pixel: u8 = 0;
+        var fg_palette: u8 = 0;
+        var fg_priority: bool = false;
+        if (self.mask_register.render_sprite) {
+            self.fg.sprite_zero_being_rendered = false;
+            for (0..self.fg.sprite_count) |i| {
+                if (self.fg.sprite_scanline[i].x == 0) {
+                    const fg_pixel_lo: u8 = @intFromBool((self.fg.shifter_pattern_lo[i] & 0x80) > 0);
+                    const fg_pixel_hi: u8 = @intFromBool((self.fg.shifter_pattern_hi[i] & 0x80) > 0);
+                    fg_pixel = (fg_pixel_hi << 1) | fg_pixel_lo;
+
+                    // Extract the palette from the bottom two bits. The foreground palettes are the latter 4 in the
+                    // palette memory.
+                    fg_palette = (self.fg.sprite_scanline[i].attr & 3) + 4;
+                    fg_priority = (self.fg.sprite_scanline[i].attr & 0x20) == 0;
+
+                    if (fg_pixel != 0) {
+                        if (i == 0) { // is sprite zero?
+                            self.fg.sprite_zero_being_rendered = true;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        var pixel: u8 = 0;
+        var palette: u8 = 0;
+        if (bg_pixel == 0 and fg_pixel == 0) {
+            // The background pixel is transparent
+            // The foreground pixel is transparent
+            // No winner, draw "background" colour
+            pixel = 0x00;
+            palette = 0x00;
+        } else if (bg_pixel == 0 and fg_pixel > 0) {
+            // The background pixel is transparent
+            // The foreground pixel is visible
+            // Foreground wins!
+            pixel = fg_pixel;
+            palette = fg_palette;
+        } else if (bg_pixel > 0 and fg_pixel == 0) {
+            // The background pixel is visible
+            // The foreground pixel is transparent
+            // Background wins!
+            pixel = bg_pixel;
+            palette = bg_palette;
+        } else if (bg_pixel > 0 and fg_pixel > 0) {
+            // The background pixel is visible
+            // The foreground pixel is visible
+            if (fg_priority) {
+                pixel = fg_pixel;
+                palette = fg_palette;
+            } else {
+                pixel = bg_pixel;
+                palette = bg_palette;
+            }
+
+            if (self.fg.sprite_zero_hit_possible and self.fg.sprite_zero_being_rendered) {
+                // Sprite zero is a collision between foreground and background
+                // so they must both be enabled
+                if (self.mask_register.render_background and self.mask_register.render_sprite) {
+                    // The left edge of the screen has specific switches to control
+                    // its appearance. This is used to smooth inconsistencies when
+                    // scrolling (since sprites x coord must be >= 0)
+                    if (!(self.mask_register.render_background_left or self.mask_register.render_sprite_left)) {
+                        if (self.cycle >= 9 and self.cycle < 258) {
+                            self.status_register.sprite_zero_hit = true;
+                        }
+                    } else if (self.cycle >= 1 and self.cycle < 258) {
+                        self.status_register.sprite_zero_hit = true;
+                    }
+                }
+            }
+        }
+
         if (self.scanline >= 0 and self.scanline < 240 and
             self.cycle >= 1 and self.cycle <= 256)
         {
             self.frame_buffer.set_pixel(
                 @as(u16, @bitCast(self.cycle - 1)),
                 @as(u16, @bitCast(self.scanline)),
-                self.get_color(bg_palette, bg_pixel),
+                self.get_color(palette, pixel),
             );
         }
 
@@ -568,12 +816,17 @@ pub const PPU = struct {
             self.bg_data.shifter_attr_lo <<= 1;
             self.bg_data.shifter_attr_hi <<= 1;
         }
-    }
 
-    fn is_sprite_0_hit(self: Self, cycle: usize) bool {
-        const x = self.oam_data_register[3];
-        const y = self.oam_data_register[0];
-        return y == self.scanline and x <= cycle and self.mask_register.render_sprite;
+        if (self.mask_register.render_sprite and self.cycle >= 1 and self.cycle < 258) {
+            for (0..self.fg.sprite_count) |i| {
+                if (self.fg.sprite_scanline[i].x > 0) {
+                    self.fg.sprite_scanline[i].x -%= 1;
+                } else {
+                    self.fg.shifter_pattern_lo[i] <<= 1;
+                    self.fg.shifter_pattern_hi[i] <<= 1;
+                }
+            }
+        }
     }
 
     /// Writes a byte to the `PPUADDR` register (`0x2006`) to set the PPU memory address.
@@ -740,19 +993,20 @@ pub const PPU = struct {
     }
 
     fn mem_read(self: *Self, addr: u16) u8 {
+        const new_addr = addr & 0x3FFF;
         if (addr >= 0 and addr <= 0x1FFF) {
-            return self.chr_rom[addr];
-        } else if (addr >= 0x2000 and addr <= 0x3EFF) {
-            return self.vram[self.mirror_vram_addr(addr)];
-        } else if (addr >= 0x3F00 and addr <= 0x3FFF) {
-            var palette_addr = addr & 0x1F;
+            return self.chr_rom[new_addr];
+        } else if (new_addr >= 0x2000 and new_addr <= 0x3EFF) {
+            return self.vram[self.mirror_vram_addr(new_addr)];
+        } else if (new_addr >= 0x3F00 and new_addr <= 0x3FFF) {
+            var palette_addr = new_addr & 0x1F;
             palette_addr = switch (palette_addr) {
                 0x10, 0x14, 0x18, 0x1C => palette_addr - 0x10,
                 else => palette_addr,
             };
             return self.palette_table[palette_addr] & if (self.mask_register.greyscale) @as(u8, 0x30) else 0x3F;
         } else {
-            std.debug.panic("unexpected access to mirrored space 0x{X:04}\n", .{addr});
+            std.debug.panic("unexpected access to mirrored space 0x{X:04} while reading\n", .{new_addr});
         }
     }
 
@@ -781,7 +1035,7 @@ pub const PPU = struct {
     ///   - 32 bytes of palette data with mirroring
     ///   - Stores background and sprite color palettes
     pub fn data_write(self: *Self, value: u8) void {
-        const addr = self.addr_register.addr();
+        const addr = self.addr_register.addr() & 0x3FFF;
         if (addr >= 0 and addr <= 0x1FFF) {
             std.log.err("Attempt to write to CHR ROM space 0x{X:04}", .{addr});
         } else if (addr >= 0x2000 and addr <= 0x3EFF) {
@@ -793,7 +1047,7 @@ pub const PPU = struct {
             }
             self.palette_table[palette_addr] = value;
         } else {
-            std.debug.panic("unexpected access to mirrored space 0x{X:04}\n", .{addr});
+            std.debug.panic("unexpected access to mirrored space 0x{X:04} while writing\n", .{addr});
         }
         self.increment_vram_addr();
     }
@@ -855,7 +1109,7 @@ pub const PPU = struct {
     /// - Suspends the CPU for 513-514 cycles
     /// - Copies 256 bytes from CPU memory to OAM
     /// - Is typically performed during `VBLANK` to avoid visual glitches
-    pub fn oam_dma_write(self: *Self, data: [256]u8) void {
+    pub fn oam_dma_write(self: *Self, data: [256]u8) void { // TODO remove
         // @memmove(&self.oam_data_register, &data);
         // self.oam_addr_register +%= 0xFF;
         // self.oam_addr_register +%= 1;
@@ -962,6 +1216,15 @@ pub const PPU = struct {
         return frame;
     }
 };
+
+// "flips" a byte so 0b11100000 becomes 0b00000111.
+// source: https://stackoverflow.com/a/2602885
+fn flip_byte(byte: u8) u8 {
+    var result = (byte & 0xF0) >> 4 | (byte & 0x0F) << 4;
+    result = (result & 0xCC) >> 2 | (result & 0x33) << 2;
+    result = (result & 0xAA) >> 1 | (result & 0x55) << 1;
+    return result;
+}
 
 test "PPU VRAM write" {
     var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
