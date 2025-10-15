@@ -75,17 +75,29 @@ pub fn main() !void {
         },
     };
 
-    var keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
-    defer keymap.deinit();
+    var controller1_keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
+    defer controller1_keymap.deinit();
 
-    try keymap.put(c.SDLK_DOWN, .{ .DOWN = true });
-    try keymap.put(c.SDLK_UP, .{ .UP = true });
-    try keymap.put(c.SDLK_RIGHT, .{ .RIGHT = true });
-    try keymap.put(c.SDLK_LEFT, .{ .LEFT = true });
-    try keymap.put(c.SDLK_RETURN, .{ .START = true });
-    try keymap.put(c.SDLK_SPACE, .{ .SELECT = true });
-    try keymap.put(c.SDLK_A, .{ .BUTTON_A = true });
-    try keymap.put(c.SDLK_S, .{ .BUTTON_B = true });
+    try controller1_keymap.put(c.SDLK_DOWN, .{ .DOWN = true });
+    try controller1_keymap.put(c.SDLK_UP, .{ .UP = true });
+    try controller1_keymap.put(c.SDLK_RIGHT, .{ .RIGHT = true });
+    try controller1_keymap.put(c.SDLK_LEFT, .{ .LEFT = true });
+    try controller1_keymap.put(c.SDLK_RETURN, .{ .START = true });
+    try controller1_keymap.put(c.SDLK_SPACE, .{ .SELECT = true });
+    try controller1_keymap.put(c.SDLK_Q, .{ .BUTTON_A = true });
+    try controller1_keymap.put(c.SDLK_E, .{ .BUTTON_B = true });
+
+    var controller2_keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
+    defer controller2_keymap.deinit();
+
+    try controller2_keymap.put(c.SDLK_S, .{ .DOWN = true });
+    try controller2_keymap.put(c.SDLK_W, .{ .UP = true });
+    try controller2_keymap.put(c.SDLK_D, .{ .RIGHT = true });
+    try controller2_keymap.put(c.SDLK_A, .{ .LEFT = true });
+    try controller2_keymap.put(c.SDLK_P, .{ .START = true });
+    try controller2_keymap.put(c.SDLK_U, .{ .SELECT = true });
+    try controller2_keymap.put(c.SDLK_I, .{ .BUTTON_A = true });
+    try controller2_keymap.put(c.SDLK_O, .{ .BUTTON_B = true });
 
     var bus = Bus.init(rom);
     const cpu = CPU.init(&bus);
@@ -104,15 +116,21 @@ pub fn main() !void {
                 c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
                     c.SDLK_ESCAPE => continue_exec = false,
                     else => |key_code| {
-                        if (keymap.get(key_code)) |key| {
-                            system.bus.controller1.button_status.insert(key);
+                        if (controller1_keymap.get(key_code)) |key| {
+                            system.bus.controllers.cntrl1_status.insert(key);
+                        }
+                        if (controller2_keymap.get(key_code)) |key| {
+                            system.bus.controllers.cntrl2_status.insert(key);
                         }
                     },
                 },
                 c.SDL_EVENT_KEY_UP => switch (event.key.key) {
                     else => |key_code| {
-                        if (keymap.get(key_code)) |key| {
-                            system.bus.controller1.button_status.remove(key);
+                        if (controller1_keymap.get(key_code)) |key| {
+                            system.bus.controllers.cntrl1_status.remove(key);
+                        }
+                        if (controller2_keymap.get(key_code)) |key| {
+                            system.bus.controllers.cntrl2_status.remove(key);
                         }
                     },
                 },

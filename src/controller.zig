@@ -20,28 +20,34 @@ pub const ControllerButton = packed struct(u8) {
     }
 };
 
-pub const Controller = struct {
+pub const Controllers = struct {
     /// - strobe bit on - controller reports only status of the button A on every read
     /// - strobe bit off - controller cycles through all buttons
     strobe: bool,
-    button_index: u8,
-    button_status: ControllerButton,
+    cntrl1_index: u8,
+    cntrl2_index: u8,
+
+    cntrl1_status: ControllerButton,
+    cntrl2_status: ControllerButton,
 
     const Self = @This();
 
     pub fn init() Self {
         return .{
             .strobe = false,
-            .button_index = 0,
-            .button_status = .{},
+            .cntrl1_index = 0,
+            .cntrl2_index = 0,
+            .cntrl1_status = .{},
+            .cntrl2_status = .{},
         };
     }
 
     /// Set the state of `strobe`.
-    pub fn write(self: *Self, data: u8) void {
+    pub fn set_strobe(self: *Self, data: u8) void {
         self.strobe = data & 1 != 0;
         if (self.strobe) {
-            self.button_index = 0;
+            self.cntrl1_index = 0;
+            self.cntrl2_index = 0;
         }
     }
 
@@ -50,16 +56,32 @@ pub const Controller = struct {
     ///     `A` -> `B` -> `SELECT` -> `START` -> `UP` -> `DOWN` -> `LEFT` -> `RIGHT`
     ///
     /// All subsequent reads will return 1. To reset the button read state back to `A` we need to set the `strobe`.
-    pub fn read(self: *Self) u8 {
-        if (self.button_index > 7) {
+    pub fn cntrl1_read(self: *Self) u8 {
+        if (self.cntrl1_index > 7) {
             return 1;
         }
 
-        const pressed_button = @as(u8, @bitCast(self.button_status)) & std.math.shl(u8, 1, self.button_index);
-        const result = std.math.shr(u8, pressed_button, self.button_index);
+        const pressed_button = @as(u8, @bitCast(self.cntrl1_status)) & std.math.shl(u8, 1, self.cntrl1_index);
+        const result = std.math.shr(u8, pressed_button, self.cntrl1_index);
 
-        if (!self.strobe and self.button_index <= 7) {
-            self.button_index += 1;
+        if (!self.strobe and self.cntrl1_index <= 7) {
+            self.cntrl1_index += 1;
+        }
+
+        // return the nth bit (`button_index`) in `pressed_button`
+        return result;
+    }
+
+    pub fn cntrl2_read(self: *Self) u8 {
+        if (self.cntrl2_index > 7) {
+            return 1;
+        }
+
+        const pressed_button = @as(u8, @bitCast(self.cntrl2_status)) & std.math.shl(u8, 1, self.cntrl2_index);
+        const result = std.math.shr(u8, pressed_button, self.cntrl2_index);
+
+        if (!self.strobe and self.cntrl2_index <= 7) {
+            self.cntrl2_index += 1;
         }
 
         // return the nth bit (`button_index`) in `pressed_button`
@@ -68,40 +90,40 @@ pub const Controller = struct {
 };
 
 test "joypad strobe mode ON" {
-    var joypad = Controller.init();
+    var joypad = Controllers.init();
 
-    joypad.write(1);
-    joypad.button_status.insert(.{ .BUTTON_A = true });
+    joypad.set_strobe(1);
+    joypad.cntrl1_status.insert(.{ .BUTTON_A = true });
 
     for (0..10) |_| {
-        try std.testing.expectEqual(1, joypad.read());
+        try std.testing.expectEqual(1, joypad.cntrl1_read());
     }
 }
 
 test "joypad strobe mode ON/OFF" {
-    var joypad = Controller.init();
+    var joypad = Controllers.init();
 
-    joypad.write(0);
-    joypad.button_status.insert(.{ .RIGHT = true });
-    joypad.button_status.insert(.{ .LEFT = true });
-    joypad.button_status.insert(.{ .SELECT = true });
-    joypad.button_status.insert(.{ .BUTTON_B = true });
+    joypad.set_strobe(0);
+    joypad.cntrl1_status.insert(.{ .RIGHT = true });
+    joypad.cntrl1_status.insert(.{ .LEFT = true });
+    joypad.cntrl1_status.insert(.{ .SELECT = true });
+    joypad.cntrl1_status.insert(.{ .BUTTON_B = true });
 
     for (0..2) |_| {
-        try std.testing.expectEqual(0, joypad.read());
-        try std.testing.expectEqual(1, joypad.read());
-        try std.testing.expectEqual(1, joypad.read());
-        try std.testing.expectEqual(0, joypad.read());
-        try std.testing.expectEqual(0, joypad.read());
-        try std.testing.expectEqual(0, joypad.read());
-        try std.testing.expectEqual(1, joypad.read());
-        try std.testing.expectEqual(1, joypad.read());
+        try std.testing.expectEqual(0, joypad.cntrl1_read());
+        try std.testing.expectEqual(1, joypad.cntrl1_read());
+        try std.testing.expectEqual(1, joypad.cntrl1_read());
+        try std.testing.expectEqual(0, joypad.cntrl1_read());
+        try std.testing.expectEqual(0, joypad.cntrl1_read());
+        try std.testing.expectEqual(0, joypad.cntrl1_read());
+        try std.testing.expectEqual(1, joypad.cntrl1_read());
+        try std.testing.expectEqual(1, joypad.cntrl1_read());
 
         for (0..10) |_| {
-            try std.testing.expectEqual(1, joypad.read());
+            try std.testing.expectEqual(1, joypad.cntrl1_read());
         }
 
-        joypad.write(1);
-        joypad.write(0);
+        joypad.set_strobe(1);
+        joypad.set_strobe(0);
     }
 }

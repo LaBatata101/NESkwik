@@ -1,5 +1,5 @@
 const std = @import("std");
-const Controller = @import("controller.zig").Controller;
+const Controllers = @import("controller.zig").Controllers;
 const CPU = @import("cpu.zig").CPU;
 const Rom = @import("rom.zig").Rom;
 const PPU = @import("ppu.zig").PPU;
@@ -47,8 +47,7 @@ pub const Bus = struct {
     ram: [2048]u8,
     rom: Rom,
     ppu: PPU,
-    controller1: Controller,
-    controller2: Controller,
+    controllers: Controllers,
 
     dma_page: u8,
     dma_data: u8,
@@ -62,8 +61,7 @@ pub const Bus = struct {
             .ram = [_]u8{0} ** 2048,
             .rom = rom,
             .ppu = PPU.init(rom.chr_rom, rom.mirroring),
-            .controller1 = Controller.init(),
-            .controller2 = Controller.init(),
+            .controllers = Controllers.init(),
             .dma_transfer = false,
             .dma_dummy = true,
             .dma_page = 0,
@@ -91,9 +89,9 @@ pub const Bus = struct {
             // TODO: implement APU
             return 0;
         } else if (addr == 0x4016) {
-            return self.controller1.read();
+            return self.controllers.cntrl1_read();
         } else if (addr == 0x4017) {
-            return self.controller2.read();
+            return self.controllers.cntrl2_read();
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             return self.read_prg_rom(addr);
         } else {
@@ -131,9 +129,7 @@ pub const Bus = struct {
             self.dma_transfer = true;
             self.ppu.oam_dma_addr = 0;
         } else if (addr >= 0x4016 and addr <= 0x4017) {
-            // FIX: this is wrong, need to select the correct controller
-            self.controller1.write(data);
-            self.controller2.write(data);
+            self.controllers.set_strobe(data);
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             @panic("Attempt to write to cartridge ROM memory space");
         } else {
