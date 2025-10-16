@@ -4,14 +4,16 @@ const ness = @import("8bit_emulator");
 const c = ness.c;
 const System = ness.System;
 const Rom = ness.Rom;
+const APU = ness.APU;
 const Frame = ness.render.Frame;
+const SDLAudioOut = ness.SDLAudioOut;
 const FPSManager = ness.render.FPSManager;
 const ControllerButton = ness.controller.ControllerButton;
 const SYSTEM_PALLETE = ness.SYSTEM_PALLETE;
 const trace = ness.trace;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -47,7 +49,7 @@ pub fn main() !void {
 
     _ = try file.read(buffer);
 
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS)) {
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO)) {
         sdlPanic();
     }
     defer c.SDL_Quit();
@@ -96,7 +98,10 @@ pub fn main() !void {
     try cntrl2_keymap.put(c.SDLK_I, .{ .BUTTON_A = true });
     try cntrl2_keymap.put(c.SDLK_O, .{ .BUTTON_B = true });
 
-    var system = System.init(rom);
+    var apu = try APU.init(allocator, try SDLAudioOut.init(allocator));
+    defer apu.deinit();
+
+    var system = System.init(rom, &apu);
     system.reset();
 
     var fps_manager = FPSManager.init();
@@ -148,6 +153,8 @@ fn process_input(
         }
     }
 }
+
+var current_sine_sample: u32 = 0;
 
 fn sdlPanic() noreturn {
     const str = @as(?[*:0]const u8, c.SDL_GetError()) orelse "unknown error";

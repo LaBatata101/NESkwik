@@ -1,29 +1,35 @@
 const std = @import("std");
 const CPU = @import("cpu.zig").CPU;
+const APU = @import("apu/apu.zig").APU;
+const SDLAudioOut = @import("sdl_audio.zig").SDLAudioOut;
 const Rom = @import("rom.zig").Rom;
 
 pub const System = struct {
     cpu: CPU,
+    // apu: APU,
     quit: bool,
-    next_interrupt: u64,
 
     const Self = @This();
 
-    pub fn init(rom: Rom) Self {
+    pub fn init(rom: Rom, apu: *APU) Self {
+        // const device = try SDLAudioOut.init(alloc);
         return .{
-            .cpu = CPU.init(rom),
+            .cpu = CPU.init(rom, apu),
+            // .apu = try APU.init(alloc, device),
             .quit = false,
-            .next_interrupt = 0,
         };
     }
 
-    pub fn tick(self: *Self) void {
-        if (self.cpu.cycles >= self.cpu.next_interrupt) {
-            self.cpu.update_next_interrupt();
-        }
+    // pub fn deinit(self: *Self) void {
+    //     self.apu.deinit();
+    // }
 
+    pub fn tick(self: *Self) void {
         if (self.cpu.ppu.requested_run_cycle() <= self.cpu.cycles) {
             self.cpu.run_ppu();
+        }
+        if (self.cpu.apu.requested_run_cycle() <= self.cpu.cycles) {
+            self.cpu.run_apu();
         }
 
         self.cpu.tick();

@@ -44,16 +44,24 @@ pub fn build(b: *std.Build) void {
     const sdl_dep = b.dependency("sdl", .{
         .target = target,
         .optimize = optimize,
-        //.preferred_linkage = .static,
-        //.strip = null,
-        //.sanitize_c = null,
-        //.pic = null,
-        //.lto = null,
-        //.emscripten_pthreads = false,
-        //.install_build_config_h = false,
     });
     const sdl_lib = sdl_dep.artifact("SDL3");
     mod.linkLibrary(sdl_lib);
+
+    const blip_buf_lib = b.addLibrary(
+        .{ .name = "blip_buf", .linkage = .static, .root_module = b.createModule(
+            .{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            },
+        ) },
+    );
+    blip_buf_lib.addCSourceFile(.{ .file = b.path("third-party/blip_buf-1.1.0/blip_buf.c") });
+    mod.addIncludePath(b.path("third-party/blip_buf-1.1.0"));
+
+    b.installArtifact(blip_buf_lib);
+    mod.linkLibrary(blip_buf_lib);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -88,6 +96,7 @@ pub fn build(b: *std.Build) void {
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
+                // .{ .name = "blip_buf", .module = blip_buf_lib.root_module },
                 // Here "_8bit_emulator" is the name you will use in your source code to
                 // import this module (e.g. `@import("_8bit_emulator")`). The name is
                 // repeated because you are allowed to rename your imports, which

@@ -3,6 +3,7 @@ const std = @import("std");
 const rom = @import("rom.zig");
 
 const PPU = @import("ppu.zig").PPU;
+const APU = @import("apu/apu.zig").APU;
 const Rom = rom.Rom;
 const opcodes = @import("opcodes.zig");
 const Controllers = @import("controller.zig").Controllers;
@@ -119,6 +120,7 @@ pub const CPU = struct {
     ram: [2048]u8,
     rom: Rom,
     ppu: PPU,
+    apu: *APU,
     controllers: Controllers,
 
     cycles: u64,
@@ -155,12 +157,12 @@ pub const CPU = struct {
         .cycles = 8,
     };
 
-    pub fn init(cartridge: Rom) CPU {
+    pub fn init(cartridge: Rom, apu: *APU) CPU {
         var initial_status = ProcessorStatus{};
         initial_status.interrupt_disable = true;
         initial_status.break2 = true;
 
-        var cpu = CPU{
+        return .{
             .sp = STACK_TOP,
             .pc = 0x8000,
             .register_a = 0,
@@ -171,12 +173,11 @@ pub const CPU = struct {
             .rom = cartridge,
             .controllers = Controllers.init(),
             .ppu = PPU.init(cartridge.chr_rom, cartridge.mirroring),
+            .apu = apu,
             .cycles = 0,
             .next_interrupt = 0,
             .ram = [_]u8{0} ** 2048,
         };
-        cpu.update_next_interrupt();
-        return cpu;
     }
 
     fn update_zero_and_negative_flags(self: *Self, result: u8) void {
@@ -206,7 +207,11 @@ pub const CPU = struct {
             return self.mem_read(mirror_down_addr);
         } else if (addr >= 0x4000 and addr <= 0x4015) {
             // TODO: implement APU
-            return 0;
+            const value = self.apu.read_status(self.cycles);
+            if (self.apu.irq_interrupt) {
+                self.interrupt(CPU.IRQ);
+            }
+            return value;
         } else if (addr == 0x4016) {
             return self.controllers.cntrl1_read();
         } else if (addr == 0x4017) {
@@ -243,12 +248,13 @@ pub const CPU = struct {
         } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;
             self.mem_write(mirror_down_addr, data);
-        } else if (addr >= 0x4000 and addr <= 0x4013 or addr == 0x4015) {
-            // TODO: implement APU
+        } else if (addr >= 0x4000 and addr <= 0x4013 or addr == 0x4015 or addr == 0x4017) {
+            self.run_apu();
+            self.apu.write(addr, data);
         } else if (addr == 0x4014) {
             self.run_ppu();
             self.dma_transfer(data);
-        } else if (addr >= 0x4016 and addr <= 0x4017) {
+        } else if (addr == 0x4016) {
             self.controllers.set_strobe(data);
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             @panic("Attempt to write to cartridge ROM memory space");
@@ -259,7 +265,6 @@ pub const CPU = struct {
 
     pub fn run_ppu(self: *Self) void {
         self.ppu.run_to(self.cycles);
-        self.update_next_interrupt();
         if (self.ppu.nmi_interrupt) {
             self.ppu.nmi_interrupt = false;
             // TODO: This will cause a small desync between the CPU and cycles (around 9 cycles) breaking the 3:1
@@ -268,11 +273,11 @@ pub const CPU = struct {
         }
     }
 
-    pub fn update_next_interrupt(self: *Self) void {
-        self.next_interrupt = @min(
-            self.ppu.requested_run_cycle(),
-            std.math.minInt(u64), // TODO add APU
-        );
+    pub fn run_apu(self: *Self) void {
+        self.apu.run_to(self.cycles);
+        if (self.apu.irq_interrupt) {
+            self.interrupt(CPU.IRQ);
+        }
     }
 
     pub fn mem_read_u16(self: *Self, addr: u16) u16 {
