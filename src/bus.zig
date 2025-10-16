@@ -3,6 +3,8 @@ const Controllers = @import("controller.zig").Controllers;
 const CPU = @import("cpu.zig").CPU;
 const Rom = @import("rom.zig").Rom;
 const PPU = @import("ppu.zig").PPU;
+const APU = @import("apu/apu.zig").APU;
+const SDLAudioOut = @import("sdl_audio.zig").SDLAudioOut;
 
 const RAM: u16 = 0x0000;
 const RAM_MIRRORS_END: u16 = 0x2000;
@@ -47,6 +49,7 @@ pub const Bus = struct {
     ram: [2048]u8,
     rom: Rom,
     ppu: PPU,
+    apu: APU,
     controllers: Controllers,
 
     dma_page: u8,
@@ -56,11 +59,12 @@ pub const Bus = struct {
 
     const Self = @This();
 
-    pub fn init(rom: Rom) Self {
+    pub fn init(allocator: std.mem.Allocator, rom: Rom) Self {
         return .{
             .ram = [_]u8{0} ** 2048,
             .rom = rom,
             .ppu = PPU.init(rom.chr_rom, rom.mirroring),
+            .apu = APU.init(allocator, SDLAudioOut.init(allocator)),
             .controllers = Controllers.init(),
             .dma_transfer = false,
             .dma_dummy = true,
@@ -121,14 +125,14 @@ pub const Bus = struct {
         } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;
             self.mem_write(mirror_down_addr, data);
-        } else if (addr >= 0x4000 and addr <= 0x4013 or addr == 0x4015) {
+        } else if (addr >= 0x4000 and addr <= 0x4013 or addr == 0x4015 or addr == 0x4017) {
             // TODO: implement APU
         } else if (addr == 0x4014) {
             // https://www.nesdev.org/wiki/PPU_programmer_reference#OAMDMA_-_Sprite_DMA_($4014_write)
             self.dma_page = data;
             self.dma_transfer = true;
             self.ppu.oam_dma_addr = 0;
-        } else if (addr >= 0x4016 and addr <= 0x4017) {
+        } else if (addr == 0x4016) {
             self.controllers.set_strobe(data);
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
             @panic("Attempt to write to cartridge ROM memory space");

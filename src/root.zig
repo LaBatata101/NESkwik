@@ -18,6 +18,7 @@ pub const trace = @import("trace.zig").trace;
 pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_main.h");
+    @cInclude("blip_buf.h");
 });
 
 test {

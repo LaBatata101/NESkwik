@@ -14,7 +14,7 @@ const SYSTEM_PALLETE = ness.SYSTEM_PALLETE;
 const trace = ness.trace;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -50,7 +50,7 @@ pub fn main() !void {
 
     _ = try file.read(buffer);
 
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS)) {
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO)) {
         sdlPanic();
     }
     defer c.SDL_Quit();
@@ -99,13 +99,28 @@ pub fn main() !void {
     try controller2_keymap.put(c.SDLK_I, .{ .BUTTON_A = true });
     try controller2_keymap.put(c.SDLK_O, .{ .BUTTON_B = true });
 
-    var bus = Bus.init(rom);
+    var bus = Bus.init(allocator, rom);
     const cpu = CPU.init(&bus);
     var system = System.init(&bus, cpu);
     system.reset();
 
     var fps_manager = FPSManager.init();
     fps_manager.setFramerate(60);
+
+    var spec = c.SDL_AudioSpec{};
+    spec.freq = 48000;
+    spec.format = c.SDL_AUDIO_F32;
+    spec.channels = 1; // mono
+
+    const audio_stream = c.SDL_OpenAudioDeviceStream(
+        c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+        &spec,
+        audio_callback,
+        null,
+    ) orelse sdlPanic();
+    defer c.SDL_DestroyAudioStream(audio_stream);
+
+    _ = c.SDL_ResumeAudioStreamDevice(audio_stream);
 
     var continue_exec = true;
     while (continue_exec) {
@@ -138,15 +153,44 @@ pub fn main() !void {
             }
         }
 
-        while (!system.is_frame_complete()) {
-            system.tick();
-        }
+        // while (!system.is_frame_complete()) {
+        //     system.tick();
+        // }
 
         _ = c.SDL_RenderClear(renderer);
         _ = c.SDL_UpdateTexture(texture, null, &bus.ppu.frame_buffer.data, 256 * 3);
         _ = c.SDL_RenderTexture(renderer, texture, null, null);
         _ = c.SDL_RenderPresent(renderer);
         _ = fps_manager.delay();
+    }
+}
+
+var current_sine_sample: u32 = 0;
+
+fn audio_callback(
+    userdata: ?*anyopaque,
+    audio_stream: ?*c.SDL_AudioStream,
+    additional_amount: c_int,
+    total_amount: c_int,
+) callconv(.c) void {
+    _ = userdata;
+    _ = total_amount;
+
+    const bytes_per_sample: c_int = @sizeOf(f32);
+    var samples_to_generate: usize = @intCast(@divTrunc(additional_amount, bytes_per_sample));
+    while (samples_to_generate > 0) {
+        var samples: [128]f32 = undefined;
+        const total: usize = @intCast(@min(samples_to_generate, samples.len));
+        for (0..total) |i| {
+            const freq: u32 = 440;
+            const phase = @as(f32, @floatFromInt(current_sine_sample * freq)) / @as(f32, 48000.0);
+            samples[i] = @sin(phase * 2 * std.math.pi);
+            current_sine_sample += 1;
+        }
+
+        current_sine_sample %= 48000;
+        _ = c.SDL_PutAudioStreamData(audio_stream, &samples, @as(c_int, @intCast(total)) * bytes_per_sample);
+        samples_to_generate -= total;
     }
 }
 
