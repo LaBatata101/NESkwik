@@ -1,51 +1,54 @@
+const std = @import("std");
 const CPU = @import("cpu.zig").CPU;
-const Bus = @import("bus.zig").Bus;
+const Rom = @import("rom.zig").Rom;
 
 pub const System = struct {
     cpu: CPU,
-    bus: *Bus,
-    system_clock_counter: usize,
+    quit: bool,
+    next_interrupt: u64,
 
     const Self = @This();
 
-    pub fn init(bus: *Bus, cpu: CPU) Self {
+    pub fn init(rom: Rom) Self {
         return .{
-            .bus = bus,
-            .cpu = cpu,
-            .system_clock_counter = 0,
+            .cpu = CPU.init(rom),
+            .quit = false,
+            .next_interrupt = 0,
         };
     }
 
     pub fn tick(self: *Self) void {
-        self.bus.ppu.tick();
-
-        // The CPU runs 3 times slower than the PPU, so only execute the CPU every 3 times.
-        if (self.system_clock_counter % 3 == 0) {
-            const dma_handled = self.bus.handle_dma_transfer(self.system_clock_counter);
-            if (!dma_handled) {
-                // the DMA isn't transferring data, the CPU is allowed to execute
-                self.cpu.tick();
-            }
+        if (self.cpu.cycles >= self.cpu.next_interrupt) {
+            self.cpu.update_next_interrupt();
         }
 
-        if (self.bus.ppu.nmi_interrupt) {
-            self.bus.ppu.nmi_interrupt = false;
-            self.cpu.interrupt(CPU.NMI);
+        if (self.cpu.ppu.requested_run_cycle() <= self.cpu.cycles) {
+            self.cpu.run_ppu();
         }
 
-        self.system_clock_counter += 1;
+        self.cpu.tick();
+    }
+
+    pub fn run_frame(self: *Self) void {
+        while (!self.is_frame_complete()) {
+            self.tick();
+        }
     }
 
     pub fn reset(self: *Self) void {
         self.cpu.reset();
-        self.system_clock_counter = 0;
+        self.quit = false;
     }
 
     pub fn is_frame_complete(self: *Self) bool {
-        if (self.bus.ppu.frame_complete) {
-            self.bus.ppu.frame_complete = false;
+        if (self.cpu.ppu.frame_complete) {
+            self.cpu.ppu.frame_complete = false;
             return true;
         }
         return false;
+    }
+
+    pub fn frame_buffer(self: *Self) *const u8 {
+        return @ptrCast(&self.cpu.ppu.frame_buffer.data);
     }
 };

@@ -4,6 +4,10 @@ const Mirroring = @import("rom.zig").Mirroring;
 const render = @import("render.zig");
 const Frame = render.Frame;
 
+const CYCLES_PER_SCANLINE: u64 = 341;
+const SCANLINES_PER_FRAME: u64 = 262;
+const CYCLES_PER_FRAME: u64 = CYCLES_PER_SCANLINE * SCANLINES_PER_FRAME;
+
 const ControlRegister = packed struct(u8) {
     /// Base nametable address (0 = 0x2000; 1 = 0x2400; 2 = 0x2800; 3 = 0x2C00)
     name_table_addr: u2 = 0,
@@ -244,6 +248,19 @@ const FgData = struct {
     sprite_zero_being_rendered: bool = false,
 };
 
+fn div_rem(num: u64, den: u64) struct { u64, u64 } {
+    return .{ @divFloor(num, den), num % den };
+}
+
+fn ppu_to_cpu_cycle(ppu_cyc: u64) u64 {
+    const div, const rem = div_rem(ppu_cyc, 3);
+    return if (rem == 0) div else div + 1;
+}
+
+fn cpu_to_ppu_cycle(cpu_cyc: u64) u64 {
+    return cpu_cyc * 3;
+}
+
 /// - PPU memory map
 /// The PPU addresses a 14-bit (16kB) address space, `0x0000-0x3FFF`, completely separate from the CPU's address bus. It
 /// is either directly accessed by the PPU itself, or via the CPU with memory mapped registers at `0x2006` and `0x2007`.
@@ -344,6 +361,10 @@ pub const PPU = struct {
     frame_buffer: Frame,
     frame_complete: bool,
 
+    global_cycle: u64,
+    next_vblank_ppu_cycle: u64,
+    next_vblank_cpu_cycle: u64,
+
     const Self = @This();
 
     pub fn init(chr_rom: []const u8, mirroring: Mirroring) Self {
@@ -371,6 +392,9 @@ pub const PPU = struct {
             .fine_x = 0,
             .frame_buffer = Frame.init(),
             .frame_complete = false,
+            .global_cycle = 0,
+            .next_vblank_ppu_cycle = 1,
+            .next_vblank_cpu_cycle = ppu_to_cpu_cycle(1),
         };
     }
 
@@ -399,13 +423,26 @@ pub const PPU = struct {
         };
     }
 
+    pub fn run_to(self: *Self, cpu_cycle: u64) void {
+        const stop = cpu_to_ppu_cycle(cpu_cycle);
+        while (self.global_cycle < stop) {
+            self.tick_cycle();
+            self.tick();
+        }
+    }
+
+    pub fn requested_run_cycle(self: *const Self) u64 {
+        return self.next_vblank_cpu_cycle;
+    }
+
     pub fn tick(self: *Self) void {
         // All but 1 of the scanlines is visible to the user. The pre-render scanline
         // at -1, is used to configure the "shifters" for the first visible scanline, 0.
         if (self.scanline >= -1 and self.scanline < 240) {
             if (self.scanline == 0 and self.cycle == 0) {
                 // "Odd frame" cycle skip
-                self.cycle = 1;
+                // self.cycle = 1;
+                self.tick_cycle();
             }
 
             // Start of new frame, clear flags
@@ -621,6 +658,8 @@ pub const PPU = struct {
         if (self.scanline >= 241 and self.scanline < 261) {
             if (self.scanline == 241 and self.cycle == 1) {
                 self.status_register.vblank = true; // end of frame, set vblank
+                self.next_vblank_ppu_cycle += CYCLES_PER_FRAME;
+                self.next_vblank_cpu_cycle = ppu_to_cpu_cycle(self.next_vblank_ppu_cycle);
 
                 if (self.ctrl_register.generate_nmi) {
                     self.nmi_interrupt = true;
@@ -726,12 +765,15 @@ pub const PPU = struct {
                 self.get_color(palette, pixel),
             );
         }
+    }
 
+    fn tick_cycle(self: *Self) void {
+        self.global_cycle += 1;
         self.cycle += 1;
-        if (self.cycle >= 341) {
+        if (self.cycle == 341) {
             self.cycle = 0;
             self.scanline += 1;
-            if (self.scanline >= 261) {
+            if (self.scanline == 261) {
                 self.scanline = -1;
                 self.frame_complete = true;
             }
@@ -1226,6 +1268,7 @@ fn flip_byte(byte: u8) u8 {
     return result;
 }
 
+// TODO: fix tests
 test "PPU VRAM write" {
     var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
     ppu.addr_write(0x23);
@@ -1244,7 +1287,7 @@ test "PPU VRAM read" {
     ppu.addr_write(0x05);
     _ = ppu.data_read(); // load data to internal buffer
 
-    try std.testing.expectEqual(0x2306, ppu.addr_register);
+    try std.testing.expectEqual(0x2306, @as(u16, @bitCast(ppu.addr_register)));
     try std.testing.expectEqual(0x42, ppu.data_read());
 }
 
