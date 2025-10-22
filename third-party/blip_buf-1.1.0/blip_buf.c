@@ -231,7 +231,9 @@ int blip_read_samples( blip_t* m, short out [], int count, int stereo )
 			out += step;
 			
 			/* High-pass filter */
-			sum -= s << (delta_bits - bass_shift);
+            // NOTE: Zig crashed when shifting on a negative value here.
+			// sum -= s << (delta_bits - bass_shift);
+			sum -= s * (1 << (delta_bits - bass_shift));
 		}
 		while ( in != end );
 		m->integrator = sum;
