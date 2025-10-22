@@ -111,16 +111,16 @@ pub const Pulse = struct {
         self.envelope.tick();
     }
 
-    pub fn play(self: *Self, from_cyc: u32, to_cyc: u32) void {
+    pub fn play(self: *Self, from_cycle: u32, to_cycle: u32) void {
         if (!self.sweep.audible() or !self.length_counter.audible()) {
-            self.waveform.set_amplitude(0, from_cyc);
+            self.waveform.set_amplitude(0, from_cycle);
             return;
         }
 
         const volume = self.envelope.volume();
-        var current_cyc = from_cyc;
+        var current_cyc = from_cycle;
         while (true) {
-            switch (self.timer.run(&current_cyc, to_cyc)) {
+            switch (self.timer.run(&current_cyc, to_cycle)) {
                 .NoClock => break,
                 .Clock => {
                     self.duty_index = (self.duty_index + 1) % 8;
@@ -135,8 +135,8 @@ pub const Pulse = struct {
         }
     }
 
-    pub fn write(self: *Self, idx: u16, value: u8) void {
-        switch (idx % 4) {
+    pub fn write(self: *Self, addr: u16, value: u8) void {
+        switch (addr % 4) {
             0 => {
                 self.duty = value >> 6;
                 self.length_counter.write_halt(value);
