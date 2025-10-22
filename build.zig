@@ -92,7 +92,7 @@ pub fn build(b: *std.Build) void {
             // definition if desireable (e.g. firmware for embedded devices).
             .target = target,
             .optimize = optimize,
-            .strip = true,
+            .strip = optimize == .ReleaseFast,
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
