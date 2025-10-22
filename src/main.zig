@@ -154,8 +154,6 @@ fn process_input(
     }
 }
 
-var current_sine_sample: u32 = 0;
-
 fn sdlPanic() noreturn {
     const str = @as(?[*:0]const u8, c.SDL_GetError()) orelse "unknown error";
     @panic(std.mem.sliceTo(str, 0));
