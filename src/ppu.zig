@@ -976,7 +976,7 @@ pub const PPU = struct {
                 else => unreachable,
             },
             Mirroring.FOUR_SCREEN => {
-                std.log.warn("FOUR_SCREEN mirroring not implemented!", .{});
+                std.log.warn("PPU: FOUR_SCREEN mirroring not implemented!", .{});
                 return vram_index;
             },
         };
@@ -1079,7 +1079,7 @@ pub const PPU = struct {
     pub fn data_write(self: *Self, value: u8) void {
         const addr = self.addr_register.addr() & 0x3FFF;
         if (addr >= 0 and addr <= 0x1FFF) {
-            std.log.err("Attempt to write to CHR ROM space 0x{X:04}", .{addr});
+            std.log.warn("PPU: Attempt to write to CHR ROM space 0x{X:04}", .{addr});
         } else if (addr >= 0x2000 and addr <= 0x3EFF) {
             self.vram[self.mirror_vram_addr(addr)] = value;
         } else if (addr >= 0x3F00 and addr <= 0x3FFF) {
@@ -1089,7 +1089,7 @@ pub const PPU = struct {
             }
             self.palette_table[palette_addr] = value;
         } else {
-            std.debug.panic("unexpected access to mirrored space 0x{X:04} while writing\n", .{addr});
+            std.debug.panic("PPU: unexpected access to mirrored space 0x{X:04} while writing\n", .{addr});
         }
         self.increment_vram_addr();
     }

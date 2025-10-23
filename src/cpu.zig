@@ -194,7 +194,7 @@ pub const CPU = struct {
         if (addr >= RAM and addr < RAM_MIRRORS_END) {
             return self.ram[addr & 0x07FF];
         } else if (addr == 0x2000 or addr == 0x2001 or addr == 0x2003 or addr == 0x2005 or addr == 0x2006 or addr == 0x4014) {
-            std.log.warn("Attempt to read from write-only PPU address {X:04}", .{addr});
+            std.log.warn("CPU: Attempt to read from write-only PPU address {X:04}", .{addr});
             return 0;
         } else if (addr == 0x2002) {
             return @bitCast(self.ppu.status_read());

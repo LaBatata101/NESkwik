@@ -63,7 +63,7 @@ pub const SDLAudioOut = struct {
         defer self.mutex.unlock();
 
         if (self.buffer.too_slow) {
-            std.log.warn("Audio transfer can't keep up\n", .{});
+            std.log.warn("SDL: Audio transfer can't keep up", .{});
             self.buffer.too_slow = false;
         }
 
