@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Mirroring = @import("rom.zig").Mirroring;
 const render = @import("render.zig");
+const Rom = @import("rom.zig").Rom;
 const Frame = render.Frame;
 
 const CYCLES_PER_SCANLINE: u64 = 341;
@@ -280,14 +281,11 @@ fn cpu_to_ppu_cycle(cpu_cyc: u64) u64 {
 /// `$3F00-$3F1F`         `$0020`   Palette RAM indexes     Internal to PPU
 /// `$3F20-$3FFF`         `$00E0`   Mirrors of $3F00-$3F1F  Internal to PPU
 pub const PPU = struct {
-    /// Defines the shapes of tiles that make up backgrounds and sprites. Also know as *pattern table*.
-    chr_rom: []const u8,
+    rom: *Rom,
     /// Internal memory to keep palette tables used by a screen
     palette_table: [32]u8,
     /// 2 KiB of space to hold background information, can hold two nametables.
     vram: [2048]u8,
-
-    mirroring: Mirroring,
 
     /// `0x2000` - write: `PPUCTRL` - Miscellaneous settings
     ///
@@ -367,12 +365,11 @@ pub const PPU = struct {
 
     const Self = @This();
 
-    pub fn init(chr_rom: []const u8, mirroring: Mirroring) Self {
+    pub fn init(rom: *Rom) Self {
         return .{
-            .chr_rom = chr_rom,
+            .rom = rom,
             .palette_table = [_]u8{0} ** 32,
             .vram = [_]u8{0} ** 2048,
-            .mirroring = mirroring,
             .write_toggle = false,
             .ctrl_register = .{},
             .mask_register = .{},
@@ -408,7 +405,7 @@ pub const PPU = struct {
 
     fn nametables(self: Self) Nametable {
         const addr = self.ctrl_register.nametable_addr();
-        return switch (self.mirroring) {
+        return switch (self.rom.get_mirroring()) {
             .VERTICAL => switch (addr) {
                 0x2000, 0x2400 => self.first_nametable(),
                 0x2800, 0x2C00 => self.second_nametable(),
@@ -419,7 +416,7 @@ pub const PPU = struct {
                 0x2400, 0x2C00 => self.second_nametable(),
                 else => std.debug.panic("Invalid address 0x{X:04} for Horizontal mirroring\n", .{addr}),
             },
-            else => std.debug.panic("Mirroring type not implemented: {any}\n", .{self.mirroring}),
+            else => std.debug.panic("Mirroring type not implemented: {any}\n", .{self.rom.get_mirroring()}),
         };
     }
 
@@ -768,6 +765,7 @@ pub const PPU = struct {
     }
 
     fn tick_cycle(self: *Self) void {
+        self.rom.mapper_ppu_clock();
         self.global_cycle += 1;
         self.cycle += 1;
         if (self.cycle == 341) {
@@ -964,7 +962,7 @@ pub const PPU = struct {
         // to the name table index
         const name_table_idx = vram_index / 0x400;
 
-        return switch (self.mirroring) {
+        return switch (self.rom.get_mirroring()) {
             Mirroring.VERTICAL => switch (name_table_idx) {
                 0, 2 => vram_index & 0x03FF,
                 1, 3 => (vram_index & 0x03FF) + 0x0400,
@@ -1037,7 +1035,7 @@ pub const PPU = struct {
     fn mem_read(self: *Self, addr: u16) u8 {
         const new_addr = addr & 0x3FFF;
         if (addr >= 0 and addr <= 0x1FFF) {
-            return self.chr_rom[new_addr];
+            return self.rom.chr_read(new_addr);
         } else if (new_addr >= 0x2000 and new_addr <= 0x3EFF) {
             return self.vram[self.mirror_vram_addr(new_addr)];
         } else if (new_addr >= 0x3F00 and new_addr <= 0x3FFF) {
@@ -1079,7 +1077,7 @@ pub const PPU = struct {
     pub fn data_write(self: *Self, value: u8) void {
         const addr = self.addr_register.addr() & 0x3FFF;
         if (addr >= 0 and addr <= 0x1FFF) {
-            std.log.warn("PPU: Attempt to write to CHR ROM space 0x{X:04}", .{addr});
+            self.rom.chr_write(addr, value);
         } else if (addr >= 0x2000 and addr <= 0x3EFF) {
             self.vram[self.mirror_vram_addr(addr)] = value;
         } else if (addr >= 0x3F00 and addr <= 0x3FFF) {

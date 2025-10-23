@@ -1,4 +1,5 @@
 const std = @import("std");
+const Mapper = @import("mappers/mapper.zig").Mapper;
 
 const NES_TAG = [_]u8{ 0x4e, 0x45, 0x53, 0x1a };
 const PRG_ROM_PAGE_SIZE = 16384;
@@ -15,22 +16,23 @@ pub const Rom = struct {
     prg_rom: []u8,
     /// CHR ROM is mapped to address `0..0x1FFF`
     chr_rom: []u8,
-    mapper: u8,
+    mapper_id: u8,
     mirroring: Mirroring,
+    mapper: Mapper,
 
     const Self = @This();
 
     pub const InitError = error{InvalidNesFormat};
 
-    pub fn load(raw: []u8) InitError!Self {
+    pub fn init(allocator: std.mem.Allocator, raw: []u8) !Self {
         if (!std.mem.eql(u8, raw[0..4], &NES_TAG)) {
-            return InitError.InvalidNesFormat;
+            return error.InvalidNesFormat;
         }
 
         // Byte 6 and 7 of the NES file format contains information about the data in the file.
         // The uppper 4 bits of byte 6 contains the 4 lower bits of the ROM Mapper type and
         // the upper 4 bits of byte 7 contains the 4 upper bits of the ROM Mapper type.
-        const mapper = raw[7] & 0b1111_0000 | raw[6] >> 4;
+        const mapper_id = raw[7] & 0b1111_0000 | raw[6] >> 4;
 
         const is_four_screen = raw[6] & 0b1000 != 0;
         const is_vertical_mirroring = raw[6] & 0b1 != 0;
@@ -59,18 +61,71 @@ pub const Rom = struct {
             .{ raw[4], raw[5], if ((raw[7] >> 2) & 0b11 != 0) "2.0" else "1.0", @tagName(screen_mirroring) },
         );
 
+        const prg_rom = raw[prg_rom_start..(prg_rom_start + prg_rom_size)];
+        const chr_rom = raw[chr_rom_start..(chr_rom_start + chr_rom_size)];
+        const mapper = try Mapper.init(allocator, mapper_id, prg_rom, chr_rom, screen_mirroring);
+
         return .{
-            .mapper = mapper,
+            .mapper_id = mapper_id,
             .mirroring = screen_mirroring,
-            .prg_rom = raw[prg_rom_start..(prg_rom_start + prg_rom_size)],
-            .chr_rom = raw[chr_rom_start..(chr_rom_start + chr_rom_size)],
+            .prg_rom = prg_rom,
+            .chr_rom = chr_rom,
+            .mapper = mapper,
         };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.mapper.deinit();
+    }
+
+    /// Read from PRG ROM space ($8000-$FFFF)
+    pub fn prg_read(self: *Self, addr: u16) u8 {
+        return self.mapper.prg_read(addr);
+    }
+
+    /// Write to PRG ROM space (for mappers that support banking)
+    pub fn prg_write(self: *Self, addr: u16, value: u8) void {
+        self.mapper.prg_write(addr, value);
+    }
+
+    /// Read from CHR ROM/RAM space ($0000-$1FFF)
+    pub fn chr_read(self: *Self, addr: u16) u8 {
+        return self.mapper.chr_read(addr);
+    }
+
+    /// Write to CHR ROM/RAM space
+    pub fn chr_write(self: *Self, addr: u16, value: u8) void {
+        self.mapper.chr_write(addr, value);
+    }
+
+    /// Get current mirroring mode (can change with some mappers)
+    pub fn get_mirroring(self: *Self) Mirroring {
+        return self.mapper.mirroring();
+    }
+
+    /// Check if mapper has an active IRQ
+    pub fn mapper_irq_active(self: *Self) bool {
+        return self.mapper.irq_active();
+    }
+
+    /// Clear mapper IRQ
+    pub fn mapper_irq_clear(self: *Self) void {
+        self.mapper.irq_clear();
+    }
+
+    /// Clock the mapper (for scanline counters, etc.)
+    pub fn mapper_ppu_clock(self: *Self) void {
+        self.mapper.ppu_clock();
+    }
+
+    pub fn mapper_cpu_clock(self: *Self) void {
+        self.mapper.cpu_clock();
     }
 };
 
 pub fn DummyTestRom(opcodes: []const u8) Rom {
     return .{
-        .mapper = 0,
+        .mapper_id = 0,
         .mirroring = .HORIZONTAL,
         .prg_rom = @constCast(opcodes),
         .chr_rom = @constCast(&[_]u8{0}),
@@ -132,11 +187,11 @@ test "ROM creation" {
 
     const raw_rom = try test_rom.createRawRom(allocator);
     defer allocator.free(raw_rom);
-    const rom = try Rom.load(raw_rom);
+    const rom = try Rom.init(raw_rom);
 
     try std.testing.expect(std.mem.eql(u8, &prg_rom, rom.prg_rom));
     try std.testing.expect(std.mem.eql(u8, &chr_rom, rom.chr_rom));
-    try std.testing.expectEqual(3, rom.mapper);
+    try std.testing.expectEqual(3, rom.mapper_id);
     try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
 }
 
@@ -157,11 +212,11 @@ test "ROM with trainer section" {
 
     const raw_rom = try test_rom.createRawRom(allocator);
     defer allocator.free(raw_rom);
-    const rom = try Rom.load(raw_rom);
+    const rom = try Rom.init(raw_rom);
 
     try std.testing.expect(std.mem.eql(u8, &prg_rom, rom.prg_rom));
     try std.testing.expect(std.mem.eql(u8, &chr_rom, rom.chr_rom));
-    try std.testing.expectEqual(3, rom.mapper);
+    try std.testing.expectEqual(3, rom.mapper_id);
     try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
 }
 

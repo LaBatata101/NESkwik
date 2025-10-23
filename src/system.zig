@@ -11,7 +11,7 @@ pub const System = struct {
 
     const Self = @This();
 
-    pub fn init(rom: Rom, apu: *APU) Self {
+    pub fn init(rom: *Rom, apu: *APU) Self {
         // const device = try SDLAudioOut.init(alloc);
         return .{
             .cpu = CPU.init(rom, apu),

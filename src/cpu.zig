@@ -118,7 +118,7 @@ pub const CPU = struct {
     /// This means that there is no difference in accessing memory addresses at `0x0000` or `0x0800` or
     /// `0x1000` or `0x1800` for reads or writes.
     ram: [2048]u8,
-    rom: Rom,
+    rom: *Rom,
     ppu: PPU,
     apu: *APU,
     controllers: Controllers,
@@ -157,7 +157,7 @@ pub const CPU = struct {
         .cycles = 8,
     };
 
-    pub fn init(cartridge: Rom, apu: *APU) CPU {
+    pub fn init(cartridge: *Rom, apu: *APU) CPU {
         var initial_status = ProcessorStatus{};
         initial_status.interrupt_disable = true;
         initial_status.break2 = true;
@@ -172,7 +172,7 @@ pub const CPU = struct {
             .program_start_addr = 0x8000,
             .rom = cartridge,
             .controllers = Controllers.init(),
-            .ppu = PPU.init(cartridge.chr_rom, cartridge.mirroring),
+            .ppu = PPU.init(cartridge),
             .apu = apu,
             .cycles = 0,
             .next_interrupt = 0,
@@ -216,7 +216,7 @@ pub const CPU = struct {
         } else if (addr == 0x4017) {
             return self.controllers.cntrl2_read();
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
-            return self.read_prg_rom(addr);
+            return self.rom.prg_read(addr);
         } else {
             std.log.warn("Ignoring mem read at 0x{X:04}", .{addr});
             return 0;
@@ -256,7 +256,7 @@ pub const CPU = struct {
         } else if (addr == 0x4016) {
             self.controllers.set_strobe(data);
         } else if (addr >= 0x8000 and addr <= 0xFFFF) {
-            @panic("Attempt to write to cartridge ROM memory space");
+            self.rom.prg_write(addr, data);
         } else {
             std.log.warn("Ignoring mem write at 0x{X:04}", .{addr});
         }
@@ -290,17 +290,6 @@ pub const CPU = struct {
         const lo: u8 = @truncate(data);
         self.mem_write(addr, lo);
         self.mem_write(addr + 1, hi);
-    }
-
-    // PRG Rom Size might be 16 KiB or 32 KiB. Because `0x8000..0x10000` mapped region is 32 KiB of addressable space,
-    // the upper 16 KiB needs to be mapped to the lower 16 KiB (if a game has only 16 KiB of PRG ROM)
-    fn read_prg_rom(self: Self, addr: u16) u8 {
-        var new_addr = addr - 0x8000;
-        // Check if the PRG Rom Size is 16 KiB and we're trying to access memory pass the 16 KiB.
-        if (self.rom.prg_rom.len == 0x4000 and new_addr >= 0x4000) {
-            new_addr = new_addr % 0x4000;
-        }
-        return self.rom.prg_rom[new_addr];
     }
 
     // https://www.nesdev.org/wiki/PPU_programmer_reference#OAMDMA_-_Sprite_DMA_($4014_write)
@@ -644,6 +633,8 @@ pub const CPU = struct {
         self.pc += 1;
         const pc_state = self.pc;
 
+        self.rom.mapper_cpu_clock();
+
         switch (opcode) {
             .ADC => {
                 // NOTE: ignoring decimal mode
@@ -953,6 +944,11 @@ pub const CPU = struct {
         }
 
         self.cycles += instruction_cycles;
+
+        if (self.rom.mapper_irq_active()) {
+            self.interrupt(CPU.IRQ);
+            self.rom.mapper_irq_clear();
+        }
     }
 
     pub fn interrupt(self: *Self, int: Interrupt) void {

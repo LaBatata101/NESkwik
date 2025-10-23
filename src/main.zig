@@ -67,12 +67,17 @@ pub fn main() !void {
 
     _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
 
-    const rom = Rom.load(buffer) catch |err| switch (err) {
+    var rom = Rom.init(allocator, buffer) catch |err| switch (err) {
         error.InvalidNesFormat => {
             std.debug.print("ROM format not supported!\n", .{});
             std.process.exit(1);
         },
+        error.OutOfMemory => {
+            std.debug.print("Error allocating resources for ROM\n", .{});
+            std.process.exit(1);
+        },
     };
+    defer rom.deinit();
 
     var cntrl1_keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
     defer cntrl1_keymap.deinit();
@@ -101,7 +106,7 @@ pub fn main() !void {
     var apu = try APU.init(allocator, try SDLAudioOut.init(allocator));
     defer apu.deinit();
 
-    var system = System.init(rom, &apu);
+    var system = System.init(&rom, &apu);
     system.reset();
 
     var fps_manager = FPSManager.init();
