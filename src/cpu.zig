@@ -206,7 +206,6 @@ pub const CPU = struct {
             const mirror_down_addr = addr & 0b00100000_00000111;
             return self.mem_read(mirror_down_addr);
         } else if (addr >= 0x4000 and addr <= 0x4015) {
-            // TODO: implement APU
             const value = self.apu.read_status(self.cycles);
             if (self.apu.irq_interrupt) {
                 self.interrupt(CPU.IRQ);

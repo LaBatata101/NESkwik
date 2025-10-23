@@ -99,7 +99,6 @@ pub const Triangle = struct {
                 self.length_counter.write_halt(value);
                 self.counter.write(value);
             },
-            1 => {},
             2 => self.timer.write_low(value),
             3 => {
                 self.length_counter.write_counter(value);
