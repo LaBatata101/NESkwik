@@ -1,5 +1,5 @@
 const std = @import("std");
-const ness = @import("8bit_emulator");
+const ness = @import("ness");
 
 const c = ness.c;
 const System = ness.System;

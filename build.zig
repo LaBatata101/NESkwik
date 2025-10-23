@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
-    const mod = b.addModule("_8bit_emulator", .{
+    const mod = b.addModule("ness", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
         // in this file, which means that if you have declarations that you
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
     const exe = b.addExecutable(.{
-        .name = "8bit_emulator",
+        .name = "ness",
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -96,13 +96,12 @@ pub fn build(b: *std.Build) void {
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
-                // .{ .name = "blip_buf", .module = blip_buf_lib.root_module },
-                // Here "_8bit_emulator" is the name you will use in your source code to
-                // import this module (e.g. `@import("_8bit_emulator")`). The name is
+                // Here "ness" is the name you will use in your source code to
+                // import this module (e.g. `@import("ness")`). The name is
                 // repeated because you are allowed to rename your imports, which
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
-                .{ .name = "8bit_emulator", .module = mod },
+                .{ .name = "ness", .module = mod },
             },
         }),
     });
