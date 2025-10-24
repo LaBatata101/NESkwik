@@ -99,7 +99,7 @@ pub const Rom = struct {
     }
 
     /// Get current mirroring mode (can change with some mappers)
-    pub fn get_mirroring(self: *Self) Mirroring {
+    pub fn get_mirroring(self: *const Self) Mirroring {
         return self.mapper.mirroring();
     }
 

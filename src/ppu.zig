@@ -954,7 +954,7 @@ pub const PPU = struct {
     /// - Nametables 1 and 3 map to the second 1KB (right column)
     ///
     /// **Four-Screen**: All 4 nametables are unique (requires extra RAM on cartridge)
-    fn mirror_vram_addr(self: Self, addr: u16) u16 {
+    fn mirror_vram_addr(self: *const Self, addr: u16) u16 {
         // mirror down 0x2000 - 0x2eff
         const mirrored_addr = addr & 0x2FFF;
         // to index (0x0000 - 0x0FFF)
