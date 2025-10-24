@@ -603,23 +603,6 @@ pub const CPU = struct {
         self.update_zero_and_negative_flags(self.register_a);
     }
 
-    pub fn run(self: *Self) void {
-        const T = struct {
-            fn callback(_: *Self) void {
-                // do nothing
-            }
-        };
-        self.run_with(T);
-    }
-
-    pub fn run_with(self: *Self, callback: anytype) void {
-        var continue_exec = true;
-        while (continue_exec) {
-            callback.callback(self);
-            continue_exec = self.tick();
-        }
-    }
-
     fn run_instructions(self: *Self, codes: []const u8) void {
         const start_addr = self.pc;
         while (self.pc < start_addr + codes.len) {
