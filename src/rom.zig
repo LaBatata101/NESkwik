@@ -11,6 +11,46 @@ pub const Mirroring = enum {
     FOUR_SCREEN,
 };
 
+const Flag6 = packed struct(u8) {
+    /// 0: vertical arrangement ("horizontal mirrored") (CIRAM A10 = PPU A11)
+    /// 1: horizontal arrangement ("vertically mirrored") (CIRAM A10 = PPU A10)
+    nametable_arrangement: u1,
+    /// Cartridge contains battery-backed PRG RAM ($6000-7FFF) or other persistent memory
+    has_battery: bool,
+    /// 512-byte trainer at $7000-$71FF (stored before PRG data)
+    has_trainer: bool,
+    alternative_nametable_layout: bool,
+    /// Lower nybble of mapper number
+    mapper_lo: u4,
+
+    fn mirroring_type(self: @This()) Mirroring {
+        if (self.alternative_nametable_layout) {
+            return Mirroring.FOUR_SCREEN;
+        } else {
+            switch (self.nametable_arrangement) {
+                0 => return Mirroring.HORIZONTAL,
+                1 => return Mirroring.VERTICAL,
+            }
+        }
+    }
+};
+
+const Flag7 = packed struct(u8) {
+    /// 0: Nintendo Entertainment System/Family Computer
+    /// 1: Nintendo Vs. System
+    /// 2: Nintendo Playchoice 10
+    /// 3: Extended Console Type
+    console_type: u2,
+    /// NES 2.0 identifier
+    nes_version: u2,
+    /// Upper nybble of mapper number
+    mapper_hi: u4,
+
+    fn is_nes2(self: @This()) bool {
+        return self.nes_version != 0;
+    }
+};
+
 pub const Rom = struct {
     /// PRG ROM is mapped to address `0x8000..0x10000`.
     prg_rom: []u8,
@@ -27,41 +67,68 @@ pub const Rom = struct {
             return error.InvalidNesFormat;
         }
 
-        // Byte 6 and 7 of the NES file format contains information about the data in the file.
-        // The uppper 4 bits of byte 6 contains the 4 lower bits of the ROM Mapper type and
-        // the upper 4 bits of byte 7 contains the 4 upper bits of the ROM Mapper type.
-        const mapper_id = raw[7] & 0b1111_0000 | raw[6] >> 4;
+        const flag6: Flag6 = @bitCast(raw[6]);
+        const flag7: Flag7 = @bitCast(raw[7]);
 
-        const is_four_screen = raw[6] & 0b1000 != 0;
-        const is_vertical_mirroring = raw[6] & 0b1 != 0;
-        var screen_mirroring: Mirroring = undefined;
-        if (is_four_screen) {
-            screen_mirroring = Mirroring.FOUR_SCREEN;
-        } else if (is_vertical_mirroring) {
-            screen_mirroring = Mirroring.VERTICAL;
-        } else {
-            screen_mirroring = Mirroring.HORIZONTAL;
-        }
+        const mapper_id = @as(u8, flag7.mapper_hi) | @as(u8, flag6.mapper_lo);
 
         // Byte 4 contains the number of 16KB PGR-ROM banks
-        const prg_rom_size = @as(usize, raw[4]) * PRG_ROM_PAGE_SIZE;
+        const prg_rom_banks = raw[4];
         // Byte 5 contains the number of 8KB CHR-ROM banks
-        const chr_rom_size = @as(usize, raw[5]) * CHR_ROM_PAGE_SIZE;
+        const chr_rom_banks = raw[5];
 
-        // If bit 2 of byte 6 is set, there's a 512-byte trainer section in the file to skip
-        const skip_trainer = raw[6] & 0b100 != 0;
+        const prg_rom_size = @as(usize, prg_rom_banks) * PRG_ROM_PAGE_SIZE;
+        const chr_rom_size = @as(usize, chr_rom_banks) * CHR_ROM_PAGE_SIZE;
 
-        const prg_rom_start: usize = 16 + @as(usize, if (skip_trainer) 512 else 0);
+        const prg_rom_start: usize = 16 + @as(usize, if (flag6.has_trainer) 512 else 0);
         const chr_rom_start = prg_rom_start + prg_rom_size;
 
-        std.log.info(
-            "Number of 16KB PRG-ROM banks: {}\nNumber of 8KB CHR-ROM banks: {}\niNes version: {s}\nMirroring type: {s}",
-            .{ raw[4], raw[5], if ((raw[7] >> 2) & 0b11 != 0) "2.0" else "1.0", @tagName(screen_mirroring) },
-        );
+        const prg_ram_size: usize = blk: {
+            if (flag7.is_nes2()) {
+                const prg_ram_shift_count = raw[10] & 0b0000_1111;
+                if (prg_ram_shift_count != 0) {
+                    break :blk @as(usize, 64) << @as(u4, @truncate(prg_ram_shift_count));
+                } else {
+                    break :blk 0;
+                }
+            } else {
+                const has_prg_ram = raw[10] & 0b0000_1000 == 0;
+                if (has_prg_ram) {
+                    break :blk if (raw[8] == 0) 8192 else @as(usize, raw[8]) * 8192;
+                } else {
+                    break :blk 0;
+                }
+            }
+        };
 
         const prg_rom = raw[prg_rom_start..(prg_rom_start + prg_rom_size)];
         const chr_rom = raw[chr_rom_start..(chr_rom_start + chr_rom_size)];
-        const mapper = try Mapper.init(allocator, mapper_id, prg_rom, chr_rom, screen_mirroring);
+
+        std.log.info(
+            \\ {s}
+            \\ Mapper ID: {}
+            \\ Number of 16KB PRG-ROM banks: {}
+            \\ Number of 8KB CHR-ROM banks: {}
+            \\ Mirroring type: {s}
+            \\ PRG RAM size: {}
+        , .{
+            if (flag7.is_nes2()) "iNES 2.0" else "iNES 1.0",
+            mapper_id,
+            prg_rom_banks,
+            chr_rom_banks,
+            @tagName(flag6.mirroring_type()),
+            prg_ram_size,
+        });
+
+        const mapper = try Mapper.init(
+            allocator,
+            mapper_id,
+            prg_rom,
+            chr_rom,
+            prg_rom_banks,
+            prg_ram_size,
+            flag6.mirroring_type(),
+        );
 
         return .{
             .prg_rom = prg_rom,
