@@ -542,7 +542,10 @@ pub const PPU = struct {
 
                 // count to 9 sprites to set the sprite overflow flag in the event of there being > 8 sprites.
                 while (oam_index < 64 and self.fg.sprite_count < 9) {
-                    const diff = self.scanline - @as(i16, OamEntry.init(self.oam_data_register[oam_index * 4 .. oam_index * 4 + 4]).y);
+                    const diff = self.scanline - @as(
+                        i16,
+                        OamEntry.init(self.oam_data_register[oam_index * 4 .. oam_index * 4 + 4]).y,
+                    );
                     const sprite_size: i16 = if (self.ctrl_register.sprite_size) 16 else 8;
 
                     if (diff >= 0 and diff < sprite_size) {
@@ -574,60 +577,30 @@ pub const PPU = struct {
 
                     const sprite_tile_id: u16 = self.fg.sprite_scanline[i].id;
                     const sprite_y_pos: i16 = self.fg.sprite_scanline[i].y;
-                    if (!self.ctrl_register.sprite_size) {
-                        // 8x8 Sprite Mode
-                        if ((self.fg.sprite_scanline[i].attr & 0x80) == 0) {
-                            // Sprite is NOT flipped vertically
-                            sprite_pattern_addr_lo = self.ctrl_register.sprt_pattern_addr() |
-                                sprite_tile_id << 4 |
-                                @as(u16, @bitCast(self.scanline -% sprite_y_pos));
-                        } else {
-                            // Sprite is flipped vertically, i.e. upside down
-                            sprite_pattern_addr_lo = self.ctrl_register.sprt_pattern_addr() |
-                                sprite_tile_id << 4 |
-                                (7 -% @as(u16, @bitCast(self.scanline -% sprite_y_pos)));
+                    const height: i16 = if (self.ctrl_register.sprite_size) 16 else 8;
+                    const row_i16: i16 = self.scanline - sprite_y_pos;
+                    var row: u8 = @intCast(row_i16);
+
+                    if (self.fg.sprite_scanline[i].attr & 0x80 != 0) {
+                        // Sprite is flipped vertically, i.e. upside down
+                        row = @intCast(height - 1 - row_i16);
+                    }
+
+                    if (!self.ctrl_register.sprite_size) { // 8x8 sprite mode
+                        const base_addr: u16 = if (self.ctrl_register.sprite_pattern_addr) 0x1000 else 0x0000;
+                        sprite_pattern_addr_lo = base_addr |
+                            (sprite_tile_id << 4) |
+                            @as(u16, @bitCast(self.scanline -% sprite_y_pos));
+                    } else { // 8x16 sprite mode
+                        var effective_tile: u16 = sprite_tile_id & 0xFE; // Even tile index for top half
+                        var effective_row: u16 = row;
+                        if (row >= 8) {
+                            effective_tile += 1; // Switch to next (bottom) tile
+                            effective_row -= 8; // Offset row within bottom tile
                         }
-                    } else {
-                        // 8x16 Sprite Mode
-                        if (self.fg.sprite_scanline[i].attr & 0x80 == 0) {
-                            // Sprite is NOT flipped vertically
-                            if (self.scanline - sprite_y_pos < 8) {
-                                // read top half tile
-                                // Which Pattern Table? 0KB or 4KB offset
-                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
-                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
-                                    (sprite_tile_id & 0xFE) << 4 |
-                                    // Which Row in cell? (0->7)
-                                    @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
-                            } else {
-                                // read bottom half tile
-                                // Which Pattern Table? 0KB or 4KB offset
-                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
-                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
-                                    ((sprite_tile_id & 0xFE) + 1) << 4 |
-                                    // Which Row in cell? (0->7)
-                                    @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
-                            }
-                        } else {
-                            // Sprite is flipped vertically
-                            if (self.scanline - sprite_y_pos < 8) {
-                                // read top half tile
-                                // Which Pattern Table? 0KB or 4KB offset
-                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
-                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
-                                    ((sprite_tile_id & 0xFE) + 1) << 4 |
-                                    // Which Row in cell? (0->7)
-                                    7 -% @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
-                            } else {
-                                // read bottom half tile
-                                // Which Pattern Table? 0KB or 4KB offset
-                                sprite_pattern_addr_lo = ((sprite_tile_id & 0x01) << 12) |
-                                    // Which Cell? Tile ID * 16 (16 bytes per tile)
-                                    (sprite_tile_id & 0xFE) << 4 |
-                                    // Which Row in cell? (0->7)
-                                    7 -% @as(u16, @bitCast(self.scanline -% sprite_y_pos)) & 0x07;
-                            }
-                        }
+
+                        const bank = (sprite_tile_id & 0x01) << 12;
+                        sprite_pattern_addr_lo = bank | (effective_tile << 4) | (effective_row & 0b0000_0111);
                     }
 
                     sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8;
@@ -765,7 +738,6 @@ pub const PPU = struct {
     }
 
     fn tick_cycle(self: *Self) void {
-        self.rom.mapper_ppu_clock();
         self.global_cycle += 1;
         self.cycle += 1;
         if (self.cycle == 341) {
@@ -1034,7 +1006,9 @@ pub const PPU = struct {
 
     fn mem_read(self: *Self, addr: u16) u8 {
         const new_addr = addr & 0x3FFF;
-        if (addr >= 0 and addr <= 0x1FFF) {
+        // self.rom.mapper_ppu_clock(new_addr);
+
+        if (new_addr >= 0 and new_addr <= 0x1FFF) {
             return self.rom.chr_read(new_addr);
         } else if (new_addr >= 0x2000 and new_addr <= 0x3EFF) {
             return self.vram[self.mirror_vram_addr(new_addr)];
@@ -1046,7 +1020,8 @@ pub const PPU = struct {
             };
             return self.palette_table[palette_addr] & if (self.mask_register.greyscale) @as(u8, 0x30) else 0x3F;
         } else {
-            std.debug.panic("unexpected access to mirrored space 0x{X:04} while reading\n", .{new_addr});
+            std.log.warn("PPU: unexpected access to mirrored space 0x{X:04} while reading\n", .{new_addr});
+            return 0;
         }
     }
 
@@ -1076,6 +1051,7 @@ pub const PPU = struct {
     ///   - Stores background and sprite color palettes
     pub fn data_write(self: *Self, value: u8) void {
         const addr = self.addr_register.addr() & 0x3FFF;
+        // self.rom.mapper_ppu_clock(addr);
         if (addr >= 0 and addr <= 0x1FFF) {
             self.rom.chr_write(addr, value);
         } else if (addr >= 0x2000 and addr <= 0x3EFF) {
