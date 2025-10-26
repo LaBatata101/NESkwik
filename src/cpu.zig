@@ -194,14 +194,16 @@ pub const CPU = struct {
         if (addr >= RAM and addr < RAM_MIRRORS_END) {
             return self.ram[addr & 0x07FF];
         } else if (addr == 0x2000 or addr == 0x2001 or addr == 0x2003 or addr == 0x2005 or addr == 0x2006 or addr == 0x4014) {
-            std.log.warn("CPU: Attempt to read from write-only PPU address {X:04}", .{addr});
-            return 0;
+            return self.ppu.dynamic_latch;
         } else if (addr == 0x2002) {
-            return @bitCast(self.ppu.status_read());
+            self.ppu.dynamic_latch = @as(u8, @bitCast(self.ppu.status_read())) | (self.ppu.dynamic_latch & 0b0001_1111);
+            return self.ppu.dynamic_latch;
         } else if (addr == 0x2004) {
-            return self.ppu.oam_data_read();
+            self.ppu.dynamic_latch = self.ppu.oam_data_read();
+            return self.ppu.dynamic_latch;
         } else if (addr == 0x2007) {
-            return self.ppu.data_read();
+            self.ppu.dynamic_latch = self.ppu.data_read();
+            return self.ppu.dynamic_latch;
         } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;
             return self.mem_read(mirror_down_addr);
@@ -231,18 +233,27 @@ pub const CPU = struct {
         if (addr >= RAM and addr < RAM_MIRRORS_END) {
             self.ram[addr & 0x07FF] = data;
         } else if (addr == 0x2000) {
+            self.ppu.dynamic_latch = data;
             self.ppu.ctrl_write(data);
+        } else if (addr == 0x2002) {
+            self.ppu.dynamic_latch = data;
         } else if (addr == 0x2001) {
+            self.ppu.dynamic_latch = data;
             self.ppu.mask_write(data);
         } else if (addr == 0x2003) {
+            self.ppu.dynamic_latch = data;
             self.ppu.oam_addr_write(data);
         } else if (addr == 0x2004) {
+            self.ppu.dynamic_latch = data;
             self.ppu.oam_data_write(data);
         } else if (addr == 0x2005) {
+            self.ppu.dynamic_latch = data;
             self.ppu.scroll_write(data);
         } else if (addr == 0x2006) {
+            self.ppu.dynamic_latch = data;
             self.ppu.addr_write(data);
         } else if (addr == 0x2007) {
+            self.ppu.dynamic_latch = data;
             self.ppu.data_write(data);
         } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
             const mirror_down_addr = addr & 0b00100000_00000111;

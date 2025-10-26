@@ -363,6 +363,10 @@ pub const PPU = struct {
     next_vblank_ppu_cycle: u64,
     next_vblank_cpu_cycle: u64,
 
+    /// A fake dynamic latch representing the capacitance of the wires in the
+    /// PPU that we have to emulate.
+    dynamic_latch: u8,
+
     const Self = @This();
 
     pub fn init(rom: *Rom) Self {
@@ -392,6 +396,7 @@ pub const PPU = struct {
             .global_cycle = 0,
             .next_vblank_ppu_cycle = 1,
             .next_vblank_cpu_cycle = ppu_to_cpu_cycle(1),
+            .dynamic_latch = 0,
         };
     }
 
