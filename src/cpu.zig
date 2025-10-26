@@ -808,12 +808,16 @@ pub const CPU = struct {
                 self.status.break2 = true;
             },
             .BRK => {
-                // TODO: properly implement this
-                self.status.break_command = true;
-                // self.stack_push_u16(self.pc);
-                // self.stack_push(@bitCast(self.status));
-                // self.pc = self.mem_read_u16(0xFFFE);
-                return;
+                // BRK skips the following byte
+                self.pc += 1;
+
+                var status = self.status;
+                status.break2 = true;
+                status.break_command = true;
+                self.stack_push_u16(self.pc);
+                self.stack_push(@bitCast(status));
+                self.pc = self.mem_read_u16(0xFFFE);
+                self.status.interrupt_disable = true;
             },
 
             // UNOFFICIAL OPCODES:
