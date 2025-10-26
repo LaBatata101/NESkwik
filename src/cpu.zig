@@ -217,10 +217,12 @@ pub const CPU = struct {
             return self.controllers.cntrl1_read();
         } else if (addr == 0x4017) {
             return self.controllers.cntrl2_read();
-        } else if (addr >= 0x8000 and addr <= 0xFFFF) {
-            return self.rom.prg_read(addr);
+        } else if (addr >= 0x6000 and addr <= 0x7FFF) {
+            return self.rom.prg_ram_read(addr);
+        } else if (addr >= 0x4020 and addr <= 0x5FFF or addr >= 0x8000 and addr <= 0xFFFF) {
+            return self.rom.prg_rom_read(addr);
         } else {
-            std.log.warn("Ignoring mem read at 0x{X:04}", .{addr});
+            std.log.warn("CPU: Ignoring mem read at 0x{X:04}", .{addr});
             return 0;
         }
     }
@@ -266,10 +268,12 @@ pub const CPU = struct {
             self.dma_transfer(data);
         } else if (addr == 0x4016) {
             self.controllers.set_strobe(data);
-        } else if (addr >= 0x8000 and addr <= 0xFFFF) {
-            self.rom.prg_write(addr, data);
+        } else if (addr >= 0x6000 and addr <= 0x7FFF) {
+            self.rom.prg_ram_write(addr, data);
+        } else if (addr >= 0x4020 and addr <= 0x5FFF or addr >= 0x8000 and addr <= 0xFFFF) {
+            self.rom.prg_rom_write(addr, data);
         } else {
-            std.log.warn("Ignoring mem write at 0x{X:04}", .{addr});
+            std.log.warn("CPU: Ignoring mem write at 0x{X:04}", .{addr});
         }
     }
 
@@ -338,7 +342,7 @@ pub const CPU = struct {
         addr -%= 1;
 
         if (addr < STACK_START) {
-            std.log.warn("stack overflow while pushing!", .{});
+            std.log.warn("stack overflow while pushing! addr: 0x{X:04}", .{addr});
         }
         self.sp = @truncate(addr);
     }
@@ -627,7 +631,6 @@ pub const CPU = struct {
         self.pc += 1;
         const pc_state = self.pc;
 
-        self.rom.mapper_cpu_clock();
 
         switch (opcode) {
             .ADC => {
@@ -942,11 +945,6 @@ pub const CPU = struct {
         }
 
         self.cycles += instruction_cycles;
-
-        if (self.rom.mapper_irq_active()) {
-            self.interrupt(CPU.IRQ);
-            self.rom.mapper_irq_clear();
-        }
     }
 
     pub fn interrupt(self: *Self, int: Interrupt) void {

@@ -2,40 +2,41 @@ const std = @import("std");
 const Mirroring = @import("../rom.zig").Mirroring;
 const Mapper = @import("mapper.zig").Mapper;
 
+/// See: https://www.nesdev.org/wiki/INES_Mapper_000
 /// Mapper 0 (NROM)
-/// The simplest mapper with no bank switching
+/// Features:
 /// - 16 KB or 32 KB PRG ROM
 /// - 8 KB CHR ROM or CHR RAM
 /// - Fixed mirroring (horizontal or vertical)
 pub const Mapper0 = struct {
     prg_rom: []const u8,
-    chr_memory: []u8,
+    prg_ram: []u8,
+    chr_rom: []const u8,
+    chr_ram: []u8,
     chr_is_ram: bool,
     mirroring_mode: Mirroring,
     allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, prg_rom: []const u8, chr_rom: []const u8, mirroring_mode: Mirroring) !*Self {
+    pub fn init(allocator: std.mem.Allocator, prg_rom: []const u8, chr_rom: []const u8, prg_ram_size: usize, mirroring_mode: Mirroring) !*Self {
         const self = try allocator.create(Self);
-        // Determine if we need CHR RAM (when CHR ROM is empty or very small)
         const chr_is_ram = chr_rom.len == 0;
 
-        var chr_memory: []u8 = undefined;
-
+        var chr_ram: []u8 = undefined;
         if (chr_is_ram) {
-            // Allocate 8KB CHR RAM
-            chr_memory = try allocator.alloc(u8, 8192);
-            @memset(chr_memory, 0);
+            chr_ram = try allocator.alloc(u8, 8192);
+            @memset(chr_ram, 0);
         } else {
-            // Copy CHR ROM to mutable memory (some games expect to write to CHR)
-            chr_memory = try allocator.alloc(u8, chr_rom.len);
-            @memcpy(chr_memory, chr_rom);
+            chr_ram = &.{};
         }
+        const prg_ram: []u8 = try allocator.alloc(u8, prg_ram_size);
 
         self.* = .{
             .prg_rom = prg_rom,
-            .chr_memory = chr_memory,
+            .prg_ram = prg_ram,
+            .chr_ram = chr_ram,
+            .chr_rom = chr_rom,
             .chr_is_ram = chr_is_ram,
             .mirroring_mode = mirroring_mode,
             .allocator = allocator,
@@ -48,8 +49,10 @@ pub const Mapper0 = struct {
         .deinit = @ptrCast(&Self.deinit),
         .chr_read = @ptrCast(&Self.chr_read),
         .chr_write = @ptrCast(&Self.chr_write),
-        .prg_read = @ptrCast(&Self.prg_read),
-        .prg_write = @ptrCast(&Self.prg_write),
+        .prg_rom_read = @ptrCast(&Self.prg_rom_read),
+        .prg_rom_write = @ptrCast(&Self.prg_rom_write),
+        .prg_ram_read = @ptrCast(&Self.prg_ram_read),
+        .prg_ram_write = @ptrCast(&Self.prg_ram_write),
         .ppu_clock = @ptrCast(&Self.ppu_clock),
         .cpu_clock = @ptrCast(&Self.cpu_clock),
         .irq_active = @ptrCast(&Self.irq_active),
@@ -62,39 +65,30 @@ pub const Mapper0 = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.allocator.free(self.chr_memory);
+        self.allocator.free(self.chr_ram);
+        self.allocator.free(self.prg_ram);
         self.allocator.destroy(self);
     }
 
-    pub fn prg_read(self: *Self, addr: u16) u8 {
-        // PRG ROM is mapped to $8000-$FFFF
-        const mapped_addr = addr - 0x8000;
-
-        // If PRG ROM is 16KB, mirror it in the upper 16KB
-        if (self.prg_rom.len <= 0x4000 and mapped_addr >= 0x4000) {
-            return self.prg_rom[mapped_addr % 0x4000];
-        }
-
-        return self.prg_rom[mapped_addr];
+    pub fn prg_rom_read(self: *Self, addr: u16) u8 {
+        return self.prg_rom[(addr - 0x8000) % self.prg_rom.len];
     }
 
-    pub fn prg_write(self: *Self, addr: u16, value: u8) void {
-        // Mapper 0 doesn't support PRG ROM writes
-        // Some games might write here anyway, so we just ignore it
+    pub fn prg_rom_write(self: *Self, addr: u16, value: u8) void {
         _ = self;
-
         std.log.debug("Mapper 0: Attempted write to PRG ROM at ${X:04} = ${X:02}", .{ addr, value });
     }
 
+    pub fn prg_ram_read(self: *Self, addr: u16) u8 {
+        return self.prg_ram[(addr - 0x6000) % self.prg_ram.len];
+    }
+
+    pub fn prg_ram_write(self: *Self, addr: u16, value: u8) void {
+        self.prg_ram[(addr - 0x6000) % self.prg_ram.len] = value;
+    }
+
     pub fn chr_read(self: *Self, addr: u16) u8 {
-        // CHR memory is mapped to $0000-$1FFF
-        const mapped_addr = addr & 0x1FFF;
-
-        if (mapped_addr < self.chr_memory.len) {
-            return self.chr_memory[mapped_addr];
-        }
-
-        return 0;
+        return if (self.chr_is_ram) self.chr_ram[addr % self.chr_ram.len] else self.chr_rom[addr % self.chr_rom.len];
     }
 
     pub fn chr_write(self: *Self, addr: u16, value: u8) void {
@@ -103,19 +97,16 @@ pub const Mapper0 = struct {
             return;
         }
 
-        const mapped_addr = addr & 0x1FFF;
-
-        if (mapped_addr < self.chr_memory.len) {
-            self.chr_memory[mapped_addr] = value;
-        }
+        self.chr_ram[addr % self.chr_ram.len] = value;
     }
 
     pub fn mirroring(self: *const Self) Mirroring {
         return self.mirroring_mode;
     }
 
-    pub fn ppu_clock(self: *Self) void {
+    pub fn ppu_clock(self: *Self, addr: u16) void {
         _ = self;
+        _ = addr;
     }
 
     pub fn cpu_clock(self: *Self) void {
@@ -147,10 +138,10 @@ test "Mapper0 16KB PRG ROM mirroring" {
     defer mapper.deinit();
 
     // Test that the upper 16KB mirrors the lower 16KB
-    try std.testing.expectEqual(prg_rom[0], mapper.prg_read(0x8000));
-    try std.testing.expectEqual(prg_rom[0], mapper.prg_read(0xC000));
-    try std.testing.expectEqual(prg_rom[0x100], mapper.prg_read(0x8100));
-    try std.testing.expectEqual(prg_rom[0x100], mapper.prg_read(0xC100));
+    try std.testing.expectEqual(prg_rom[0], mapper.prg_rom_read(0x8000));
+    try std.testing.expectEqual(prg_rom[0], mapper.prg_rom_read(0xC000));
+    try std.testing.expectEqual(prg_rom[0x100], mapper.prg_rom_read(0x8100));
+    try std.testing.expectEqual(prg_rom[0x100], mapper.prg_rom_read(0xC100));
 }
 
 test "Mapper0 32KB PRG ROM no mirroring" {
@@ -168,9 +159,9 @@ test "Mapper0 32KB PRG ROM no mirroring" {
     defer mapper.deinit();
 
     // Test that different addresses return different values
-    try std.testing.expectEqual(prg_rom[0], mapper.prg_read(0x8000));
-    try std.testing.expectEqual(prg_rom[0x4000], mapper.prg_read(0xC000));
-    try std.testing.expect(mapper.prg_read(0x8000) != mapper.prg_read(0xC000));
+    try std.testing.expectEqual(prg_rom[0], mapper.prg_rom_read(0x8000));
+    try std.testing.expectEqual(prg_rom[0x4000], mapper.prg_rom_read(0xC000));
+    try std.testing.expect(mapper.prg_rom_read(0x8000) != mapper.prg_rom_read(0xC000));
 }
 
 test "Mapper0 CHR RAM" {

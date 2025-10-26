@@ -1,6 +1,7 @@
 const std = @import("std");
 const Mirroring = @import("../rom.zig").Mirroring;
 const Mapper0 = @import("mapper0.zig").Mapper0;
+const Mapper2 = @import("mapper2.zig").Mapper2;
 
 pub const Mapper = struct {
     ptr: *anyopaque,
@@ -8,23 +9,37 @@ pub const Mapper = struct {
 
     pub const VTable = struct {
         deinit: *const fn (ptr: *anyopaque) void,
-        prg_read: *const fn (ptr: *anyopaque, addr: u16) u8,
-        prg_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
+        prg_rom_read: *const fn (ptr: *anyopaque, addr: u16) u8,
+        prg_rom_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
+        prg_ram_read: *const fn (ptr: *anyopaque, addr: u16) u8,
+        prg_ram_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
         chr_read: *const fn (ptr: *anyopaque, addr: u16) u8,
         chr_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
         mirroring: *const fn (ptr: *const anyopaque) Mirroring,
         irq_active: *const fn (ptr: *anyopaque) bool,
         irq_clear: *const fn (ptr: *anyopaque) void,
-        ppu_clock: *const fn (ptr: *anyopaque) void,
+        ppu_clock: *const fn (ptr: *anyopaque, addr: u16) void,
         cpu_clock: *const fn (ptr: *anyopaque) void,
     };
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, mapper_id: u8, prg_rom: []const u8, chr_rom: []const u8, mirroring_mode: Mirroring) !Self {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        mapper_id: u8,
+        prg_rom: []const u8,
+        chr_rom: []const u8,
+        prg_rom_banks: u8,
+        prg_ram_size: usize,
+        mirroring_mode: Mirroring,
+    ) !Self {
         switch (mapper_id) {
             0 => {
-                const mapper = try Mapper0.init(allocator, prg_rom, chr_rom, mirroring_mode);
+                const mapper = try Mapper0.init(allocator, prg_rom, chr_rom, prg_ram_size, mirroring_mode);
+                return mapper.as_mapper();
+            },
+            2 => {
+                const mapper = try Mapper2.init(allocator, prg_rom, chr_rom, prg_rom_banks, mirroring_mode);
                 return mapper.as_mapper();
             },
             else => std.debug.panic("Unsupported mapper: {}\n", .{mapper_id}),
@@ -36,13 +51,23 @@ pub const Mapper = struct {
     }
 
     /// Read from PRG ROM space ($8000-$FFFF)
-    pub fn prg_read(self: *Self, addr: u16) u8 {
-        return self.vtable.prg_read(self.ptr, addr);
+    pub fn prg_rom_read(self: *Self, addr: u16) u8 {
+        return self.vtable.prg_rom_read(self.ptr, addr);
     }
 
-    /// Write to PRG ROM space (for mappers that support it)
-    pub fn prg_write(self: *Self, addr: u16, value: u8) void {
-        self.vtable.prg_write(self.ptr, addr, value);
+    /// Write to PRG ROM space ($8000-$FFFF)
+    pub fn prg_rom_write(self: *Self, addr: u16, value: u8) void {
+        self.vtable.prg_rom_write(self.ptr, addr, value);
+    }
+
+    /// Read from PRG RAM space ($6000–$7FFF)
+    pub fn prg_ram_read(self: *Self, addr: u16) u8 {
+        return self.vtable.prg_ram_read(self.ptr, addr);
+    }
+
+    /// Write to PRG RAM space ($6000–$7FFF)
+    pub fn prg_ram_write(self: *Self, addr: u16, value: u8) void {
+        self.vtable.prg_ram_write(self.ptr, addr, value);
     }
 
     /// Read from CHR ROM/RAM space ($0000-$1FFF)
@@ -71,8 +96,8 @@ pub const Mapper = struct {
     }
 
     /// Called on each PPU clock for mappers that need it
-    pub fn ppu_clock(self: *Self) void {
-        self.vtable.ppu_clock(self.ptr);
+    pub fn ppu_clock(self: *Self, addr: u16) void {
+        self.vtable.ppu_clock(self.ptr, addr);
     }
 
     /// Called on each CPU clock for mappers that need it

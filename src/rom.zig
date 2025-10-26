@@ -16,8 +16,6 @@ pub const Rom = struct {
     prg_rom: []u8,
     /// CHR ROM is mapped to address `0..0x1FFF`
     chr_rom: []u8,
-    mapper_id: u8,
-    mirroring: Mirroring,
     mapper: Mapper,
 
     const Self = @This();
@@ -66,8 +64,6 @@ pub const Rom = struct {
         const mapper = try Mapper.init(allocator, mapper_id, prg_rom, chr_rom, screen_mirroring);
 
         return .{
-            .mapper_id = mapper_id,
-            .mirroring = screen_mirroring,
             .prg_rom = prg_rom,
             .chr_rom = chr_rom,
             .mapper = mapper,
@@ -78,14 +74,24 @@ pub const Rom = struct {
         self.mapper.deinit();
     }
 
-    /// Read from PRG ROM space ($8000-$FFFF)
-    pub fn prg_read(self: *Self, addr: u16) u8 {
-        return self.mapper.prg_read(addr);
+    /// Read from PRG ROM ($8000-$FFFF)
+    pub fn prg_rom_read(self: *Self, addr: u16) u8 {
+        return self.mapper.prg_rom_read(addr);
     }
 
-    /// Write to PRG ROM space (for mappers that support banking)
-    pub fn prg_write(self: *Self, addr: u16, value: u8) void {
-        self.mapper.prg_write(addr, value);
+    ///  Read from PRG RAM ($6000–$7FFF)
+    pub fn prg_ram_read(self: *Self, addr: u16) u8 {
+        return self.mapper.prg_ram_read(addr);
+    }
+
+    /// Write to PRG ROM ($8000-$FFFF) space
+    pub fn prg_rom_write(self: *Self, addr: u16, value: u8) void {
+        self.mapper.prg_rom_write(addr, value);
+    }
+
+    /// Write to PRG RAM ($6000–$7FFF) space
+    pub fn prg_ram_write(self: *Self, addr: u16, value: u8) void {
+        self.mapper.prg_ram_write(addr, value);
     }
 
     /// Read from CHR ROM/RAM space ($0000-$1FFF)
@@ -114,8 +120,8 @@ pub const Rom = struct {
     }
 
     /// Clock the mapper (for scanline counters, etc.)
-    pub fn mapper_ppu_clock(self: *Self) void {
-        self.mapper.ppu_clock();
+    pub fn mapper_ppu_clock(self: *Self, addr: u16) void {
+        self.mapper.ppu_clock(addr);
     }
 
     pub fn mapper_cpu_clock(self: *Self) void {
@@ -125,8 +131,6 @@ pub const Rom = struct {
 
 pub fn DummyTestRom(opcodes: []const u8) Rom {
     return .{
-        .mapper_id = 0,
-        .mirroring = .HORIZONTAL,
         .prg_rom = @constCast(opcodes),
         .chr_rom = @constCast(&[_]u8{0}),
     };
@@ -191,8 +195,8 @@ test "ROM creation" {
 
     try std.testing.expect(std.mem.eql(u8, &prg_rom, rom.prg_rom));
     try std.testing.expect(std.mem.eql(u8, &chr_rom, rom.chr_rom));
-    try std.testing.expectEqual(3, rom.mapper_id);
-    try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
+    // try std.testing.expectEqual(3, rom.mapper_id);
+    // try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
 }
 
 test "ROM with trainer section" {
@@ -216,8 +220,8 @@ test "ROM with trainer section" {
 
     try std.testing.expect(std.mem.eql(u8, &prg_rom, rom.prg_rom));
     try std.testing.expect(std.mem.eql(u8, &chr_rom, rom.chr_rom));
-    try std.testing.expectEqual(3, rom.mapper_id);
-    try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
+    // try std.testing.expectEqual(3, rom.mapper_id);
+    // try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
 }
 
 test "ROM NES2.0 format not supported" {
