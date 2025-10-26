@@ -67,6 +67,21 @@ pub fn main() !void {
 
     _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
 
+    var src_rect = c.SDL_FRect{
+        .x = 0.0,
+        .y = 8.5, // Start 8 pixels DOWN
+        .w = 256.0, // Full width
+        .h = 224.0, // 240 - 8 (top) - 8 (bottom) = 224 lines
+    };
+
+    // Destination rect: Draw the 224-line image centered in the 240-line space (offset by 8 pixels)
+    var dst_rect = c.SDL_FRect{
+        .x = 0.0,
+        .y = 0.0,
+        .w = 256.0,
+        .h = 240.0,
+    };
+
     var rom = Rom.init(allocator, buffer) catch |err| switch (err) {
         error.InvalidNesFormat => {
             std.debug.print("ROM format not supported!\n", .{});
@@ -118,7 +133,7 @@ pub fn main() !void {
 
         _ = c.SDL_RenderClear(renderer);
         _ = c.SDL_UpdateTexture(texture, null, system.frame_buffer(), 256 * 3);
-        _ = c.SDL_RenderTexture(renderer, texture, null, null);
+        _ = c.SDL_RenderTexture(renderer, texture, &src_rect, &dst_rect);
         _ = c.SDL_RenderPresent(renderer);
         _ = fps_manager.delay();
     }
