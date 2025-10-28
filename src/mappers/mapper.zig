@@ -2,6 +2,7 @@ const std = @import("std");
 const Mirroring = @import("../rom.zig").Mirroring;
 const Mapper0 = @import("mapper0.zig").Mapper0;
 const Mapper2 = @import("mapper2.zig").Mapper2;
+const Mapper3 = @import("mapper3.zig").Mapper3;
 
 pub const Mapper = struct {
     ptr: *anyopaque,
@@ -40,6 +41,10 @@ pub const Mapper = struct {
             },
             2 => {
                 const mapper = try Mapper2.init(allocator, prg_rom, chr_rom, prg_rom_banks, mirroring_mode);
+                return mapper.as_mapper();
+            },
+            3 => {
+                const mapper = try Mapper3.init(allocator, prg_rom, chr_rom, mirroring_mode);
                 return mapper.as_mapper();
             },
             else => std.debug.panic("Unsupported mapper: {}\n", .{mapper_id}),
