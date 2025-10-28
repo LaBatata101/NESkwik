@@ -584,11 +584,11 @@ pub const PPU = struct {
                     const sprite_y_pos: i16 = self.fg.sprite_scanline[i].y;
                     const height: i16 = if (self.ctrl_register.sprite_size) 16 else 8;
                     const row_i16: i16 = self.scanline - sprite_y_pos;
-                    var row: u8 = @intCast(row_i16);
+                    var row: u16 = @bitCast(row_i16);
 
                     if (self.fg.sprite_scanline[i].attr & 0x80 != 0) {
                         // Sprite is flipped vertically, i.e. upside down
-                        row = @intCast(height - 1 - row_i16);
+                        row = @bitCast(height - 1 - row_i16);
                     }
 
                     if (!self.ctrl_register.sprite_size) { // 8x8 sprite mode
