@@ -1,6 +1,7 @@
 const std = @import("std");
 const Mirroring = @import("../rom.zig").Mirroring;
 const Mapper0 = @import("mapper0.zig").Mapper0;
+const Mapper1 = @import("mapper1.zig").Mapper1;
 const Mapper2 = @import("mapper2.zig").Mapper2;
 const Mapper3 = @import("mapper3.zig").Mapper3;
 
@@ -37,6 +38,10 @@ pub const Mapper = struct {
         switch (mapper_id) {
             0 => {
                 const mapper = try Mapper0.init(allocator, prg_rom, chr_rom, prg_ram_size, mirroring_mode);
+                return mapper.as_mapper();
+            },
+            1 => {
+                const mapper = try Mapper1.init(allocator, prg_rom, chr_rom, prg_rom_banks, prg_ram_size);
                 return mapper.as_mapper();
             },
             2 => {
