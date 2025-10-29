@@ -882,11 +882,6 @@ pub const PPU = struct {
     /// - Reading `PPUSTATUS` (`0x2002`) resets the write toggle to "high byte" state
     /// - After setting an address, subsequent `PPUDATA` reads/writes will use this address
     pub fn addr_write(self: *Self, value: u8) void {
-        // if (!self.write_toggle) {
-        //     self.addr_register = self.addr_register & ~@as(u16, 0xFF00) | (@as(u16, value) << 8);
-        // } else {
-        //     self.addr_register = self.addr_register & ~@as(u16, 0xFF) | value;
-        // }
         if (!self.write_toggle) {
             const tmp_addr = self.tmp_addr.addr() & ~@as(u16, 0xFF00) | (@as(u16, value) << 8);
             self.tmp_addr = @bitCast(tmp_addr);
@@ -931,6 +926,9 @@ pub const PPU = struct {
     /// - Nametables 1 and 3 map to the second 1KB (right column)
     ///
     /// **Four-Screen**: All 4 nametables are unique (requires extra RAM on cartridge)
+    ///
+    /// **Single-Screen Lower**: All nametables map to first 1KB
+    /// **Single-Screen Upper**: All nametables map to second 1KB
     fn mirror_vram_addr(self: *const Self, addr: u16) u16 {
         // mirror down 0x2000 - 0x2eff
         const mirrored_addr = addr & 0x2FFF;
@@ -950,10 +948,11 @@ pub const PPU = struct {
                 2, 3 => (vram_index & 0x03FF) + 0x0400,
                 else => unreachable,
             },
-            Mirroring.FOUR_SCREEN => {
-                std.log.warn("PPU: FOUR_SCREEN mirroring not implemented!", .{});
-                return vram_index;
-            },
+            Mirroring.FOUR_SCREEN => vram_index & 0x07FF,
+            // All nametables map to first 1KB
+            Mirroring.SINGLE_SCREEN_LOWER => vram_index & 0x03FF,
+            // All nametables map to second 1KB
+            Mirroring.SINGLE_SCREEN_UPPER => (vram_index & 0x03FF) + 0x0400,
         };
     }
 

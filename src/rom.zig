@@ -9,6 +9,8 @@ pub const Mirroring = enum {
     VERTICAL,
     HORIZONTAL,
     FOUR_SCREEN,
+    SINGLE_SCREEN_LOWER,
+    SINGLE_SCREEN_UPPER,
 };
 
 const Flag6 = packed struct(u8) {
