@@ -86,20 +86,11 @@ pub const Rom = struct {
         const chr_rom_start = prg_rom_start + prg_rom_size;
 
         const prg_ram_size: usize = blk: {
-            if (flag7.is_nes2()) {
-                const prg_ram_shift_count = raw[10] & 0b0000_1111;
-                if (prg_ram_shift_count != 0) {
-                    break :blk @as(usize, 64) << @as(u4, @truncate(prg_ram_shift_count));
-                } else {
-                    break :blk 0;
-                }
+            const ram_size = raw[8];
+            if (ram_size == 0) { // value 0 defaults to 8KB
+                break :blk 8192;
             } else {
-                const has_prg_ram = raw[10] & 0b0000_1000 == 0;
-                if (has_prg_ram) {
-                    break :blk if (raw[8] == 0) 8192 else @as(usize, raw[8]) * 8192;
-                } else {
-                    break :blk 0;
-                }
+                break :blk @as(usize, ram_size) * 8192;
             }
         };
 
@@ -107,19 +98,19 @@ pub const Rom = struct {
         const chr_rom = raw[chr_rom_start..(chr_rom_start + chr_rom_size)];
 
         std.log.info(
-            \\ {s}
-            \\ Mapper ID: {}
-            \\ Number of 16KB PRG-ROM banks: {}
-            \\ Number of 8KB CHR-ROM banks: {}
-            \\ Mirroring type: {s}
-            \\ PRG RAM size: {}
+            \\{s}
+            \\Mapper ID: {}
+            \\Number of 16KB PRG-ROM banks: {}
+            \\Number of 8KB CHR-ROM banks: {}
+            \\PRG RAM size: {}
+            \\Mirroring type: {s}
         , .{
             if (flag7.is_nes2()) "iNES 2.0" else "iNES 1.0",
             mapper_id,
             prg_rom_banks,
             chr_rom_banks,
-            @tagName(flag6.mirroring_type()),
             prg_ram_size,
+            @tagName(flag6.mirroring_type()),
         });
 
         const mapper = try Mapper.init(
