@@ -2,14 +2,9 @@ const std = @import("std");
 const ness = @import("ness");
 
 const c = ness.c;
-const System = ness.System;
 const Rom = ness.Rom;
-const APU = ness.APU;
-const Frame = ness.render.Frame;
-const SDLAudioOut = ness.SDLAudioOut;
+const System = ness.System;
 const FPSManager = ness.render.FPSManager;
-const ControllerButton = ness.controller.ControllerButton;
-const SYSTEM_PALLETE = ness.SYSTEM_PALLETE;
 const trace = ness.trace;
 
 pub fn main() !void {
@@ -94,41 +89,15 @@ pub fn main() !void {
     };
     defer rom.deinit();
 
-    var cntrl1_keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
-    defer cntrl1_keymap.deinit();
-
-    try cntrl1_keymap.put(c.SDLK_DOWN, .{ .DOWN = true });
-    try cntrl1_keymap.put(c.SDLK_UP, .{ .UP = true });
-    try cntrl1_keymap.put(c.SDLK_RIGHT, .{ .RIGHT = true });
-    try cntrl1_keymap.put(c.SDLK_LEFT, .{ .LEFT = true });
-    try cntrl1_keymap.put(c.SDLK_RETURN, .{ .START = true });
-    try cntrl1_keymap.put(c.SDLK_SPACE, .{ .SELECT = true });
-    try cntrl1_keymap.put(c.SDLK_Q, .{ .BUTTON_A = true });
-    try cntrl1_keymap.put(c.SDLK_E, .{ .BUTTON_B = true });
-
-    var cntrl2_keymap = std.AutoHashMap(u32, ControllerButton).init(allocator);
-    defer cntrl2_keymap.deinit();
-
-    try cntrl2_keymap.put(c.SDLK_S, .{ .DOWN = true });
-    try cntrl2_keymap.put(c.SDLK_W, .{ .UP = true });
-    try cntrl2_keymap.put(c.SDLK_D, .{ .RIGHT = true });
-    try cntrl2_keymap.put(c.SDLK_A, .{ .LEFT = true });
-    try cntrl2_keymap.put(c.SDLK_P, .{ .START = true });
-    try cntrl2_keymap.put(c.SDLK_U, .{ .SELECT = true });
-    try cntrl2_keymap.put(c.SDLK_I, .{ .BUTTON_A = true });
-    try cntrl2_keymap.put(c.SDLK_O, .{ .BUTTON_B = true });
-
-    var apu = try APU.init(allocator, try SDLAudioOut.init(allocator));
-    defer apu.deinit();
-
-    var system = System.init(&rom, &apu);
+    var system = try System.init(allocator, &rom);
+    defer system.deinit();
     system.reset();
 
     var fps_manager = FPSManager.init();
     fps_manager.setFramerate(60);
 
     while (!system.quit) {
-        process_input(&system, &cntrl1_keymap, &cntrl2_keymap);
+        process_input(&system);
         system.run_frame();
 
         _ = c.SDL_RenderClear(renderer);
@@ -139,36 +108,16 @@ pub fn main() !void {
     }
 }
 
-fn process_input(
-    system: *System,
-    cntrl1_keymap: *std.AutoHashMap(u32, ControllerButton),
-    cntrl2_keymap: *std.AutoHashMap(u32, ControllerButton),
-) void {
+fn process_input(system: *System) void {
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event)) {
         switch (event.type) {
             c.SDL_EVENT_QUIT => system.quit = true,
             c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
                 c.SDLK_ESCAPE => system.quit = true,
-                else => |key_code| {
-                    if (cntrl1_keymap.get(key_code)) |key| {
-                        system.cpu.controllers.cntrl1_status.insert(key);
-                    }
-                    if (cntrl2_keymap.get(key_code)) |key| {
-                        system.cpu.controllers.cntrl2_status.insert(key);
-                    }
-                },
+                else => |key_code| system.controller_keydown(key_code),
             },
-            c.SDL_EVENT_KEY_UP => switch (event.key.key) {
-                else => |key_code| {
-                    if (cntrl1_keymap.get(key_code)) |key| {
-                        system.cpu.controllers.cntrl1_status.remove(key);
-                    }
-                    if (cntrl2_keymap.get(key_code)) |key| {
-                        system.cpu.controllers.cntrl2_status.remove(key);
-                    }
-                },
-            },
+            c.SDL_EVENT_KEY_UP => system.controller_keyup(event.key.key),
             else => {},
         }
     }

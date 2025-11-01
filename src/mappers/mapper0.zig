@@ -70,7 +70,7 @@ pub const Mapper0 = struct {
     }
 
     pub fn prg_rom_read(self: *Self, addr: u16) u8 {
-        return self.prg_rom[(addr - 0x8000) % self.prg_rom.len];
+        return self.prg_rom[addr % self.prg_rom.len];
     }
 
     pub fn prg_rom_write(self: *Self, addr: u16, value: u8) void {
@@ -79,11 +79,11 @@ pub const Mapper0 = struct {
     }
 
     pub fn prg_ram_read(self: *Self, addr: u16) u8 {
-        return self.prg_ram[(addr - 0x6000) % self.prg_ram.len];
+        return self.prg_ram[addr % self.prg_ram.len];
     }
 
     pub fn prg_ram_write(self: *Self, addr: u16, value: u8) void {
-        self.prg_ram[(addr - 0x6000) % self.prg_ram.len] = value;
+        self.prg_ram[addr % self.prg_ram.len] = value;
     }
 
     pub fn chr_read(self: *Self, addr: u16) u8 {

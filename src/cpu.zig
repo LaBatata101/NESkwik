@@ -1,10 +1,7 @@
 const std = @import("std");
 
 const rom = @import("rom.zig");
-
-const PPU = @import("ppu.zig").PPU;
-const APU = @import("apu/apu.zig").APU;
-const Rom = rom.Rom;
+const Bus = @import("bus.zig").Bus;
 const opcodes = @import("opcodes.zig");
 const Controllers = @import("controller.zig").Controllers;
 const AdressingMode = opcodes.AdressingMode;
@@ -64,7 +61,7 @@ const ProcessorStatus = packed struct(u8) {
     /// with 'Clear Decimal Flag' (`CLD`).
     decimal_mode: bool = false,
 
-    /// The break command bit is set when a BRK instruction has been executed and an interrupt has been generated
+    /// The break command bit is set when a instruction has been executed and an interrupt has been generated
     /// to process it.
     break_command: bool = false,
     break2: bool = false,
@@ -110,23 +107,7 @@ pub const CPU = struct {
     /// results of the operation. Each flag has a single bit within the register.
     status: ProcessorStatus,
 
-    /// The CPU has `0x0000..0x2000` of addressing space reserved for RAM space. The RAM `0x000..0x0800` (2KiB) is
-    /// mirrored three times:
-    ///   - `0x800..0x1000`
-    ///   - `0x1000..0x1800`
-    ///   - `0x1800..0x2000`
-    /// This means that there is no difference in accessing memory addresses at `0x0000` or `0x0800` or
-    /// `0x1000` or `0x1800` for reads or writes.
-    ram: [2048]u8,
-    rom: *Rom,
-    ppu: PPU,
-    apu: *APU,
-    controllers: Controllers,
-
-    cycles: u64,
-    next_interrupt: u64,
-
-    program_start_addr: u16,
+    bus: *Bus,
 
     const Self = @This();
 
@@ -144,7 +125,7 @@ pub const CPU = struct {
         flags: ProcessorStatus,
         cycles: u8,
     };
-    const IRQ = Interrupt{
+    pub const IRQ = Interrupt{
         .type = .IRQ,
         .vector_addr = 0xFFFE,
         .flags = .{ .break_command = false, .break2 = true },
@@ -157,7 +138,7 @@ pub const CPU = struct {
         .cycles = 8,
     };
 
-    pub fn init(cartridge: *Rom, apu: *APU) CPU {
+    pub fn init(bus: *Bus) CPU {
         var initial_status = ProcessorStatus{};
         initial_status.interrupt_disable = true;
         initial_status.break2 = true;
@@ -169,14 +150,7 @@ pub const CPU = struct {
             .register_x = 0,
             .register_y = 0,
             .status = initial_status,
-            .program_start_addr = 0x8000,
-            .rom = cartridge,
-            .controllers = Controllers.init(),
-            .ppu = PPU.init(cartridge),
-            .apu = apu,
-            .cycles = 0,
-            .next_interrupt = 0,
-            .ram = [_]u8{0} ** 2048,
+            .bus = bus,
         };
     }
 
@@ -187,140 +161,11 @@ pub const CPU = struct {
     }
 
     pub fn mem_read(self: *Self, addr: u16) u8 {
-        if (addr >= 0x2000 and addr < PPU_REGISTERS_MIRRORS_END) {
-            self.run_ppu();
-        }
-
-        if (addr >= RAM and addr < RAM_MIRRORS_END) {
-            return self.ram[addr & 0x07FF];
-        } else if (addr == 0x2000 or addr == 0x2001 or addr == 0x2003 or addr == 0x2005 or addr == 0x2006 or addr == 0x4014) {
-            return self.ppu.dynamic_latch;
-        } else if (addr == 0x2002) {
-            self.ppu.dynamic_latch = @as(u8, @bitCast(self.ppu.status_read())) | (self.ppu.dynamic_latch & 0b0001_1111);
-            return self.ppu.dynamic_latch;
-        } else if (addr == 0x2004) {
-            self.ppu.dynamic_latch = self.ppu.oam_data_read();
-            return self.ppu.dynamic_latch;
-        } else if (addr == 0x2007) {
-            self.ppu.dynamic_latch = self.ppu.data_read();
-            return self.ppu.dynamic_latch;
-        } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
-            const mirror_down_addr = addr & 0b00100000_00000111;
-            return self.mem_read(mirror_down_addr);
-        } else if (addr >= 0x4000 and addr <= 0x4015) {
-            const value = self.apu.read_status(self.cycles);
-            if (self.apu.irq_interrupt) {
-                self.interrupt(CPU.IRQ);
-            }
-            return value;
-        } else if (addr == 0x4016) {
-            return self.controllers.cntrl1_read();
-        } else if (addr == 0x4017) {
-            return self.controllers.cntrl2_read();
-        } else if (addr >= 0x6000 and addr <= 0x7FFF) {
-            return self.rom.prg_ram_read(addr);
-        } else if (addr >= 0x4020 and addr <= 0x5FFF or addr >= 0x8000 and addr <= 0xFFFF) {
-            return self.rom.prg_rom_read(addr);
-        } else {
-            std.log.warn("CPU: Ignoring mem read at 0x{X:04}", .{addr});
-            return 0;
-        }
+        return self.bus.mem_read(addr);
     }
 
     pub fn mem_write(self: *Self, addr: u16, data: u8) void {
-        if (addr >= 0x2000 and addr < PPU_REGISTERS_MIRRORS_END) {
-            self.run_ppu();
-        }
-
-        if (addr >= RAM and addr < RAM_MIRRORS_END) {
-            self.ram[addr & 0x07FF] = data;
-        } else if (addr == 0x2000) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.ctrl_write(data);
-        } else if (addr == 0x2002) {
-            self.ppu.dynamic_latch = data;
-        } else if (addr == 0x2001) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.mask_write(data);
-        } else if (addr == 0x2003) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.oam_addr_write(data);
-        } else if (addr == 0x2004) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.oam_data_write(data);
-        } else if (addr == 0x2005) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.scroll_write(data);
-        } else if (addr == 0x2006) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.addr_write(data);
-        } else if (addr == 0x2007) {
-            self.ppu.dynamic_latch = data;
-            self.ppu.data_write(data);
-        } else if (addr >= 0x2008 and addr < PPU_REGISTERS_MIRRORS_END) {
-            const mirror_down_addr = addr & 0b00100000_00000111;
-            self.mem_write(mirror_down_addr, data);
-        } else if (addr >= 0x4000 and addr <= 0x4013 or addr == 0x4015 or addr == 0x4017) {
-            self.run_apu();
-            self.apu.write(addr, data);
-        } else if (addr == 0x4014) {
-            self.run_ppu();
-            self.dma_transfer(data);
-        } else if (addr == 0x4016) {
-            self.controllers.set_strobe(data);
-        } else if (addr >= 0x6000 and addr <= 0x7FFF) {
-            self.rom.prg_ram_write(addr, data);
-        } else if (addr >= 0x4020 and addr <= 0x5FFF or addr >= 0x8000 and addr <= 0xFFFF) {
-            self.rom.prg_rom_write(addr, data);
-        } else {
-            std.log.warn("CPU: Ignoring mem write at 0x{X:04}", .{addr});
-        }
-    }
-
-    pub fn run_ppu(self: *Self) void {
-        self.ppu.run_to(self.cycles);
-        if (self.ppu.nmi_interrupt) {
-            self.ppu.nmi_interrupt = false;
-            // TODO: This will cause a small desync between the CPU and cycles (around 9 cycles) breaking the 3:1
-            // ratio. Execute PPU after interrupt to mantain the ratio?
-            self.interrupt(CPU.NMI);
-        }
-    }
-
-    pub fn run_apu(self: *Self) void {
-        self.apu.run_to(self.cycles);
-        if (self.apu.irq_interrupt) {
-            self.interrupt(CPU.IRQ);
-        }
-    }
-
-    pub fn mem_read_u16(self: *Self, addr: u16) u16 {
-        const lo = self.mem_read(addr);
-        const hi = @as(u16, self.mem_read(addr + 1));
-        return (hi << 8) | lo;
-    }
-
-    fn mem_write_u16(self: *Self, addr: u16, data: u16) void {
-        const hi: u8 = @truncate(data >> 8);
-        const lo: u8 = @truncate(data);
-        self.mem_write(addr, lo);
-        self.mem_write(addr + 1, hi);
-    }
-
-    // https://www.nesdev.org/wiki/PPU_programmer_reference#OAMDMA_-_Sprite_DMA_($4014_write)
-    fn dma_transfer(self: *Self, page: u8) void {
-        if (self.cycles % 2 == 1) {
-            self.cycles +%= 1;
-        }
-        self.cycles +%= 1;
-        self.cycles +%= 512;
-
-        const page_u16 = @as(u16, page) << 8;
-        for (0..256) |x| {
-            const addr = page_u16 | @as(u16, @intCast(x));
-            const byte = self.mem_read(addr);
-            self.ppu.oam_data_write(byte);
-        }
+        self.bus.mem_write(addr, data);
     }
 
     pub fn reset(self: *Self) void {
@@ -333,7 +178,7 @@ pub const CPU = struct {
         self.status.interrupt_disable = true;
         self.status.break2 = true;
 
-        self.pc = self.mem_read_u16(0xFFFC);
+        self.pc = self.bus.mem_read_u16(0xFFFC);
     }
 
     fn stack_push(self: *Self, data: u8) void {
@@ -379,15 +224,15 @@ pub const CPU = struct {
             AdressingMode.ZeroPage => self.mem_read(self.pc),
             AdressingMode.ZeroPageX => self.mem_read(self.pc) +% self.register_x,
             AdressingMode.ZeroPageY => self.mem_read(self.pc) +% self.register_y,
-            AdressingMode.Absolute => self.mem_read_u16(self.pc),
-            AdressingMode.AbsoluteX => self.mem_read_u16(self.pc) +% self.register_x,
-            AdressingMode.AbsoluteY => self.mem_read_u16(self.pc) +% self.register_y,
+            AdressingMode.Absolute => self.bus.mem_read_u16(self.pc),
+            AdressingMode.AbsoluteX => self.bus.mem_read_u16(self.pc) +% self.register_x,
+            AdressingMode.AbsoluteY => self.bus.mem_read_u16(self.pc) +% self.register_y,
             AdressingMode.Relative => {
                 const offset = @as(i8, @bitCast(self.mem_read(self.pc)));
                 return self.pc +% 1 +% @as(u16, @bitCast(@as(i16, offset)));
             },
             AdressingMode.Indirect => {
-                const ptr_addr = self.mem_read_u16(self.pc);
+                const ptr_addr = self.bus.mem_read_u16(self.pc);
 
                 // NOTE - 6502 bug mode with with page boundary:
                 // if address $3000 contains $40, $30FF contains $80, and $3100 contains $50,
@@ -399,7 +244,7 @@ pub const CPU = struct {
 
                     return @as(u16, hi) << 8 | lo;
                 } else {
-                    return self.mem_read_u16(ptr_addr);
+                    return self.bus.mem_read_u16(ptr_addr);
                 }
             },
             AdressingMode.IndirectX => {
@@ -811,7 +656,7 @@ pub const CPU = struct {
                 self.status.break2 = true;
             },
             .BRK => {
-                // BRK skips the following byte
+                // skips the following byte
                 self.pc += 1;
 
                 var status = self.status;
@@ -819,7 +664,7 @@ pub const CPU = struct {
                 status.break_command = true;
                 self.stack_push_u16(self.pc);
                 self.stack_push(@bitCast(status));
-                self.pc = self.mem_read_u16(0xFFFE);
+                self.pc = self.bus.mem_read_u16(0xFFFE);
                 self.status.interrupt_disable = true;
             },
 
@@ -944,7 +789,7 @@ pub const CPU = struct {
             self.pc += opcode.size() - 1;
         }
 
-        self.cycles += instruction_cycles;
+        self.bus.cycles += instruction_cycles;
     }
 
     pub fn interrupt(self: *Self, int: Interrupt) void {
@@ -959,10 +804,9 @@ pub const CPU = struct {
         self.stack_push(@bitCast(status));
         self.status.interrupt_disable = true;
 
-        self.pc = self.mem_read_u16(int.vector_addr);
+        self.pc = self.bus.mem_read_u16(int.vector_addr);
 
-        self.cycles +%= int.cycles;
-        self.next_interrupt = 0;
+        self.bus.cycles +%= int.cycles;
     }
 };
 
@@ -971,7 +815,7 @@ fn does_page_cross(cpu: *CPU, opcode: opcodes.OpCode) bool {
     switch (mode) {
         .AbsoluteX, .AbsoluteY => switch (opcode) {
             .ADC, .AND, .CMP, .EOR, .LDA, .LDX, .LDY, .ORA, .SBC, .LAS, .LAX, .TOP => {
-                const base = cpu.mem_read_u16(cpu.pc);
+                const base = cpu.bus.mem_read_u16(cpu.pc);
                 return @as(u8, @truncate(base >> 8)) != @as(u8, @truncate(cpu.operand_address(mode) >> 8));
             },
             else => return false,

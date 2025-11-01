@@ -464,11 +464,11 @@ pub const PPU = struct {
                     0 => {
                         self.load_bg_shifters();
                         // Fetch the next background tile ID
-                        self.bg_data.next_tile_id = self.mem_read(0x2000 | (self.addr_register.addr() & 0x0FFF));
+                        self.bg_data.next_tile_id = self.ppu_read(0x2000 | (self.addr_register.addr() & 0x0FFF));
                     },
                     2 => {
                         // Fetch the next background tile attribute.
-                        self.bg_data.next_tile_attr = self.mem_read(0x23C0 |
+                        self.bg_data.next_tile_attr = self.ppu_read(0x23C0 |
                             (@as(u16, self.addr_register.nametable_y) << 11) |
                             (@as(u16, self.addr_register.nametable_x) << 10) |
                             ((@as(u16, self.addr_register.coarse_y) >> 2) << 3) |
@@ -486,13 +486,13 @@ pub const PPU = struct {
                     },
                     4 => {
                         // Fetch the next background tile LSB bit plane from the pattern memory.
-                        self.bg_data.next_tile_lsb = self.mem_read(self.ctrl_register.bg_pattern_addr() +
+                        self.bg_data.next_tile_lsb = self.ppu_read(self.ctrl_register.bg_pattern_addr() +
                             (@as(u16, self.bg_data.next_tile_id) << 4) +
                             self.addr_register.fine_y);
                     },
                     6 => {
                         // Fetch the next background tile MSB bit plane from the pattern memory.
-                        self.bg_data.next_tile_msb = self.mem_read(self.ctrl_register.bg_pattern_addr() +
+                        self.bg_data.next_tile_msb = self.ppu_read(self.ctrl_register.bg_pattern_addr() +
                             (@as(u16, self.bg_data.next_tile_id) << 4) +
                             self.addr_register.fine_y + 8);
                     },
@@ -515,7 +515,7 @@ pub const PPU = struct {
             }
 
             if (self.cycle == 338 or self.cycle == 340) {
-                self.bg_data.next_tile_id = self.mem_read(0x2000 | (self.addr_register.addr() & 0x0FFF));
+                self.bg_data.next_tile_id = self.ppu_read(0x2000 | (self.addr_register.addr() & 0x0FFF));
             }
 
             // End of vertical blank period so reset the Y address ready for rendering
@@ -610,8 +610,8 @@ pub const PPU = struct {
 
                     sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8;
 
-                    sprite_pattern_bits_lo = self.mem_read(sprite_pattern_addr_lo);
-                    sprite_pattern_bits_hi = self.mem_read(sprite_pattern_addr_hi);
+                    sprite_pattern_bits_lo = self.ppu_read(sprite_pattern_addr_lo);
+                    sprite_pattern_bits_hi = self.ppu_read(sprite_pattern_addr_hi);
 
                     if (self.fg.sprite_scanline[i].attr & 0x40 != 0) {
                         // flip patterns horizontally
@@ -760,7 +760,7 @@ pub const PPU = struct {
         // "palette_index * 4" - Each palette is 4 bytes in size
         // "pixel_index"        - Each pixel index is either 0, 1, 2 or 3
         // "& 0x3F"       - Stops us reading beyond the bounds of the SYSTEM_PALETTE array
-        return render.SYSTEM_PALETTE[self.mem_read(0x3F00 + @as(u16, palette_index * 4) + pixel_index) & 0x3F];
+        return render.SYSTEM_PALETTE[self.ppu_read(0x3F00 + @as(u16, palette_index * 4) + pixel_index) & 0x3F];
     }
 
     fn transfer_addr_x(self: *Self) void {
@@ -846,6 +846,54 @@ pub const PPU = struct {
         }
     }
 
+    fn ppu_read(self: *Self, addr: u16) u8 {
+        const new_addr = addr & 0x3FFF;
+        return switch (new_addr) {
+            0...0x1FFF => self.rom.chr_read(new_addr),
+            0x2000...0x3EFF => self.vram[self.mirror_vram_addr(new_addr)],
+            0x3F00...0x3FFF => {
+                var palette_addr = new_addr & 0x1F;
+                palette_addr = switch (palette_addr) {
+                    0x10, 0x14, 0x18, 0x1C => palette_addr - 0x10,
+                    else => palette_addr,
+                };
+                return self.palette_table[palette_addr] & if (self.mask_register.greyscale) @as(u8, 0x30) else 0x3F;
+            },
+            else => {
+                std.log.warn("PPU: unexpected access to mirrored space 0x{X:04} while reading\n", .{new_addr});
+                return 0;
+            },
+        };
+    }
+
+    pub fn cpu_read(self: *Self, addr: u16) u8 {
+        const value = switch (addr) {
+            0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => self.dynamic_latch,
+            0x2002 => @as(u8, @bitCast(self.status_read())) | (self.dynamic_latch & 0b0001_1111),
+            0x2004 => self.oam_data_read(),
+            0x2007 => self.data_read(),
+            0x2008...0x3FFF => self.cpu_read(addr & 0b00100000_00000111),
+            else => unreachable,
+        };
+        self.dynamic_latch = value;
+        return value;
+    }
+
+    pub fn cpu_write(self: *Self, addr: u16, data: u8) void {
+        self.dynamic_latch = data;
+        switch (addr) {
+            0x2000 => self.ctrl_write(data),
+            0x2001 => self.mask_write(data),
+            0x2003 => self.oam_addr_write(data),
+            0x2004 => self.oam_data_write(data),
+            0x2005 => self.scroll_write(data),
+            0x2006 => self.addr_write(data),
+            0x2007 => self.data_write(data),
+            0x2008...0x3FFF => self.cpu_write(addr & 0b00100000_00000111, data),
+            else => unreachable,
+        }
+    }
+
     /// Writes a byte to the `PPUADDR` register (`0x2006`) to set the PPU memory address.
     ///
     /// The PPU uses a 16-bit address pointer to access its memory space, but the CPU
@@ -881,7 +929,7 @@ pub const PPU = struct {
     /// - The write toggle is shared with `PPUSCROLL` (`0x2005`)
     /// - Reading `PPUSTATUS` (`0x2002`) resets the write toggle to "high byte" state
     /// - After setting an address, subsequent `PPUDATA` reads/writes will use this address
-    pub fn addr_write(self: *Self, value: u8) void {
+    fn addr_write(self: *Self, value: u8) void {
         if (!self.write_toggle) {
             const tmp_addr = self.tmp_addr.addr() & ~@as(u16, 0xFF00) | (@as(u16, value) << 8);
             self.tmp_addr = @bitCast(tmp_addr);
@@ -994,11 +1042,11 @@ pub const PPU = struct {
     ///   - Returns data immediately (no buffering!)
     ///   - 32 bytes with internal mirroring
     ///   - Used for background and sprite color palettes
-    pub fn data_read(self: *Self) u8 {
+    fn data_read(self: *Self) u8 {
         const addr = self.addr_register.addr();
 
         const result = self.internal_data_buf;
-        self.internal_data_buf = self.mem_read(addr);
+        self.internal_data_buf = self.ppu_read(addr);
         self.increment_vram_addr();
 
         if (addr >= 0x3F00) { // palette address doesn't have buffering
@@ -1006,27 +1054,6 @@ pub const PPU = struct {
         }
 
         return result;
-    }
-
-    fn mem_read(self: *Self, addr: u16) u8 {
-        const new_addr = addr & 0x3FFF;
-        // self.rom.mapper_ppu_clock(new_addr);
-
-        if (new_addr >= 0 and new_addr <= 0x1FFF) {
-            return self.rom.chr_read(new_addr);
-        } else if (new_addr >= 0x2000 and new_addr <= 0x3EFF) {
-            return self.vram[self.mirror_vram_addr(new_addr)];
-        } else if (new_addr >= 0x3F00 and new_addr <= 0x3FFF) {
-            var palette_addr = new_addr & 0x1F;
-            palette_addr = switch (palette_addr) {
-                0x10, 0x14, 0x18, 0x1C => palette_addr - 0x10,
-                else => palette_addr,
-            };
-            return self.palette_table[palette_addr] & if (self.mask_register.greyscale) @as(u8, 0x30) else 0x3F;
-        } else {
-            std.log.warn("PPU: unexpected access to mirrored space 0x{X:04} while reading\n", .{new_addr});
-            return 0;
-        }
     }
 
     /// Writes a byte to PPU memory through the `PPUDATA` register (`0x2007`).
@@ -1053,9 +1080,9 @@ pub const PPU = struct {
     /// - **0x3F00-0x3FFF**: Palette RAM
     ///   - 32 bytes of palette data with mirroring
     ///   - Stores background and sprite color palettes
-    pub fn data_write(self: *Self, value: u8) void {
+    fn data_write(self: *Self, value: u8) void {
         const addr = self.addr_register.addr() & 0x3FFF;
-        // self.rom.mapper_ppu_clock(addr);
+
         if (addr >= 0 and addr <= 0x1FFF) {
             self.rom.chr_write(addr, value);
         } else if (addr >= 0x2000 and addr <= 0x3EFF) {
@@ -1073,7 +1100,7 @@ pub const PPU = struct {
     }
 
     /// Write a value to the `PPUCTRL` register.
-    pub fn ctrl_write(self: *Self, value: u8) void {
+    fn ctrl_write(self: *Self, value: u8) void {
         self.ctrl_register = @bitCast(value);
 
         self.tmp_addr.nametable_x = @as(u1, @truncate(self.ctrl_register.name_table_addr)) & 1;
@@ -1099,7 +1126,7 @@ pub const PPU = struct {
     /// Bit 6: Emphasize green
     /// Bit 7: Emphasize blue
     /// ```
-    pub fn mask_write(self: *Self, value: u8) void {
+    fn mask_write(self: *Self, value: u8) void {
         self.mask_register = @bitCast(value);
     }
 
@@ -1114,29 +1141,8 @@ pub const PPU = struct {
     /// - Instead, they use `OAMDMA` (register `0x4014`) for faster bulk transfers
     /// - `OAMADDR` is often set to `0x00` before VBLANK to ensure clean sprite rendering
     /// - Writing to `OAMADDR` during rendering can cause sprite corruption
-    pub fn oam_addr_write(self: *Self, value: u8) void {
+    fn oam_addr_write(self: *Self, value: u8) void {
         self.oam_addr_register = value;
-    }
-
-    /// Performs a `DMA` transfer to Object Attribute Memory (`OAM`) via register `0x4014`.
-    ///
-    /// OAM DMA is the standard method for updating all sprite data in a single operation.
-    /// This copies 256 bytes of sprite data directly into `OAM`, typically from CPU RAM
-    /// (often from page `0x02XX` or `0x07XX`). This is much faster than writing sprites
-    /// individually through `OAMDATA`.
-    ///
-    /// On the NES hardware, this operation:
-    /// - Suspends the CPU for 513-514 cycles
-    /// - Copies 256 bytes from CPU memory to OAM
-    /// - Is typically performed during `VBLANK` to avoid visual glitches
-    pub fn oam_dma_write(self: *Self, data: [256]u8) void { // TODO remove
-        // @memmove(&self.oam_data_register, &data);
-        // self.oam_addr_register +%= 0xFF;
-        // self.oam_addr_register +%= 1;
-        for (data) |byte| {
-            self.oam_data_register[self.oam_addr_register] = byte;
-            self.oam_addr_register +%= 1;
-        }
     }
 
     /// Writes a byte to the `OAMDATA` register (`0x2004`) to update a single `OAM` byte.
@@ -1157,7 +1163,7 @@ pub const PPU = struct {
         self.oam_addr_register +%= 1;
     }
 
-    pub fn oam_data_read(self: Self) u8 {
+    fn oam_data_read(self: Self) u8 {
         return self.oam_data_register[self.oam_addr_register];
     }
 
@@ -1177,7 +1183,7 @@ pub const PPU = struct {
     /// - Reading `PPUSTATUS` (`0x2002`) resets the toggle to "X scroll" state
     /// - Scroll changes typically occur during `VBLANK` to avoid visual glitches
     /// - Fine scroll updates affect background rendering immediately
-    pub fn scroll_write(self: *Self, data: u8) void {
+    fn scroll_write(self: *Self, data: u8) void {
         if (!self.write_toggle) {
             // self.scroll_register.fine_x = data;
             self.fine_x = data & 0x07;
@@ -1205,7 +1211,7 @@ pub const PPU = struct {
     /// ## Important Notes
     /// - Reading PPUSTATUS clears VBLANK
     /// - The VBLANK flag is automatically set at the start of VBLANK (scanline 241)
-    pub fn status_read(self: *Self) StatusRegister {
+    fn status_read(self: *Self) StatusRegister {
         const status = self.status_register;
 
         self.write_toggle = false;
@@ -1214,14 +1220,14 @@ pub const PPU = struct {
         return status;
     }
 
-    pub fn get_pattern_table(self: *Self, i: u8, palette: u8) Frame {
+    fn get_pattern_table(self: *Self, i: u8, palette: u8) Frame {
         var frame = Frame.init();
         for (0..16) |tile_y| {
             for (0..16) |tile_x| {
                 const offset: u16 = @intCast(tile_y * 256 + tile_x * 16);
                 for (0..8) |row| {
-                    var tile_lsb = self.mem_read(@intCast(@as(u16, i) * 0x1000 + offset + row));
-                    var tile_msb = self.mem_read(@intCast(@as(u16, i) * 0x1000 + offset + row + 0x0008));
+                    var tile_lsb = self.ppu_read(@intCast(@as(u16, i) * 0x1000 + offset + row));
+                    var tile_msb = self.ppu_read(@intCast(@as(u16, i) * 0x1000 + offset + row + 0x0008));
 
                     for (0..8) |col| {
                         const pixel = (tile_lsb & 1) + (tile_msb & 1);

@@ -189,10 +189,22 @@ pub const Rom = struct {
     }
 };
 
-pub fn DummyTestRom(opcodes: []const u8) Rom {
+// Only for testing
+pub fn DummyTestRom(allocator: std.mem.Allocator, opcodes: []const u8) Rom {
+    const prg_rom = opcodes;
+    const chr_rom = &[_]u8{0};
     return .{
-        .prg_rom = @constCast(opcodes),
-        .chr_rom = @constCast(&[_]u8{0}),
+        .prg_rom = @constCast(prg_rom),
+        .chr_rom = @constCast(chr_rom),
+        .mapper = Mapper.init(
+            allocator,
+            0,
+            prg_rom,
+            chr_rom,
+            0,
+            0,
+            Mirroring.HORIZONTAL,
+        ) catch @panic("Failed to init mapper\n"),
     };
 }
 
