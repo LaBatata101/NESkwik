@@ -6,6 +6,7 @@ const Mapper2 = @import("mapper2.zig").Mapper2;
 const Mapper3 = @import("mapper3.zig").Mapper3;
 
 pub const MapperParams = struct {
+    rom_path: []const u8,
     prg_rom: []const u8,
     chr_rom: []const u8,
     prg_rom_banks: u8,

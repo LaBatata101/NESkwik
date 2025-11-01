@@ -77,13 +77,17 @@ pub fn main() !void {
         .h = 240.0,
     };
 
-    var rom = Rom.init(allocator, buffer) catch |err| switch (err) {
+    var rom = Rom.init(allocator, rom_abs_path, buffer) catch |err| switch (err) {
         error.InvalidNesFormat => {
             std.debug.print("ROM format not supported!\n", .{});
             std.process.exit(1);
         },
         error.OutOfMemory => {
             std.debug.print("Error allocating resources for ROM\n", .{});
+            std.process.exit(1);
+        },
+        else => {
+            std.debug.print("another error ocurred: {any}\n", .{err});
             std.process.exit(1);
         },
     };

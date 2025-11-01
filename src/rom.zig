@@ -64,20 +64,20 @@ pub const Rom = struct {
 
     pub const InitError = error{InvalidNesFormat};
 
-    pub fn init(allocator: std.mem.Allocator, raw: []u8) !Self {
-        if (!std.mem.eql(u8, raw[0..4], &NES_TAG)) {
+    pub fn init(allocator: std.mem.Allocator, rom_path: []const u8, bytes: []u8) !Self {
+        if (!std.mem.eql(u8, bytes[0..4], &NES_TAG)) {
             return error.InvalidNesFormat;
         }
 
-        const flag6: Flag6 = @bitCast(raw[6]);
-        const flag7: Flag7 = @bitCast(raw[7]);
+        const flag6: Flag6 = @bitCast(bytes[6]);
+        const flag7: Flag7 = @bitCast(bytes[7]);
 
         const mapper_id = @as(u8, flag7.mapper_hi) | @as(u8, flag6.mapper_lo);
 
         // Byte 4 contains the number of 16KB PGR-ROM banks
-        const prg_rom_banks = raw[4];
+        const prg_rom_banks = bytes[4];
         // Byte 5 contains the number of 8KB CHR-ROM banks
-        const chr_rom_banks = raw[5];
+        const chr_rom_banks = bytes[5];
 
         const prg_rom_size = @as(usize, prg_rom_banks) * PRG_ROM_PAGE_SIZE;
         const chr_rom_size = @as(usize, chr_rom_banks) * CHR_ROM_PAGE_SIZE;
@@ -86,7 +86,7 @@ pub const Rom = struct {
         const chr_rom_start = prg_rom_start + prg_rom_size;
 
         const prg_ram_size: usize = blk: {
-            const ram_size = raw[8];
+            const ram_size = bytes[8];
             if (ram_size == 0) { // value 0 defaults to 8KB
                 break :blk 8192;
             } else {
@@ -94,8 +94,8 @@ pub const Rom = struct {
             }
         };
 
-        const prg_rom = raw[prg_rom_start..(prg_rom_start + prg_rom_size)];
-        const chr_rom = raw[chr_rom_start..(chr_rom_start + chr_rom_size)];
+        const prg_rom = bytes[prg_rom_start..(prg_rom_start + prg_rom_size)];
+        const chr_rom = bytes[chr_rom_start..(chr_rom_start + chr_rom_size)];
 
         std.log.info(
             \\{s}
@@ -104,6 +104,7 @@ pub const Rom = struct {
             \\Number of 8KB CHR-ROM banks: {}
             \\PRG RAM size: {}
             \\Mirroring type: {s}
+            \\Has battery-backed RAM: {s}
         , .{
             if (flag7.is_nes2()) "iNES 2.0" else "iNES 1.0",
             mapper_id,
@@ -111,9 +112,11 @@ pub const Rom = struct {
             chr_rom_banks,
             prg_ram_size,
             @tagName(flag6.mirroring_type()),
+            if (flag6.has_battery) "YES" else "NO",
         });
 
         const mapper = try Mapper.init(allocator, mapper_id, .{
+            .rom_path = rom_path,
             .prg_rom = prg_rom,
             .chr_rom = chr_rom,
             .prg_rom_banks = prg_rom_banks,

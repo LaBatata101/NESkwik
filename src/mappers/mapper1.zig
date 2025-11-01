@@ -1,4 +1,7 @@
 const std = @import("std");
+const Ram = @import("ram.zig").Ram;
+const VolatileRam = @import("ram.zig").VolatileRam;
+const BatteryBackedRam = @import("ram.zig").BatteryBackedRam;
 const Mapper = @import("mapper.zig").Mapper;
 const Mirroring = @import("../rom.zig").Mirroring;
 const MapperParams = @import("mapper.zig").MapperParams;
@@ -45,7 +48,7 @@ pub const Mapper1 = struct {
     /// Calculated offsets for the two 4KB CHR banks
     chr_offsets: [2]u32,
 
-    prg_ram: []u8,
+    prg_ram: Ram,
     allocator: std.mem.Allocator,
 
     const Self = @This();
@@ -62,8 +65,10 @@ pub const Mapper1 = struct {
             chr_ram = &.{};
         }
 
-        const prg_ram = try allocator.alloc(u8, params.prg_ram_size);
-        @memset(prg_ram, 0);
+        const prg_ram = if (params.has_battery_backed_ram)
+            (try BatteryBackedRam.init(allocator, params.rom_path, params.prg_ram_size)).as_ram()
+        else
+            (try VolatileRam.init(allocator, params.prg_ram_size)).as_ram();
 
         self.* = .{
             .prg_rom = params.prg_rom,
@@ -107,8 +112,8 @@ pub const Mapper1 = struct {
 
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.chr_ram);
-        self.allocator.free(self.prg_ram);
         self.allocator.destroy(self);
+        self.prg_ram.deinit();
     }
 
     /// Updates the PRG and CHR offset tables based on current banking configuration
@@ -203,17 +208,11 @@ pub const Mapper1 = struct {
     }
 
     pub fn prg_ram_read(self: *Self, addr: u16) u8 {
-        if (self.prg_ram.len == 0) {
-            return 0;
-        }
-        return self.prg_ram[addr % self.prg_ram.len];
+        return self.prg_ram.read(addr);
     }
 
     pub fn prg_ram_write(self: *Self, addr: u16, value: u8) void {
-        if (self.prg_ram.len == 0) {
-            return;
-        }
-        self.prg_ram[addr % self.prg_ram.len] = value;
+        self.prg_ram.write(addr, value);
     }
 
     pub fn chr_read(self: *const Self, addr: u16) u8 {
