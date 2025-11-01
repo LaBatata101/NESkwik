@@ -5,6 +5,15 @@ const Mapper1 = @import("mapper1.zig").Mapper1;
 const Mapper2 = @import("mapper2.zig").Mapper2;
 const Mapper3 = @import("mapper3.zig").Mapper3;
 
+pub const MapperParams = struct {
+    prg_rom: []const u8,
+    chr_rom: []const u8,
+    prg_rom_banks: u8,
+    prg_ram_size: usize,
+    has_battery_backed_ram: bool,
+    mirroring_mode: Mirroring,
+};
+
 pub const Mapper = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -26,30 +35,22 @@ pub const Mapper = struct {
 
     const Self = @This();
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        mapper_id: u8,
-        prg_rom: []const u8,
-        chr_rom: []const u8,
-        prg_rom_banks: u8,
-        prg_ram_size: usize,
-        mirroring_mode: Mirroring,
-    ) !Self {
+    pub fn init(allocator: std.mem.Allocator, mapper_id: u8, params: MapperParams) !Self {
         switch (mapper_id) {
             0 => {
-                const mapper = try Mapper0.init(allocator, prg_rom, chr_rom, prg_ram_size, mirroring_mode);
+                const mapper = try Mapper0.init(allocator, params);
                 return mapper.as_mapper();
             },
             1 => {
-                const mapper = try Mapper1.init(allocator, prg_rom, chr_rom, prg_rom_banks, prg_ram_size);
+                const mapper = try Mapper1.init(allocator, params);
                 return mapper.as_mapper();
             },
             2 => {
-                const mapper = try Mapper2.init(allocator, prg_rom, chr_rom, prg_rom_banks, mirroring_mode);
+                const mapper = try Mapper2.init(allocator, params);
                 return mapper.as_mapper();
             },
             3 => {
-                const mapper = try Mapper3.init(allocator, prg_rom, chr_rom, mirroring_mode);
+                const mapper = try Mapper3.init(allocator, params);
                 return mapper.as_mapper();
             },
             else => std.debug.panic("Unsupported mapper: {}\n", .{mapper_id}),

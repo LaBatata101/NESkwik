@@ -1,6 +1,7 @@
 const std = @import("std");
 const Mapper = @import("mapper.zig").Mapper;
 const Mirroring = @import("../rom.zig").Mirroring;
+const MapperParams = @import("mapper.zig").MapperParams;
 
 /// See: https://www.nesdev.org/wiki/MMC1
 /// Mapper 1 (MMC1)
@@ -49,17 +50,10 @@ pub const Mapper1 = struct {
 
     const Self = @This();
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        prg_rom: []const u8,
-        chr_rom: []const u8,
-        prg_rom_banks: u8,
-        prg_ram_size: usize,
-    ) !*Self {
-        _ = prg_rom_banks;
+    pub fn init(allocator: std.mem.Allocator, params: MapperParams) !*Self {
         const self = try allocator.create(Self);
 
-        const chr_is_ram = chr_rom.len == 0;
+        const chr_is_ram = params.chr_rom.len == 0;
         var chr_ram: []u8 = undefined;
         if (chr_is_ram) {
             chr_ram = try allocator.alloc(u8, 8192);
@@ -68,12 +62,12 @@ pub const Mapper1 = struct {
             chr_ram = &.{};
         }
 
-        const prg_ram = try allocator.alloc(u8, prg_ram_size);
+        const prg_ram = try allocator.alloc(u8, params.prg_ram_size);
         @memset(prg_ram, 0);
 
         self.* = .{
-            .prg_rom = prg_rom,
-            .chr_rom = chr_rom,
+            .prg_rom = params.prg_rom,
+            .chr_rom = params.chr_rom,
             .chr_ram = chr_ram,
             .chr_is_ram = chr_is_ram,
             .load_register = 0x10,

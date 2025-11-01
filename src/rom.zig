@@ -113,15 +113,14 @@ pub const Rom = struct {
             @tagName(flag6.mirroring_type()),
         });
 
-        const mapper = try Mapper.init(
-            allocator,
-            mapper_id,
-            prg_rom,
-            chr_rom,
-            prg_rom_banks,
-            prg_ram_size,
-            flag6.mirroring_type(),
-        );
+        const mapper = try Mapper.init(allocator, mapper_id, .{
+            .prg_rom = prg_rom,
+            .chr_rom = chr_rom,
+            .prg_rom_banks = prg_rom_banks,
+            .prg_ram_size = prg_ram_size,
+            .has_battery_backed_ram = flag6.has_battery,
+            .mirroring_mode = flag6.mirroring_type(),
+        });
 
         return .{
             .prg_rom = prg_rom,
@@ -196,15 +195,15 @@ pub fn DummyTestRom(allocator: std.mem.Allocator, opcodes: []const u8) Rom {
     return .{
         .prg_rom = @constCast(prg_rom),
         .chr_rom = @constCast(chr_rom),
-        .mapper = Mapper.init(
-            allocator,
-            0,
-            prg_rom,
-            chr_rom,
-            0,
-            0,
-            Mirroring.HORIZONTAL,
-        ) catch @panic("Failed to init mapper\n"),
+        .mapper = Mapper.init(allocator, 0, .{
+            .rom_path = "test.rom",
+            .prg_rom = prg_rom,
+            .chr_rom = chr_rom,
+            .prg_rom_banks = 0,
+            .prg_ram_size = 0,
+            .has_battery_backed_ram = false,
+            .mirroring_mode = Mirroring.HORIZONTAL,
+        }) catch @panic("Failed to init mapper\n"),
     };
 }
 

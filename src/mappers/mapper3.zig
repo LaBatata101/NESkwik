@@ -1,6 +1,7 @@
 const std = @import("std");
 const Mapper = @import("mapper.zig").Mapper;
 const Mirroring = @import("../rom.zig").Mirroring;
+const MapperParams = @import("mapper.zig").MapperParams;
 
 /// See: https://www.nesdev.org/wiki/CNROM
 /// Mapper 3 (CNROM)
@@ -26,23 +27,18 @@ pub const Mapper3 = struct {
 
     const Self = @This();
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        prg_rom: []const u8,
-        chr_rom: []const u8,
-        mirroring_mode: Mirroring,
-    ) !*Self {
+    pub fn init(allocator: std.mem.Allocator, params: MapperParams) !*Self {
         const self = try allocator.create(Self);
 
         // CNROM always has CHR ROM (never CHR RAM)
-        const num_chr_banks: u8 = @intCast(chr_rom.len / 0x2000);
+        const num_chr_banks: u8 = @intCast(params.chr_rom.len / 0x2000);
 
         self.* = .{
-            .prg_rom = prg_rom,
-            .chr_rom = chr_rom,
+            .prg_rom = params.prg_rom,
+            .chr_rom = params.chr_rom,
             .selected_chr_bank = 0,
             .num_chr_banks = num_chr_banks,
-            .mirroring_mode = mirroring_mode,
+            .mirroring_mode = params.mirroring_mode,
             .allocator = allocator,
         };
 

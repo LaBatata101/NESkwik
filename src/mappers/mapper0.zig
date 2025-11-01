@@ -1,6 +1,7 @@
 const std = @import("std");
 const Mirroring = @import("../rom.zig").Mirroring;
 const Mapper = @import("mapper.zig").Mapper;
+const MapperParams = @import("mapper.zig").MapperParams;
 
 /// See: https://www.nesdev.org/wiki/INES_Mapper_000
 /// Mapper 0 (NROM)
@@ -19,9 +20,9 @@ pub const Mapper0 = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, prg_rom: []const u8, chr_rom: []const u8, prg_ram_size: usize, mirroring_mode: Mirroring) !*Self {
+    pub fn init(allocator: std.mem.Allocator, params: MapperParams) !*Self {
         const self = try allocator.create(Self);
-        const chr_is_ram = chr_rom.len == 0;
+        const chr_is_ram = params.chr_rom.len == 0;
 
         var chr_ram: []u8 = undefined;
         if (chr_is_ram) {
@@ -30,15 +31,15 @@ pub const Mapper0 = struct {
         } else {
             chr_ram = &.{};
         }
-        const prg_ram: []u8 = try allocator.alloc(u8, prg_ram_size);
+        const prg_ram: []u8 = try allocator.alloc(u8, params.prg_ram_size);
 
         self.* = .{
-            .prg_rom = prg_rom,
+            .prg_rom = params.prg_rom,
             .prg_ram = prg_ram,
             .chr_ram = chr_ram,
-            .chr_rom = chr_rom,
+            .chr_rom = params.chr_rom,
             .chr_is_ram = chr_is_ram,
-            .mirroring_mode = mirroring_mode,
+            .mirroring_mode = params.mirroring_mode,
             .allocator = allocator,
         };
 
