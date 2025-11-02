@@ -111,9 +111,9 @@ pub const Mapper1 = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.prg_ram.deinit();
         self.allocator.free(self.chr_ram);
         self.allocator.destroy(self);
-        self.prg_ram.deinit();
     }
 
     /// Updates the PRG and CHR offset tables based on current banking configuration
