@@ -141,13 +141,23 @@ pub fn build(b: *std.Build) void {
     }
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
+    const no_run = b.option(bool, "no-run", "Don't run the test") orelse false;
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
     const mod_tests = b.addTest(.{
+        .name = "mod-test",
         .root_module = mod,
         .filters = test_filters,
+        .use_llvm = true,
+    });
+    const mod_test_artifacts = b.addInstallArtifact(mod_tests, .{
+        .dest_dir = .{
+            .override = .{
+                .custom = "tests",
+            },
+        },
     });
 
     // A run step that will run the test executable.
@@ -157,9 +167,12 @@ pub fn build(b: *std.Build) void {
     // root module. Note that test executables only test one module at a time,
     // hence why we have to create two separate ones.
     const exe_tests = b.addTest(.{
+        .name = "exe-test",
         .root_module = exe.root_module,
         .filters = test_filters,
+        .use_llvm = true,
     });
+    b.installArtifact(exe_tests);
 
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
@@ -168,8 +181,11 @@ pub fn build(b: *std.Build) void {
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&mod_test_artifacts.step);
+    if (!no_run) {
+        test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_exe_tests.step);
+    }
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
