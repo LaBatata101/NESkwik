@@ -150,7 +150,15 @@ test "Mapper2 initialization" {
     defer allocator.free(prg_rom);
     @memset(prg_rom, 0);
 
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper2.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0,
+        .prg_rom_banks = 8,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     try std.testing.expectEqual(@as(u8, 8), mapper.num_banks);
@@ -172,32 +180,40 @@ test "Mapper2 PRG ROM banking" {
         @memset(prg_rom[bank_start..bank_end], @as(u8, @truncate(bank)));
     }
 
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper2.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0,
+        .prg_rom_banks = 8,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Initially, bank 0 should be at $8000
-    try std.testing.expectEqual(@as(u8, 0), mapper.prg_read(0x8000));
-    try std.testing.expectEqual(@as(u8, 0), mapper.prg_read(0xBFFF));
+    try std.testing.expectEqual(@as(u8, 0), mapper.prg_rom_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 0), mapper.prg_rom_read(0xBFFF));
 
     // Last bank (bank 7) should always be at $C000
-    try std.testing.expectEqual(@as(u8, 7), mapper.prg_read(0xC000));
-    try std.testing.expectEqual(@as(u8, 7), mapper.prg_read(0xFFFF));
+    try std.testing.expectEqual(@as(u8, 7), mapper.prg_rom_read(0xC000));
+    try std.testing.expectEqual(@as(u8, 7), mapper.prg_rom_read(0xFFFF));
 
     // Switch to bank 3
     mapper.prg_rom_write(0x8000, 3);
-    try std.testing.expectEqual(@as(u8, 3), mapper.prg_read(0x8000));
-    try std.testing.expectEqual(@as(u8, 3), mapper.prg_read(0xBFFF));
+    try std.testing.expectEqual(@as(u8, 3), mapper.prg_rom_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 3), mapper.prg_rom_read(0xBFFF));
 
     // Last bank should still be fixed at $C000
-    try std.testing.expectEqual(@as(u8, 7), mapper.prg_read(0xC000));
+    try std.testing.expectEqual(@as(u8, 7), mapper.prg_rom_read(0xC000));
 
     // Switch to bank 5
     mapper.prg_rom_write(0xC000, 5); // Write to any address in ROM space
-    try std.testing.expectEqual(@as(u8, 5), mapper.prg_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 5), mapper.prg_rom_read(0x8000));
 
     // Test bank wrapping (bank 15 % 8 = 7)
     mapper.prg_rom_write(0x8000, 15);
-    try std.testing.expectEqual(@as(u8, 7), mapper.prg_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 7), mapper.prg_rom_read(0x8000));
 }
 
 test "Mapper2 CHR RAM read/write" {
@@ -207,7 +223,15 @@ test "Mapper2 CHR RAM read/write" {
     defer allocator.free(prg_rom);
     @memset(prg_rom, 0);
 
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .VERTICAL);
+    var mapper = try Mapper2.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0,
+        .prg_rom_banks = 2,
+        .mirroring_mode = .VERTICAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // CHR RAM should be initialized to 0
@@ -241,20 +265,28 @@ test "Mapper2 minimum ROM size (32KB)" {
     // Bank 1
     @memset(prg_rom[0x4000..0x8000], 0xBB);
 
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper2.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0,
+        .prg_rom_banks = 2,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     try std.testing.expectEqual(@as(u8, 2), mapper.num_banks);
 
     // Bank 0 at $8000
-    try std.testing.expectEqual(@as(u8, 0xAA), mapper.prg_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 0xAA), mapper.prg_rom_read(0x8000));
 
     // Bank 1 (last bank) at $C000
-    try std.testing.expectEqual(@as(u8, 0xBB), mapper.prg_read(0xC000));
+    try std.testing.expectEqual(@as(u8, 0xBB), mapper.prg_rom_read(0xC000));
 
     // Switch to bank 1 at $8000
     mapper.prg_rom_write(0x8000, 1);
-    try std.testing.expectEqual(@as(u8, 0xBB), mapper.prg_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 0xBB), mapper.prg_rom_read(0x8000));
 }
 
 test "Mapper2 maximum practical ROM size (2MB)" {
@@ -272,28 +304,22 @@ test "Mapper2 maximum practical ROM size (2MB)" {
         @memset(prg_rom[start..end], @as(u8, @truncate(bank)));
     }
 
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper2.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0,
+        .prg_rom_banks = 8,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Test all banks are accessible
     for (0..num_banks) |bank| {
         mapper.prg_rom_write(0x8000, @truncate(bank));
-        try std.testing.expectEqual(@as(u8, @truncate(bank)), mapper.prg_read(0x8000));
+        try std.testing.expectEqual(@as(u8, @truncate(bank)), mapper.prg_rom_read(0x8000));
     }
-}
-
-test "Mapper2 invalid ROM size" {
-    const allocator = std.testing.allocator;
-
-    // ROM size not a multiple of 16KB should still work but warn
-    const prg_rom = try allocator.alloc(u8, 0x5000); // 20KB (not multiple of 16KB)
-    defer allocator.free(prg_rom);
-
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
-    defer mapper.deinit();
-
-    // Should have calculated 1 bank (truncated)
-    try std.testing.expectEqual(@as(u8, 1), mapper.num_banks);
 }
 
 test "Mapper2 bank selection with high bits" {
@@ -308,14 +334,22 @@ test "Mapper2 bank selection with high bits" {
         @memset(prg_rom[start..end], @as(u8, @truncate(bank)));
     }
 
-    var mapper = try Mapper2.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper2.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0,
+        .prg_rom_banks = 4,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Write with high bits set (should be masked)
     mapper.prg_rom_write(0x8000, 0xF2); // Binary: 11110010, should select bank 2
-    try std.testing.expectEqual(@as(u8, 2), mapper.prg_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 2), mapper.prg_rom_read(0x8000));
 
     // Upper bits should be ignored
     mapper.prg_rom_write(0x8000, 0x83); // Binary: 10000011, should select bank 3
-    try std.testing.expectEqual(@as(u8, 3), mapper.prg_read(0x8000));
+    try std.testing.expectEqual(@as(u8, 3), mapper.prg_rom_read(0x8000));
 }

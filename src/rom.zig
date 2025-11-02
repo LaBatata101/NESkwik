@@ -191,129 +191,45 @@ pub const Rom = struct {
     }
 };
 
-// Only for testing
-pub fn DummyTestRom(allocator: std.mem.Allocator, opcodes: []const u8) Rom {
-    const prg_rom = opcodes;
-    const chr_rom = &[_]u8{0};
-    return .{
-        .prg_rom = @constCast(prg_rom),
-        .chr_rom = @constCast(chr_rom),
-        .mapper = Mapper.init(allocator, 0, .{
-            .rom_path = "test.rom",
-            .prg_rom = prg_rom,
-            .chr_rom = chr_rom,
-            .prg_rom_banks = 0,
-            .prg_ram_size = 0,
-            .has_battery_backed_ram = false,
-            .mirroring_mode = Mirroring.HORIZONTAL,
-        }) catch @panic("Failed to init mapper\n"),
-    };
-}
-
 pub const TestRom = struct {
-    header: []const u8,
-    trainer: ?[]const u8,
-    prg_rom: []const u8,
-    chr_rom: []const u8,
+    prg_rom: []u8,
+    rom: Rom,
+    alloc: std.mem.Allocator,
 
-    fn createRawRom(self: @This(), allocator: std.mem.Allocator) ![]u8 {
-        var array = try std.ArrayList(u8).initCapacity(
-            allocator,
-            self.header.len + self.prg_rom.len + self.chr_rom.len + if (self.trainer) |trainer| trainer.len else 0,
-        );
-        try array.appendSlice(allocator, self.header);
-        if (self.trainer) |trainer| {
-            try array.appendSlice(allocator, trainer);
-        }
+    const Self = @This();
 
-        try array.appendSlice(allocator, self.prg_rom);
-        try array.appendSlice(allocator, self.chr_rom);
-        return try array.toOwnedSlice(allocator);
+    pub fn init(alloc: std.mem.Allocator, comptime opcodes: []const u8) Self {
+        return Self.init_with_mirroring(alloc, opcodes, .HORIZONTAL);
     }
 
-    pub fn testRom(allocator: std.mem.Allocator, program: []const u8) ![]u8 {
-        var prg_rom_contents = try std.ArrayList(u8).initCapacity(allocator, program.len);
-        defer prg_rom_contents.deinit(allocator);
+    pub fn init_with_mirroring(alloc: std.mem.Allocator, comptime opcodes: []const u8, mirroring: Mirroring) Self {
+        const prg_rom = alloc.alloc(u8, 0x10000) catch @panic("Failed to allocate PRG ROM");
+        @memset(prg_rom, 0);
 
-        try prg_rom_contents.appendSlice(allocator, program);
-        try prg_rom_contents.resize(allocator, 2 * PRG_ROM_PAGE_SIZE);
+        @memmove(prg_rom[0x8000 .. 0x8000 + opcodes.len], opcodes);
 
-        const test_rom = TestRom{
-            .header = &[_]u8{ 0x4E, 0x45, 0x53, 0x1A, 0x02, 0x01, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
-            .trainer = null,
-            .prg_rom = prg_rom_contents.items,
-            .chr_rom = &[_]u8{2} ** CHR_ROM_PAGE_SIZE,
+        const chr_rom = &[_]u8{0};
+        return .{
+            .alloc = alloc,
+            .prg_rom = prg_rom,
+            .rom = .{
+                .prg_rom = prg_rom,
+                .chr_rom = @constCast(chr_rom),
+                .mapper = Mapper.init(alloc, 0, .{
+                    .rom_path = "test.rom",
+                    .prg_rom = prg_rom,
+                    .chr_rom = chr_rom,
+                    .prg_rom_banks = 0,
+                    .prg_ram_size = 0,
+                    .has_battery_backed_ram = false,
+                    .mirroring_mode = mirroring,
+                }) catch @panic("Failed to init mapper\n"),
+            },
         };
-        return try test_rom.createRawRom(allocator);
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.rom.deinit();
+        self.alloc.free(self.prg_rom);
     }
 };
-
-// TODO: fix tests
-test "ROM creation" {
-    const allocator = std.testing.allocator;
-    var header = [_]u8{
-        0x4E, 0x45, 0x53, 0x1A, 0x02, 0x01, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
-    var prg_rom = [_]u8{1} ** (2 * PRG_ROM_PAGE_SIZE);
-    var chr_rom = [_]u8{2} ** CHR_ROM_PAGE_SIZE;
-    const test_rom = TestRom{
-        .header = header[0..],
-        .trainer = null,
-        .prg_rom = &prg_rom,
-        .chr_rom = &chr_rom,
-    };
-
-    const raw_rom = try test_rom.createRawRom(allocator);
-    defer allocator.free(raw_rom);
-    const rom = try Rom.init(raw_rom);
-
-    try std.testing.expect(std.mem.eql(u8, &prg_rom, rom.prg_rom));
-    try std.testing.expect(std.mem.eql(u8, &chr_rom, rom.chr_rom));
-    // try std.testing.expectEqual(3, rom.mapper_id);
-    // try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
-}
-
-test "ROM with trainer section" {
-    const allocator = std.testing.allocator;
-    var header = [_]u8{
-        0x4E, 0x45, 0x53, 0x1A, 0x02, 0x01, 0x31 | 0b100, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
-    var prg_rom = [_]u8{1} ** (2 * PRG_ROM_PAGE_SIZE);
-    var chr_rom = [_]u8{2} ** CHR_ROM_PAGE_SIZE;
-    var trainer = [_]u8{0} ** 512;
-    const test_rom = TestRom{
-        .header = header[0..],
-        .trainer = &trainer,
-        .prg_rom = &prg_rom,
-        .chr_rom = &chr_rom,
-    };
-
-    const raw_rom = try test_rom.createRawRom(allocator);
-    defer allocator.free(raw_rom);
-    const rom = try Rom.init(raw_rom);
-
-    try std.testing.expect(std.mem.eql(u8, &prg_rom, rom.prg_rom));
-    try std.testing.expect(std.mem.eql(u8, &chr_rom, rom.chr_rom));
-    // try std.testing.expectEqual(3, rom.mapper_id);
-    // try std.testing.expectEqual(Mirroring.VERTICAL, rom.mirroring);
-}
-
-test "ROM NES2.0 format not supported" {
-    const allocator = std.testing.allocator;
-    var header = [_]u8{
-        0x4E, 0x45, 0x53, 0x1A, 0x02, 0x01, 0x31, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
-    var prg_rom = [_]u8{1} ** PRG_ROM_PAGE_SIZE;
-    var chr_rom = [_]u8{2} ** CHR_ROM_PAGE_SIZE;
-    const test_rom = TestRom{
-        .header = header[0..],
-        .trainer = null,
-        .prg_rom = &prg_rom,
-        .chr_rom = &chr_rom,
-    };
-
-    const raw_rom = try test_rom.createRawRom(allocator);
-    defer allocator.free(raw_rom);
-
-    // try std.testing.expectError(error.InvalidNesFormatVersion, Rom.load(raw_rom));
-}

@@ -129,7 +129,15 @@ test "Mapper0 16KB PRG ROM mirroring" {
         byte.* = @truncate(i);
     }
 
-    var mapper = try Mapper0.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper0.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .prg_rom_banks = 0,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Test that the upper 16KB mirrors the lower 16KB
@@ -150,13 +158,20 @@ test "Mapper0 32KB PRG ROM no mirroring" {
         byte.* = @truncate(i);
     }
 
-    var mapper = try Mapper0.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper0.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .prg_rom_banks = 0,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Test that different addresses return different values
     try std.testing.expectEqual(prg_rom[0], mapper.prg_rom_read(0x8000));
     try std.testing.expectEqual(prg_rom[0x4000], mapper.prg_rom_read(0xC000));
-    try std.testing.expect(mapper.prg_rom_read(0x8000) != mapper.prg_rom_read(0xC000));
 }
 
 test "Mapper0 CHR RAM" {
@@ -165,7 +180,15 @@ test "Mapper0 CHR RAM" {
     const prg_rom = try allocator.alloc(u8, 0x4000);
     defer allocator.free(prg_rom);
 
-    var mapper = try Mapper0.init(allocator, prg_rom, &[_]u8{}, .HORIZONTAL);
+    var mapper = try Mapper0.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = &[_]u8{},
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .prg_rom_banks = 0,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Test CHR RAM writes and reads
@@ -186,7 +209,15 @@ test "Mapper0 CHR ROM read-only" {
     defer allocator.free(chr_rom);
     @memset(chr_rom, 0xFF);
 
-    var mapper = try Mapper0.init(allocator, prg_rom, chr_rom, .HORIZONTAL);
+    var mapper = try Mapper0.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = chr_rom,
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .prg_rom_banks = 0,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Attempt to write to CHR ROM (should be ignored)

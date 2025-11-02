@@ -278,7 +278,15 @@ test "Mapper1 initialization" {
     defer allocator.free(chr_rom);
     @memset(chr_rom, 0);
 
-    var mapper = try Mapper1.init(allocator, prg_rom, chr_rom, 16, 0x2000, .HORIZONTAL);
+    var mapper = try Mapper1.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = chr_rom,
+        .prg_rom_banks = 16,
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     try std.testing.expectEqual(@as(u8, 0x10), mapper.load_register);
@@ -297,7 +305,15 @@ test "Mapper1 shift register write sequence" {
     defer allocator.free(chr_rom);
     @memset(chr_rom, 0);
 
-    var mapper = try Mapper1.init(allocator, prg_rom, chr_rom, 2, 0x2000, .HORIZONTAL);
+    var mapper = try Mapper1.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = chr_rom,
+        .prg_rom_banks = 2,
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Write 5 bits to control register (address $8000-$9FFF)
@@ -323,7 +339,15 @@ test "Mapper1 reset with bit 7" {
     defer allocator.free(chr_rom);
     @memset(chr_rom, 0);
 
-    var mapper = try Mapper1.init(allocator, prg_rom, chr_rom, 2, 0x2000, .HORIZONTAL);
+    var mapper = try Mapper1.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = chr_rom,
+        .prg_rom_banks = 2,
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Start a write sequence
@@ -356,7 +380,15 @@ test "Mapper1 PRG banking mode 3" {
     defer allocator.free(chr_rom);
     @memset(chr_rom, 0);
 
-    var mapper = try Mapper1.init(allocator, prg_rom, chr_rom, 4, 0x2000, .HORIZONTAL);
+    var mapper = try Mapper1.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = chr_rom,
+        .prg_rom_banks = 4,
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Mode 3 (default): switch first bank, fix last bank
@@ -365,7 +397,7 @@ test "Mapper1 PRG banking mode 3" {
 
     // Switch to bank 1 at $8000
     for (0..5) |i| {
-        mapper.prg_rom_write(0xE000, @as(u8, @intCast((1 >> @intCast(i)) & 1)));
+        mapper.prg_rom_write(0xE000, @as(u8, @intCast(std.math.shr(usize, 1, i) & 1)));
     }
     try std.testing.expectEqual(@as(u8, 1), mapper.prg_rom_read(0x8000));
     try std.testing.expectEqual(@as(u8, 3), mapper.prg_rom_read(0xC000));
@@ -388,23 +420,31 @@ test "Mapper1 CHR banking" {
         @memset(chr_rom[bank_start..bank_end], @as(u8, @truncate(bank)));
     }
 
-    var mapper = try Mapper1.init(allocator, prg_rom, chr_rom, 2, 0x2000, .HORIZONTAL);
+    var mapper = try Mapper1.init(allocator, .{
+        .prg_rom = prg_rom,
+        .chr_rom = chr_rom,
+        .prg_rom_banks = 2,
+        .prg_ram_size = 0x2000,
+        .mirroring_mode = .HORIZONTAL,
+        .has_battery_backed_ram = false,
+        .rom_path = "test.rom",
+    });
     defer mapper.deinit();
 
     // Set CHR mode to 1 (two separate 4KB banks)
     // Write control register: bits = 0b10000 (CHR mode = 1)
     for (0..5) |i| {
-        mapper.prg_rom_write(0x8000, @as(u8, @intCast((0x10 >> @intCast(i)) & 1)));
+        mapper.prg_rom_write(0x8000, @as(u8, @intCast(std.math.shr(usize, 0x10, i) & 1)));
     }
 
     // Set CHR bank 0 to bank 2
     for (0..5) |i| {
-        mapper.prg_rom_write(0xA000, @as(u8, @intCast((2 >> @intCast(i)) & 1)));
+        mapper.prg_rom_write(0xA000, @as(u8, @intCast(std.math.shr(usize, 2, i) & 1)));
     }
 
     // Set CHR bank 1 to bank 5
     for (0..5) |i| {
-        mapper.prg_rom_write(0xC000, @as(u8, @intCast((5 >> @intCast(i)) & 1)));
+        mapper.prg_rom_write(0xC000, @as(u8, @intCast(std.math.shr(usize, 5, i) & 1)));
     }
 
     try std.testing.expectEqual(@as(u8, 2), mapper.chr_read(0x0000));

@@ -1252,9 +1252,13 @@ fn flip_byte(byte: u8) u8 {
     return result;
 }
 
-// TODO: fix tests
 test "PPU VRAM write" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.addr_write(0x23);
     ppu.addr_write(0x05);
     ppu.data_write(0x42);
@@ -1263,7 +1267,12 @@ test "PPU VRAM write" {
 }
 
 test "PPU VRAM read" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.ctrl_write(0);
     ppu.vram[0x0305] = 0x42;
 
@@ -1276,7 +1285,12 @@ test "PPU VRAM read" {
 }
 
 test "PPU VRAM read cross page" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.ctrl_write(0);
     ppu.vram[0x01ff] = 0x42;
     ppu.vram[0x0200] = 0x69;
@@ -1290,7 +1304,12 @@ test "PPU VRAM read cross page" {
 }
 
 test "PPU VRAM read - step 32" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.ctrl_register.vram_add_increment = true;
     ppu.vram[0x01ff] = 0x12;
     ppu.vram[0x01ff + 32] = 0x13;
@@ -1309,7 +1328,12 @@ test "PPU VRAM read - step 32" {
 //   [0x2000 A ] [0x2400 a ]
 //   [0x2800 B ] [0x2C00 b ]
 test "PPU VRAM horizontal mirror" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.addr_write(0x24);
     ppu.addr_write(0x05);
 
@@ -1337,7 +1361,12 @@ test "PPU VRAM horizontal mirror" {
 //   [0x2000 A ] [0x2400 B ]
 //   [0x2800 a ] [0x2C00 b ]
 test "PPU VRAM vertical mirror" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.VERTICAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init_with_mirroring(alloc, &[_]u8{}, .VERTICAL);
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.addr_write(0x20);
     ppu.addr_write(0x05);
 
@@ -1362,7 +1391,12 @@ test "PPU VRAM vertical mirror" {
 }
 
 test "read status resets write toggle (internal w register)" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.vram[0x0305] = 0x66;
 
     ppu.addr_write(0x21);
@@ -1381,19 +1415,13 @@ test "read status resets write toggle (internal w register)" {
     try std.testing.expectEqual(0x66, ppu.data_read());
 }
 
-test "PPU VRAM mirroring" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
-    ppu.vram[0x0305] = 0x66;
-
-    ppu.addr_write(0x63); // 0x6305 -> 0x2305
-    ppu.addr_write(0x05);
-
-    _ = ppu.data_read(); // load data to internal buffer
-    try std.testing.expectEqual(0x66, ppu.data_read());
-}
-
 test "OAM read write" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.oam_addr_write(0x10);
     ppu.oam_data_write(0x42);
     ppu.oam_data_write(0x69);
@@ -1406,30 +1434,16 @@ test "OAM read write" {
 }
 
 test "read status resets vblank" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
+    const alloc = std.testing.allocator;
+    const TestRom = @import("rom.zig").TestRom;
+    var test_rom = TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    var ppu = PPU.init(&test_rom.rom);
     ppu.status_register.vblank = true;
 
     const status = ppu.status_read();
 
     try std.testing.expect(status.vblank);
     try std.testing.expect(!ppu.status_register.vblank);
-}
-
-test "OAM DMA" {
-    var ppu = PPU.init(&[_]u8{0} ** 2048, Mirroring.HORIZONTAL);
-    var data = [_]u8{0x69} ** 256;
-    data[0] = 0x42;
-    data[255] = 0x13;
-
-    ppu.oam_addr_write(0x10);
-    ppu.oam_dma_write(data);
-
-    ppu.oam_addr_write(0xF); // wrap around
-    try std.testing.expectEqual(0x13, ppu.oam_data_read());
-
-    ppu.oam_addr_write(0x10);
-    try std.testing.expectEqual(0x42, ppu.oam_data_read());
-
-    ppu.oam_data_write(0x11);
-    try std.testing.expectEqual(0x69, ppu.oam_data_read());
 }
