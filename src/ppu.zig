@@ -846,7 +846,7 @@ pub const PPU = struct {
         }
     }
 
-    fn ppu_read(self: *Self, addr: u16) u8 {
+    fn ppu_read(self: *const Self, addr: u16) u8 {
         const new_addr = addr & 0x3FFF;
         return switch (new_addr) {
             0...0x1FFF => self.rom.chr_read(new_addr),
@@ -877,6 +877,17 @@ pub const PPU = struct {
         };
         self.dynamic_latch = value;
         return value;
+    }
+
+    pub fn cpu_peek(self: *const Self, addr: u16) u8 {
+        return switch (addr) {
+            0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => self.dynamic_latch,
+            0x2002 => @as(u8, @bitCast(self.status_register)) | (self.dynamic_latch & 0b0001_1111),
+            0x2004 => self.oam_data_read(),
+            0x2007 => return self.ppu_read(self.addr_register.addr()),
+            0x2008...0x3FFF => self.cpu_peek(addr & 0b00100000_00000111),
+            else => unreachable,
+        };
     }
 
     pub fn cpu_write(self: *Self, addr: u16, data: u8) void {

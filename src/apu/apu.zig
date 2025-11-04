@@ -260,6 +260,17 @@ pub const APU = struct {
         return status;
     }
 
+    pub fn peek_status(self: *const Self) u8 {
+        var status: u8 = 0;
+        status |= self.pulse1.length_counter.active();
+        status |= self.pulse2.length_counter.active() << 1;
+        status |= self.triangle.length_counter.active() << 2;
+        status |= self.noise.length_counter.active() << 3;
+        // TODO: DMC channel?
+        status |= if (self.irq_interrupt) @as(u8, 1 << 6) else 0;
+        return status;
+    }
+
     pub fn write(self: *Self, addr: u16, value: u8) void {
         switch (addr) {
             0x4000, 0x4001, 0x4002, 0x4003 => self.pulse1.write(addr, value),

@@ -50,6 +50,24 @@ pub const Bus = struct {
         };
     }
 
+    pub fn mem_peek(self: *const Self, addr: u16) u8 {
+        return switch (addr) {
+            0...0x1FFF => self.ram[addr % RAM_SIZE],
+            0x2000...0x3FFF => self.ppu.cpu_peek(addr),
+            0x4000...0x4015 => {
+                if (addr == 0x4014) {
+                    return self.ppu.dynamic_latch;
+                }
+                return self.apu.peek_status();
+            },
+            0x4016 => self.controllers.cntrl1_peek(),
+            0x4017 => self.controllers.cntrl2_peek(),
+            0x6000...0x7FFF => self.rom.prg_ram_read(addr),
+            0x4020...0x5FFF, 0x8000...0xFFFF => self.rom.prg_rom_read(addr),
+            else => return 0,
+        };
+    }
+
     pub fn mem_write(self: *Self, addr: u16, data: u8) void {
         switch (addr) {
             0...0x1FFF => self.ram[addr % RAM_SIZE] = data,
@@ -66,6 +84,12 @@ pub const Bus = struct {
     pub fn mem_read_u16(self: *Self, addr: u16) u16 {
         const lo = self.mem_read(addr);
         const hi = @as(u16, self.mem_read(addr + 1));
+        return (hi << 8) | lo;
+    }
+
+    pub fn mem_peek_u16(self: *Self, addr: u16) u16 {
+        const lo = self.mem_peek(addr);
+        const hi = @as(u16, self.mem_peek(addr + 1));
         return (hi << 8) | lo;
     }
 

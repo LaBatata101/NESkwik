@@ -87,6 +87,23 @@ pub const Controllers = struct {
         // return the nth bit (`button_index`) in `pressed_button`
         return result;
     }
+
+    pub fn cntrl1_peek(self: *const Self) u8 {
+        if (self.cntrl1_index > 7) {
+            return 1;
+        }
+        const pressed_button = @as(u8, @bitCast(self.cntrl1_status)) & std.math.shl(u8, 1, self.cntrl1_index);
+        return std.math.shr(u8, pressed_button, self.cntrl1_index);
+    }
+
+    pub fn cntrl2_peek(self: *const Self) u8 {
+        if (self.cntrl2_index > 7) {
+            return 1;
+        }
+
+        const pressed_button = @as(u8, @bitCast(self.cntrl2_status)) & std.math.shl(u8, 1, self.cntrl2_index);
+        return std.math.shr(u8, pressed_button, self.cntrl2_index);
+    }
 };
 
 test "joypad strobe mode ON" {
