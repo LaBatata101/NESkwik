@@ -593,9 +593,7 @@ pub const PPU = struct {
 
                     if (!self.ctrl_register.sprite_size) { // 8x8 sprite mode
                         const base_addr: u16 = if (self.ctrl_register.sprite_pattern_addr) 0x1000 else 0x0000;
-                        sprite_pattern_addr_lo = base_addr |
-                            (sprite_tile_id << 4) |
-                            @as(u16, @bitCast(self.scanline -% sprite_y_pos));
+                        sprite_pattern_addr_lo = base_addr | (sprite_tile_id << 4) | row;
                     } else { // 8x16 sprite mode
                         var effective_tile: u16 = sprite_tile_id & 0xFE; // Even tile index for top half
                         var effective_row: u16 = row;
