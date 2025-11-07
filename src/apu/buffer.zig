@@ -40,6 +40,11 @@ pub const SampleBuffer = struct {
         alloc.destroy(self);
     }
 
+    pub fn reset(self: *Self) void {
+        c.blip_clear(self.blip);
+        @memset(self.samples.items, 0);
+    }
+
     pub fn read(self: *Self) []i16 {
         const samples_read = c.blip_read_samples(self.blip, self.samples.items.ptr, @intCast(self.samples.items.len), 0);
         return self.samples.items[0..@intCast(samples_read)];

@@ -400,6 +400,33 @@ pub const PPU = struct {
         };
     }
 
+    pub fn reset(self: *Self) void {
+        @memset(&self.palette_table, 0);
+        @memset(&self.vram, 0);
+        @memset(&self.oam_data_register, 0);
+        self.frame_buffer.clear();
+        self.write_toggle = false;
+        self.ctrl_register = .{};
+        self.mask_register = .{};
+        self.status_register = .{};
+        self.oam_addr_register = 0;
+        self.scroll_register = .{};
+        self.addr_register = .{};
+        self.tmp_addr = .{};
+        self.internal_data_buf = 0;
+        self.scanline = 0;
+        self.cycle = 0;
+        self.nmi_interrupt = false;
+        self.bg_data = .{};
+        self.fg = .{};
+        self.fine_x = 0;
+        self.frame_complete = false;
+        self.global_cycle = 0;
+        self.next_vblank_ppu_cycle = 1;
+        self.next_vblank_cpu_cycle = ppu_to_cpu_cycle(1);
+        self.dynamic_latch = 0;
+    }
+
     fn first_nametable(self: Self) Nametable {
         return .{ .data = self.vram[0..0x3C0], .attribute_table = self.vram[0x3C0..0x400] };
     }

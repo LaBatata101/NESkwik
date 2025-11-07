@@ -129,6 +129,7 @@ pub const System = struct {
 
     pub fn reset(self: *Self) void {
         self.cpu.reset();
+        self.bus.reset();
         self.quit = false;
     }
 

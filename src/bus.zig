@@ -29,6 +29,13 @@ pub const Bus = struct {
         };
     }
 
+    pub fn reset(self: *Self) void {
+        self.cycles = 0;
+        self.ppu.reset();
+        self.apu.reset();
+        self.controllers.reset();
+    }
+
     pub fn mem_read(self: *Self, addr: u16) u8 {
         return switch (addr) {
             0...0x1FFF => self.ram[addr % RAM_SIZE],

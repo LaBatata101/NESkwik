@@ -91,6 +91,24 @@ pub const APU = struct {
         self.tnd_buffer.deinit(self.alloc);
     }
 
+    pub fn reset(self: *Self) void {
+        self.pulse_buffer.reset();
+        self.tnd_buffer.reset();
+
+        self.pulse1 = Pulse.init(false, Waveform.init(self.pulse_buffer, VOLUME_MULT));
+        self.pulse2 = Pulse.init(true, Waveform.init(self.pulse_buffer, VOLUME_MULT));
+        self.triangle = Triangle.init(Waveform.init(self.tnd_buffer, VOLUME_MULT));
+        self.noise = Noise.init(Waveform.init(self.tnd_buffer, VOLUME_MULT));
+        self.frame = .{};
+        self.global_cyc = 0;
+        self.tick_cycle = 0;
+        self.next_tick_cyc = NTSC_TICK_LENGTH_TABLE[0][0];
+        self.next_transfer_cyc = self.pulse_buffer.clocks_needed();
+        self.last_frame_cyc = 0;
+        self.irq_interrupt = false;
+        self.jitter = Jitter.None;
+    }
+
     pub fn run_to(self: *Self, cpu_cycle: u64) void {
         while (self.global_cyc < cpu_cycle) {
             const current_cycle = self.global_cyc;

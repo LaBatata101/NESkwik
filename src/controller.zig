@@ -42,6 +42,14 @@ pub const Controllers = struct {
         };
     }
 
+    pub fn reset(self: *Self) void {
+        self.strobe = false;
+        self.cntrl1_index = 0;
+        self.cntrl2_index = 0;
+        self.cntrl1_status = .{};
+        self.cntrl2_status = .{};
+    }
+
     /// Set the state of `strobe`.
     pub fn set_strobe(self: *Self, data: u8) void {
         self.strobe = data & 1 != 0;

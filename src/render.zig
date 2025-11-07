@@ -64,6 +64,10 @@ pub const Frame = struct {
             self.data[base + 2] = rgb.b;
         }
     }
+
+    pub fn clear(self: *Self) void {
+        @memset(&self.data, 0);
+    }
 };
 
 pub const FPSManager = struct {

@@ -119,6 +119,7 @@ fn process_input(system: *System) void {
             c.SDL_EVENT_QUIT => system.quit = true,
             c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
                 c.SDLK_ESCAPE => system.quit = true,
+                c.SDLK_R => system.reset(),
                 else => |key_code| system.controller_keydown(key_code),
             },
             c.SDL_EVENT_KEY_UP => system.controller_keyup(event.key.key),
