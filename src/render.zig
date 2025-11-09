@@ -29,6 +29,11 @@ pub const Color = struct {
     b: u8,
     a: u8,
 
+    pub const WHITE: Color = .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    pub const RED: Color = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    pub const GREEN: Color = .{ .r = 0, .g = 255, .b = 0, .a = 255 };
+    pub const BLUE: Color = .{ .r = 0, .g = 0, .b = 255, .a = 255 };
+
     fn RGBA(r: u8, g: u8, b: u8, a: u8) @This() {
         return .{ .r = r, .g = g, .b = b, .a = a };
     }
