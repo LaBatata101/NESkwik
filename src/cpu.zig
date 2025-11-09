@@ -289,8 +289,10 @@ pub const CPU = struct {
 
     fn dec(self: *Self, opcode: opcodes.OpCode) void {
         const addr = self.operand_address(opcode.addressing_mode());
-        const data = self.mem_read(addr);
-        const result = data -% 1;
+        const value = self.mem_read(addr);
+        const result = value -% 1;
+
+        self.mem_write(addr, value); // dummy write
 
         self.mem_write(addr, result);
         self.update_zero_and_negative_flags(result);
@@ -338,6 +340,8 @@ pub const CPU = struct {
             else => {
                 const addr = self.operand_address(opcode.addressing_mode());
                 const value = self.mem_read(addr);
+
+                self.mem_write(addr, value); // dummy write
                 self.mem_write(addr, self.lsr_value(value));
             },
         }
@@ -361,6 +365,8 @@ pub const CPU = struct {
             else => {
                 const addr = self.operand_address(opcode.addressing_mode());
                 const value = self.mem_read(addr);
+
+                self.mem_write(addr, value); // dummy write
 
                 const result = @mulWithOverflow(value, 2);
 
@@ -387,6 +393,8 @@ pub const CPU = struct {
                 const addr = self.operand_address(opcode.addressing_mode());
                 var value = self.mem_read(addr);
                 const is_bit7_set = value & (1 << 7) != 0;
+
+                self.mem_write(addr, value); // dummy write
 
                 value <<= 1;
                 // set bit 0 to the value of carry flag
@@ -416,6 +424,8 @@ pub const CPU = struct {
                 var value = self.mem_read(addr);
                 const is_bit0_set = value & 1 != 0;
 
+                self.mem_write(addr, value); // dummy write
+
                 value >>= 1;
                 // set bit 7 to the value of carry flag
                 value = (value & ~@as(u8, 0x80)) | @as(u8, @intFromBool(self.status.carry_flag)) << 7;
@@ -437,6 +447,8 @@ pub const CPU = struct {
         const addr = self.operand_address(opcode.addressing_mode());
         const value = self.mem_read(addr);
         const result = value +% 1;
+
+        self.mem_write(addr, value); // dummy write
 
         self.mem_write(addr, result);
         self.update_zero_and_negative_flags(result);
