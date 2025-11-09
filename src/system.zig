@@ -8,6 +8,11 @@ const PPU = @import("ppu.zig").PPU;
 const APU = @import("apu/apu.zig").APU;
 const SDLAudioOut = @import("sdl_audio.zig").SDLAudioOut;
 const ControllerButton = @import("controller.zig").ControllerButton;
+const trace = @import("trace.zig").trace;
+
+pub const Settings = struct {
+    trace_cpu: bool = false,
+};
 
 pub const System = struct {
     allocator: std.mem.Allocator,
@@ -23,10 +28,15 @@ pub const System = struct {
     keymap2: std.AutoHashMap(u32, ControllerButton),
 
     quit: bool,
+    settings: Settings,
+
+    trace_file: ?std.fs.File,
+    trace_file_writer: ?std.fs.File.Writer,
+    trace_file_buffer: [4096]u8,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, rom: *Rom) !Self {
+    pub fn init(allocator: std.mem.Allocator, rom: *Rom, settings: Settings) !Self {
         const cpu = try allocator.create(CPU);
         const apu = try allocator.create(APU);
         const ppu = try allocator.create(PPU);
@@ -39,6 +49,14 @@ pub const System = struct {
 
         const keymap1, const keymap2 = try Self.init_keymaps(allocator);
 
+        var trace_file: ?std.fs.File = null;
+        var trace_file_writer: ?std.fs.File.Writer = null;
+        // const trace_file_buffer = try allocator.alloc(u8, 4096);
+        if (settings.trace_cpu) {
+            trace_file = try std.fs.cwd().createFile("cpu.trace", .{});
+            trace_file_writer = .initStreaming(trace_file.?, &.{});
+        }
+
         return .{
             .allocator = allocator,
             .bus = bus,
@@ -46,9 +64,28 @@ pub const System = struct {
             .ppu = ppu,
             .apu = apu,
             .quit = false,
+            .settings = settings,
             .keymap1 = keymap1,
             .keymap2 = keymap2,
+            .trace_file = trace_file,
+            .trace_file_writer = trace_file_writer,
+            .trace_file_buffer = undefined,
         };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.keymap1.deinit();
+        self.keymap2.deinit();
+        self.apu.deinit();
+
+        self.allocator.destroy(self.cpu);
+        self.allocator.destroy(self.ppu);
+        self.allocator.destroy(self.apu);
+        self.allocator.destroy(self.bus);
+
+        if (self.settings.trace_cpu) {
+            self.trace_file.?.close();
+        }
     }
 
     fn init_keymaps(allocator: std.mem.Allocator) !struct {
@@ -80,18 +117,7 @@ pub const System = struct {
         return .{ keymap1, keymap2 };
     }
 
-    pub fn deinit(self: *Self) void {
-        self.keymap1.deinit();
-        self.keymap2.deinit();
-        self.apu.deinit();
-
-        self.allocator.destroy(self.cpu);
-        self.allocator.destroy(self.ppu);
-        self.allocator.destroy(self.apu);
-        self.allocator.destroy(self.bus);
-    }
-
-    fn tick(self: *Self) void {
+    pub fn tick(self: *Self) void {
         if (self.ppu.requested_run_cycle() <= self.bus.cycles) {
             self.run_ppu();
         }
@@ -108,6 +134,10 @@ pub const System = struct {
 
     pub fn run_frame(self: *Self) void {
         while (!self.is_frame_complete()) {
+            if (self.settings.trace_cpu) {
+                var writer = self.trace_file_writer.?;
+                trace(&writer.interface, self.cpu) catch @panic("Failed to trace CPU");
+            }
             self.tick();
         }
     }
@@ -136,9 +166,17 @@ pub const System = struct {
     pub fn is_frame_complete(self: *Self) bool {
         if (self.ppu.frame_complete) {
             self.ppu.frame_complete = false;
+            if (self.settings.trace_cpu) {
+                self.dump_trace();
+            }
             return true;
         }
         return false;
+    }
+
+    fn dump_trace(self: *const Self) void {
+        var writer = self.trace_file_writer.?;
+        writer.interface.flush() catch |err| std.debug.panic("Flush failed: {any}\n", .{err});
     }
 
     pub fn frame_buffer(self: *Self) *const u8 {
