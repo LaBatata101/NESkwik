@@ -238,6 +238,7 @@ pub const CPU = struct {
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
                 const result = @addWithOverflow(lo, self.register_x);
                 if (result[1] == 1) {
+                    self.bus.cycles += 1;
                     _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
                     return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
@@ -249,6 +250,7 @@ pub const CPU = struct {
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
                 const result = @addWithOverflow(lo, self.register_y);
                 if (result[1] == 1) {
+                    self.bus.cycles += 1;
                     _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
                     return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
@@ -259,6 +261,9 @@ pub const CPU = struct {
                 const offset: i8 = @bitCast(self.mem_read(self.pc));
                 _ = self.mem_read(self.pc); // dummy read
                 const jump_addr: u32 = @bitCast(@as(i32, self.pc) +% 1 +% offset);
+                if (jump_addr & 0xFF00 != (self.pc + 1) & 0xFF00) {
+                    self.bus.cycles += 1;
+                }
                 return @truncate(jump_addr);
             },
             AdressingMode.Indirect => {
@@ -294,6 +299,7 @@ pub const CPU = struct {
 
                 const result = @addWithOverflow(lo, self.register_y);
                 if (result[1] == 1) {
+                    self.bus.cycles += 1;
                     _ = self.mem_read(@as(u16, hi) << 8 | result[0]); // dummy read
                     return @as(u16, hi +% 1) << 8 | result[0];
                 } else {
@@ -306,6 +312,7 @@ pub const CPU = struct {
 
     fn branch(self: *Self, mode: AdressingMode, condition: bool) void {
         if (condition) {
+            self.bus.cycles += 1;
             const jump_addr = self.operand_address(mode);
             self.pc = jump_addr;
         }
@@ -523,7 +530,7 @@ pub const CPU = struct {
         const code = self.mem_read(self.pc);
         const opcode = opcodes.OP_CODES[code];
         self.pc += 1;
-        const pc_state = self.pc;
+        const old_pc = self.pc;
 
 
         switch (opcode) {
@@ -817,31 +824,16 @@ pub const CPU = struct {
             },
         }
 
-        var instruction_cycles = opcode.cycles();
-        const branch_succeeded = self.pc != pc_state;
-        // Add an extra cycle if the branching instruction succeeds
-        if (opcode.is_branching() and branch_succeeded) {
-            instruction_cycles += 1;
-            // Check if the page was crossed by veryfying if the upper byte of the address has changed.
-            // Accessing data on a different page costs two extra cycles on branching instructions.
-            if (does_page_cross(self, opcode)) {
-                instruction_cycles += 1;
-            }
-        }
-        // Check if the page was crossed by veryfying if the upper byte of the address has changed.
-        // Accessing data on a different page costs an extra cycle.
-        else if (does_page_cross(self, opcode)) {
-            instruction_cycles += 1;
         // For instructions that have implicit adressing, the CPU will read the next byte of memory and then discard it.
         if (opcode.addressing_mode() == .Implicit) {
             _ = self.mem_read(old_pc); // dummy read
         }
 
-        if (self.pc == pc_state) {
+        if (self.pc == old_pc) {
             self.pc += opcode.size() - 1;
         }
 
-        self.bus.cycles += instruction_cycles;
+        self.bus.cycles += opcode.cycles();
     }
 
     pub fn interrupt(self: *Self, int: Interrupt) void {
@@ -861,27 +853,6 @@ pub const CPU = struct {
         self.bus.cycles +%= int.cycles;
     }
 };
-
-fn does_page_cross(cpu: *CPU, opcode: opcodes.OpCode) bool {
-    const mode = opcode.addressing_mode();
-    switch (mode) {
-        .AbsoluteX, .AbsoluteY => switch (opcode) {
-            .ADC, .AND, .CMP, .EOR, .LDA, .LDX, .LDY, .ORA, .SBC, .LAS, .LAX, .TOP => {
-                const base = cpu.bus.mem_read_u16(cpu.pc);
-                return @as(u8, @truncate(base >> 8)) != @as(u8, @truncate(cpu.operand_address(mode) >> 8));
-            },
-            else => return false,
-        },
-        .IndirectY => switch (opcode) {
-            .ADC, .SBC, .AND, .EOR, .ORA, .LDA, .LAX => {
-                const base = @as(u16, cpu.mem_read(cpu.pc +% 1)) << 8 | cpu.mem_read(cpu.pc);
-                return @as(u8, @truncate(base >> 8)) != @as(u8, @truncate(cpu.operand_address(mode) >> 8));
-            },
-            else => return false,
-        },
-        else => return false,
-    }
-}
 
 test "0x00: BRK Force Interrupt" {
     const alloc = std.testing.allocator;
@@ -2735,4 +2706,93 @@ test "0xBD: LDA AbsoluteX - page cross" {
     try std.testing.expectEqual(0x42, cpu.register_a);
     try std.testing.expect(!cpu.status.zero_flag);
     try std.testing.expect(!cpu.status.negative_flag);
+}
+
+test "0xD0: BNE cycle count - branch not taken" {
+    const alloc = std.testing.allocator;
+    //                          LDA         CMP         BNE
+    const instructions = [_]u8{ 0xA9, 0x01, 0xC9, 0x01, 0xD0, 0x05 };
+    var test_rom = rom.TestRom.init(alloc, &instructions);
+    defer test_rom.deinit();
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+
+    const initial_cycles = bus.cycles;
+    cpu.run_instructions(&instructions);
+    const cycles_used = bus.cycles - initial_cycles;
+
+    // LDA immediate: 2 cycles
+    // CMP immediate: 2 cycles
+    // BNE not taken: 2 cycles (base cost)
+    try std.testing.expectEqual(6, cycles_used);
+}
+
+test "0xD0: BNE cycle count - branch taken, same page" {
+    const alloc = std.testing.allocator;
+    //                          LDA         CMP         BNE         INX   INX
+    const instructions = [_]u8{ 0xA9, 0x01, 0xC9, 0x02, 0xD0, 0x02, 0xE8, 0xE8 };
+    var test_rom = rom.TestRom.init(alloc, &instructions);
+    defer test_rom.deinit();
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+
+    const initial_cycles = bus.cycles;
+    cpu.run_instructions(&instructions);
+    const cycles_used = bus.cycles - initial_cycles;
+
+    // LDA immediate: 2 cycles
+    // CMP immediate: 2 cycles
+    // BNE taken (same page): 2 + 1 = 3 cycles
+    try std.testing.expectEqual(7, cycles_used);
+}
+
+test "0xF0: BEQ cycle count - branch taken, page crossed backward" {
+    const alloc = std.testing.allocator;
+    var test_rom = rom.TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    // Set up instructions at $8105 (start of page)
+    // BEQ with negative offset to cross back to previous page
+    test_rom.prg_rom[0x8100] = 0xA9; // LDA immediate
+    test_rom.prg_rom[0x8101] = 0x01;
+    test_rom.prg_rom[0x8102] = 0xC9; // CMP immediate
+    test_rom.prg_rom[0x8103] = 0x01;
+    test_rom.prg_rom[0x8104] = 0xF0; // BEQ
+    test_rom.prg_rom[0x8105] = 0xF8; // -8 (branches back to $8103, crossing page)
+
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+    cpu.pc = 0x8100;
+
+    // Execute LDA and CMP
+    cpu.tick(); // LDA
+    cpu.tick(); // CMP
+
+    const before_branch = bus.cycles;
+    cpu.tick(); // BEQ
+    const branch_cycles = bus.cycles - before_branch;
+
+    // BEQ with page cross: 2 (base) + 1 (branch taken) + 1 (page cross) = 4 cycles
+    try std.testing.expectEqual(4, branch_cycles);
+    try std.testing.expectEqual(0x80FE, cpu.pc);
+}
+
+test "0x90: BCC cycle count - branch taken, page crossed backward" {
+    const alloc = std.testing.allocator;
+    var test_rom = rom.TestRom.init(alloc, &[_]u8{});
+    defer test_rom.deinit();
+
+    test_rom.prg_rom[0xF000] = 0x90; // BCC
+    test_rom.prg_rom[0xF001] = 0b1111_1100; // -4
+
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+    cpu.pc = 0xF000;
+    cpu.status.carry_flag = false;
+
+    const pc_before = cpu.pc;
+    cpu.tick();
+
+    try std.testing.expectEqual(cpu.pc, pc_before + 2 - 4);
+    try std.testing.expectEqual(4, bus.cycles);
 }
