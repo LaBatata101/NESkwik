@@ -892,12 +892,12 @@ pub const PPU = struct {
     }
 
     pub fn cpu_read(self: *Self, addr: u16) u8 {
-        const value = switch (addr) {
+        const mirrored_addr = 0x2000 | (addr & 0x0007);
+        const value = switch (mirrored_addr) {
             0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => self.dynamic_latch,
             0x2002 => @as(u8, @bitCast(self.status_read())) | (self.dynamic_latch & 0b0001_1111),
             0x2004 => self.oam_data_read(),
             0x2007 => self.data_read(),
-            0x2008...0x3FFF => self.cpu_read(addr & 0b00100000_00000111),
             else => unreachable,
         };
         self.dynamic_latch = value;
@@ -905,27 +905,28 @@ pub const PPU = struct {
     }
 
     pub fn cpu_peek(self: *const Self, addr: u16) u8 {
-        return switch (addr) {
+        const mirrored_addr = 0x2000 | (addr & 0x0007);
+        return switch (mirrored_addr) {
             0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => self.dynamic_latch,
             0x2002 => @as(u8, @bitCast(self.status_register)) | (self.dynamic_latch & 0b0001_1111),
             0x2004 => self.oam_data_read(),
-            0x2007 => return self.ppu_read(self.addr_register.addr()),
-            0x2008...0x3FFF => self.cpu_peek(addr & 0b00100000_00000111),
+            0x2007 => self.ppu_read(self.addr_register.addr()),
             else => unreachable,
         };
     }
 
     pub fn cpu_write(self: *Self, addr: u16, data: u8) void {
+        const mirrored_addr = 0x2000 | (addr & 0x0007);
         self.dynamic_latch = data;
-        switch (addr) {
+        switch (mirrored_addr) {
             0x2000 => self.ctrl_write(data),
             0x2001 => self.mask_write(data),
+            0x2002 => {},
             0x2003 => self.oam_addr_write(data),
             0x2004 => self.oam_data_write(data),
             0x2005 => self.scroll_write(data),
             0x2006 => self.addr_write(data),
             0x2007 => self.data_write(data),
-            0x2008...0x3FFF => self.cpu_write(addr & 0b00100000_00000111, data),
             else => unreachable,
         }
     }
