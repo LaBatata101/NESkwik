@@ -42,7 +42,7 @@ const RAM_MIRRORS_END: u16 = 0x2000;
 const PPU_REGISTERS: u16 = 0x2000;
 const PPU_REGISTERS_MIRRORS_END: u16 = 0x4000;
 
-const ProcessorStatus = packed struct(u8) {
+pub const ProcessorStatus = packed struct(u8) {
     /// The carry flag is set if the last operation caused an overflow from bit 7 of the result or an underflow
     /// from bit 0. This condition is set during arithmetic, comparison and during logical shifts. It can be explicitly
     /// set using the 'Set Carry Flag' (`SEC`) instruction and cleared with 'Clear Carry Flag' (`CLC`).
@@ -531,7 +531,6 @@ pub const CPU = struct {
         const opcode = opcodes.OP_CODES[code];
         self.pc += 1;
         const old_pc = self.pc;
-
 
         switch (opcode) {
             .ADC => {
