@@ -222,14 +222,44 @@ pub const CPU = struct {
         return switch (mode) {
             AdressingMode.Immediate => self.pc,
             AdressingMode.ZeroPage => self.mem_read(self.pc),
-            AdressingMode.ZeroPageX => self.mem_read(self.pc) +% self.register_x,
-            AdressingMode.ZeroPageY => self.mem_read(self.pc) +% self.register_y,
+            AdressingMode.ZeroPageX => {
+                const lo = self.mem_read(self.pc);
+                _ = self.mem_read(lo); // dummy read
+                return @as(u16, lo + self.register_x) & 0x00FF;
+            },
+            AdressingMode.ZeroPageY => {
+                const lo = self.mem_read(self.pc);
+                _ = self.mem_read(lo); // dummy read
+                return @as(u16, lo + self.register_y) & 0x00FF;
+            },
             AdressingMode.Absolute => self.bus.mem_read_u16(self.pc),
-            AdressingMode.AbsoluteX => self.bus.mem_read_u16(self.pc) +% self.register_x,
-            AdressingMode.AbsoluteY => self.bus.mem_read_u16(self.pc) +% self.register_y,
+            AdressingMode.AbsoluteX => {
+                const lo = self.bus.mem_read(self.pc);
+                const hi: u16 = self.bus.mem_read(self.pc + 1);
+                const result = @addWithOverflow(lo, self.register_x);
+                if (result[1] == 1) {
+                    _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
+                    return (@as(u16, (hi +% 1)) << 8) | result[0];
+                } else {
+                    return (hi << 8) | result[0];
+                }
+            },
+            AdressingMode.AbsoluteY => {
+                const lo = self.bus.mem_read(self.pc);
+                const hi: u16 = self.bus.mem_read(self.pc + 1);
+                const result = @addWithOverflow(lo, self.register_y);
+                if (result[1] == 1) {
+                    _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
+                    return (@as(u16, (hi +% 1)) << 8) | result[0];
+                } else {
+                    return (hi << 8) | result[0];
+                }
+            },
             AdressingMode.Relative => {
-                const offset = @as(i8, @bitCast(self.mem_read(self.pc)));
-                return self.pc +% 1 +% @as(u16, @bitCast(@as(i16, offset)));
+                const offset: i8 = @bitCast(self.mem_read(self.pc));
+                _ = self.mem_read(self.pc); // dummy read
+                const jump_addr: u32 = @bitCast(@as(i32, self.pc) +% 1 +% offset);
+                return @truncate(jump_addr);
             },
             AdressingMode.Indirect => {
                 const ptr_addr = self.bus.mem_read_u16(self.pc);
@@ -249,6 +279,8 @@ pub const CPU = struct {
             },
             AdressingMode.IndirectX => {
                 const base = self.mem_read(self.pc);
+                _ = self.mem_read(self.pc); // dummy read
+
                 const ptr = base +% self.register_x;
                 const lo = self.mem_read(ptr);
                 const hi = self.mem_read(ptr +% 1);
@@ -259,9 +291,14 @@ pub const CPU = struct {
                 const base = self.mem_read(self.pc);
                 const lo = self.mem_read(base);
                 const hi = self.mem_read(base +% 1);
-                const ptr_addr_base = @as(u16, hi) << 8 | lo;
 
-                return ptr_addr_base +% self.register_y;
+                const result = @addWithOverflow(lo, self.register_y);
+                if (result[1] == 1) {
+                    _ = self.mem_read(@as(u16, hi) << 8 | result[0]); // dummy read
+                    return @as(u16, hi +% 1) << 8 | result[0];
+                } else {
+                    return @as(u16, hi) << 8 | result[0];
+                }
             },
             AdressingMode.Implicit => unreachable,
         };
@@ -795,6 +832,9 @@ pub const CPU = struct {
         // Accessing data on a different page costs an extra cycle.
         else if (does_page_cross(self, opcode)) {
             instruction_cycles += 1;
+        // For instructions that have implicit adressing, the CPU will read the next byte of memory and then discard it.
+        if (opcode.addressing_mode() == .Implicit) {
+            _ = self.mem_read(old_pc); // dummy read
         }
 
         if (self.pc == pc_state) {
