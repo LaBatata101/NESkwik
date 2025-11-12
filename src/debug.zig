@@ -39,8 +39,6 @@ pub fn render_debug_mode(renderer: *c.SDL_Renderer, system: *System, text: *Text
         std.fmt.format(fba.writer(), "${X:04}  ", .{system.cpu.pc + op_size}) catch @panic("Failed to format");
         const addr_str = fba.getWritten();
 
-        op_size += opcode.size();
-
         const opcode_str = trace.format_opcode(
             system.cpu,
             code,
@@ -54,6 +52,8 @@ pub fn render_debug_mode(renderer: *c.SDL_Renderer, system: *System, text: *Text
             system.cpu.pc + op_size + 1,
             &addr_mode_buffer,
         ) catch @panic("Failed to format addressing mode");
+
+        op_size += opcode.size();
 
         @memcpy(instructions_to_show[pos..][0..addr_str.len], addr_str);
         pos += addr_str.len;
