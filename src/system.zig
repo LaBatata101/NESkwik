@@ -126,7 +126,6 @@ pub const System = struct {
         }
         if (self.bus.rom.mapper_irq_active()) {
             self.cpu.interrupt(CPU.IRQ);
-            self.bus.rom.mapper_irq_clear();
         }
 
         self.cpu.tick();

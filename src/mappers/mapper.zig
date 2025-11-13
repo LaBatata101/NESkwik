@@ -29,9 +29,6 @@ pub const Mapper = struct {
         chr_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
         mirroring: *const fn (ptr: *const anyopaque) Mirroring,
         irq_active: *const fn (ptr: *anyopaque) bool,
-        irq_clear: *const fn (ptr: *anyopaque) void,
-        // ppu_clock: *const fn (ptr: *anyopaque, addr: u16) void,
-        cpu_clock: *const fn (ptr: *anyopaque) void,
     };
 
     const Self = @This();
@@ -101,19 +98,5 @@ pub const Mapper = struct {
     pub fn irq_active(self: *Self) bool {
         return self.vtable.irq_active(self.ptr);
     }
-
-    /// Clear mapper IRQ flag
-    pub fn irq_clear(self: *Self) void {
-        self.vtable.irq_clear(self.ptr);
-    }
-
-    /// Called on each PPU clock for mappers that need it
-    // pub fn ppu_clock(self: *Self, addr: u16) void {
-    //     self.vtable.ppu_clock(self.ptr, addr);
     // }
-
-    /// Called on each CPU clock for mappers that need it
-    pub fn cpu_clock(self: *Self) void {
-        self.vtable.cpu_clock(self.ptr);
-    }
 };

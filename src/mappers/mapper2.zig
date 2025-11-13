@@ -58,9 +58,7 @@ pub const Mapper2 = struct {
         .prg_rom_write = @ptrCast(&Self.prg_rom_write),
         .prg_ram_read = @ptrCast(&Self.prg_ram_read),
         .prg_ram_write = @ptrCast(&Self.prg_ram_write),
-        .cpu_clock = @ptrCast(&Self.cpu_clock),
         .irq_active = @ptrCast(&Self.irq_active),
-        .irq_clear = @ptrCast(&Self.irq_clear),
         .mirroring = @ptrCast(&Self.mirroring),
     };
 
@@ -125,17 +123,9 @@ pub const Mapper2 = struct {
         return self.mirroring_mode;
     }
 
-    pub fn cpu_clock(self: *Self) void {
-        _ = self;
-    }
-
     pub fn irq_active(self: *Self) bool {
         _ = self;
         return false;
-    }
-
-    pub fn irq_clear(self: *Self) void {
-        _ = self;
     }
 };
 

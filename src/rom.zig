@@ -175,20 +175,6 @@ pub const Rom = struct {
     pub fn mapper_irq_active(self: *Self) bool {
         return self.mapper.irq_active();
     }
-
-    /// Clear mapper IRQ
-    pub fn mapper_irq_clear(self: *Self) void {
-        self.mapper.irq_clear();
-    }
-
-    /// Clock the mapper (for scanline counters, etc.)
-    pub fn mapper_ppu_clock(self: *Self, addr: u16) void {
-        self.mapper.ppu_clock(addr);
-    }
-
-    pub fn mapper_cpu_clock(self: *Self) void {
-        self.mapper.cpu_clock();
-    }
 };
 
 pub const TestRom = struct {
