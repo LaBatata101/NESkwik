@@ -794,8 +794,16 @@ pub const PPU = struct {
         }
     }
 
-    fn is_rendering_enabled(self: *Self) bool {
+    fn is_rendering_enabled(self: *const Self) bool {
         return self.mask_register.render_background or self.mask_register.render_sprite;
+    }
+
+    fn is_in_vblank(self: *const Self) bool {
+        return self.scanline >= 261;
+    }
+
+    fn is_rendering(self: *const Self) bool {
+        return !self.is_in_vblank() and self.is_rendering_enabled();
     }
 
     fn get_color(self: *Self, palette_index: u8, pixel_index: u8) render.Color {
@@ -1016,16 +1024,22 @@ pub const PPU = struct {
     ///   - Used for background and sprite color palettes
     fn data_read(self: *Self) u8 {
         const addr = self.addr_register.addr();
+        const byte = self.ppu_read(addr);
 
-        const result = self.internal_data_buf;
-        self.internal_data_buf = self.ppu_read(addr);
-        self.increment_vram_addr();
-
-        if (addr >= 0x3F00) { // palette address doesn't have buffering
-            return self.internal_data_buf;
+        if (self.is_rendering()) { // `v` register is incremented strangely if we're reading during rendering.
+            self.increment_scroll_x();
+            self.increment_scroll_y();
+        } else {
+            self.increment_vram_addr();
         }
 
-        return result;
+        if (addr >= 0x3F00) { // palette address don't have buffering
+            return byte;
+        } else {
+            const result = self.internal_data_buf;
+            self.internal_data_buf = byte;
+            return result;
+        }
     }
 
     /// Writes a byte to PPU memory through the `PPUDATA` register (`0x2007`).
@@ -1068,7 +1082,13 @@ pub const PPU = struct {
         } else {
             std.debug.panic("PPU: unexpected access to mirrored space 0x{X:04} while writing\n", .{addr});
         }
-        self.increment_vram_addr();
+
+        if (self.is_rendering()) { // `v` register is incremented strangely if we're writing during rendering.
+            self.increment_scroll_x();
+            self.increment_scroll_y();
+        } else {
+            self.increment_vram_addr();
+        }
     }
 
     /// Write a value to the `PPUCTRL` register.
