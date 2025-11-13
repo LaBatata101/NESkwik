@@ -799,7 +799,7 @@ pub const PPU = struct {
     }
 
     fn is_in_vblank(self: *const Self) bool {
-        return self.scanline >= 261;
+        return self.scanline >= 241 and self.scanline <= 260;
     }
 
     fn is_rendering(self: *const Self) bool {
