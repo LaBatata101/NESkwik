@@ -1034,6 +1034,8 @@ pub const PPU = struct {
         }
 
         if (addr >= 0x3F00) { // palette address don't have buffering
+            // Palette read should also read VRAM into internal data buffer
+            self.internal_data_buf = self.ppu_read(addr & 0x2FFF);
             return byte;
         } else {
             const result = self.internal_data_buf;
