@@ -89,7 +89,7 @@ pub fn main() !void {
 
     _ = c.SDL_SetRenderScale(renderer, SCALE, SCALE);
 
-    const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_TARGET, 256, 240);
+    const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 256, 240);
     defer c.SDL_DestroyTexture(texture);
 
     _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
