@@ -6,12 +6,20 @@ const opcodes = @import("opcodes.zig");
 const ProcessorStatus = @import("cpu.zig").ProcessorStatus;
 const trace = @import("trace.zig");
 const Color = @import("render.zig").Color;
+const SYSTEM_PALETTE = @import("render.zig").SYSTEM_PALETTE;
 
 const NES_WIDTH = @import("root.zig").NES_WIDTH;
 const NES_HEIGHT = @import("root.zig").NES_HEIGHT;
 const DEBUG_WIDTH = @import("root.zig").DEBUG_WIDTH;
 
-pub fn render_debug_mode(renderer: *c.SDL_Renderer, system: *System, text: *TextRenderer, prg_rom: []const u8) void {
+pub fn render_debug_mode(
+    renderer: *c.SDL_Renderer,
+    system: *System,
+    text: *TextRenderer,
+    prg_rom: []const u8,
+    pt_texture0: *c.SDL_Texture,
+    pt_texture1: *c.SDL_Texture,
+) void {
     _ = c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255);
     var debug_bg_rect = c.SDL_FRect{
         .x = @floatFromInt(NES_WIDTH),
@@ -80,6 +88,9 @@ pub fn render_debug_mode(renderer: *c.SDL_Renderer, system: *System, text: *Text
         \\PPU:
         \\ - SCANLINE: {}
         \\ - CYCLE: {}
+        \\ - GLOBAL CYCLE: {}
+        \\
+        \\SYSTEM CYCLE: {}
     , .{
         system.cpu.register_a,
         system.cpu.register_x,
@@ -90,7 +101,42 @@ pub fn render_debug_mode(renderer: *c.SDL_Renderer, system: *System, text: *Text
         instructions_to_show[0..pos],
         system.bus.ppu.scanline,
         system.bus.ppu.cycle,
+        system.bus.ppu.global_cycle,
+        system.bus.cycles,
     });
+
+    _ = c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255);
+    const pt_size = 64.0;
+    const pt_y = 172.5;
+    const pt_x_1 = 10.0;
+    const pt_x_2 = pt_x_1 + pt_size + 10.0;
+
+    text.render(pt_x_1, 162.5, "Pattern Tables:");
+    const frame_pt0 = system.ppu.get_pattern_table(0, 0);
+    const frame_pt1 = system.ppu.get_pattern_table(1, 0);
+
+    const pitch = NES_WIDTH * 3;
+    _ = c.SDL_UpdateTexture(pt_texture0, null, &frame_pt0.data, pitch);
+    _ = c.SDL_UpdateTexture(pt_texture1, null, &frame_pt1.data, pitch);
+
+    const dest_rect0 = c.SDL_FRect{
+        .x = pt_x_1,
+        .y = pt_y,
+        .w = pt_size,
+        .h = pt_size,
+    };
+    _ = c.SDL_RenderTexture(renderer, pt_texture0, null, &dest_rect0);
+
+    const dest_rect1 = c.SDL_FRect{
+        .x = pt_x_2,
+        .y = pt_y,
+        .w = pt_size,
+        .h = pt_size,
+    };
+    _ = c.SDL_RenderTexture(renderer, pt_texture1, null, &dest_rect1);
+
+    const palette_start_x = pt_x_2 + pt_size + 10.0;
+    render_palettes(renderer, system, text, palette_start_x, 162.5);
 }
 
 fn format_status(status: ProcessorStatus) [8]u8 {
@@ -103,4 +149,84 @@ fn format_status(status: ProcessorStatus) [8]u8 {
     if (status.overflow_flag) buffer[6] = 'O';
     if (status.negative_flag) buffer[7] = 'N';
     return buffer;
+}
+
+fn render_palettes(
+    renderer: *c.SDL_Renderer,
+    system: *System,
+    text: *TextRenderer,
+    start_x: f32,
+    start_y: f32,
+) void {
+    const palette_ram = system.ppu.palette_table;
+    const swatch_size = 7.0;
+    const padding = 0.0;
+
+    text.render_with_color(start_x, start_y, "BG Palettes:", Color.WHITE);
+
+    const bg_grid_y = start_y + 12.0;
+    for (0..4) |palette_num| {
+        for (0..4) |color_num| {
+            const i = (palette_num * 4) + color_num;
+
+            const palette_index = palette_ram[i];
+            const color = SYSTEM_PALETTE[palette_index & 0x3F];
+            _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+
+            const grid_x: f32 = @floatFromInt(palette_num % 2);
+            const grid_y: f32 = @floatFromInt(palette_num / 2);
+
+            const palette_width = (swatch_size * 4) + (padding * 3);
+            const palette_height = swatch_size;
+
+            const x_pos = start_x + (grid_x * (palette_width + padding * 3)) + (@as(f32, @floatFromInt(color_num)) * (swatch_size + padding));
+            const y_pos = bg_grid_y + (grid_y * (palette_height + padding * 3));
+
+            var rect = c.SDL_FRect{
+                .x = x_pos,
+                .y = y_pos,
+                .w = swatch_size,
+                .h = swatch_size,
+            };
+            _ = c.SDL_RenderFillRect(renderer, &rect);
+        }
+    }
+
+    const sp_grid_y = bg_grid_y + (swatch_size * 2) + (padding * 6) + 12.0;
+    text.render_with_color(start_x, sp_grid_y - 12.0, "Sprite Palettes:", Color.WHITE);
+
+    for (0..4) |palette_num| {
+        for (0..4) |color_num| {
+            const i = (palette_num * 4) + color_num;
+
+            var palette_addr: u8 = 0x10 + @as(u8, @truncate(i));
+            palette_addr = switch (palette_addr) {
+                0x10, 0x14, 0x18, 0x1C => palette_addr - 0x10,
+                else => palette_addr,
+            };
+
+            const palette_index = palette_ram[palette_addr];
+            const color = SYSTEM_PALETTE[palette_index & 0x3F];
+            _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+
+            const grid_x: f32 = @floatFromInt(palette_num % 2);
+            const grid_y: f32 = @floatFromInt(palette_num / 2);
+
+            const palette_width = (swatch_size * 4) + (padding * 3);
+            const palette_height = swatch_size;
+
+            const x_pos = start_x + (grid_x * (palette_width + padding * 3)) + (@as(f32, @floatFromInt(color_num)) * (swatch_size + padding));
+            const y_pos = sp_grid_y + (grid_y * (palette_height + padding * 3));
+
+            var rect = c.SDL_FRect{
+                .x = x_pos,
+                .y = y_pos,
+                .w = swatch_size,
+                .h = swatch_size,
+            };
+            _ = c.SDL_RenderFillRect(renderer, &rect);
+        }
+    }
+
+    _ = c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255);
 }

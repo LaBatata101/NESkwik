@@ -92,7 +92,15 @@ pub fn main() !void {
     const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 256, 240);
     defer c.SDL_DestroyTexture(texture);
 
+    const pt_texture0 = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 128, 128);
+    defer c.SDL_DestroyTexture(pt_texture0);
+
+    const pt_texture1 = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 128, 128);
+    defer c.SDL_DestroyTexture(pt_texture1);
+
     _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
+    _ = c.SDL_SetTextureScaleMode(pt_texture0, c.SDL_SCALEMODE_NEAREST);
+    _ = c.SDL_SetTextureScaleMode(pt_texture1, c.SDL_SCALEMODE_NEAREST);
 
     const src_rect = c.SDL_FRect{
         .x = 0.0,
@@ -106,7 +114,7 @@ pub fn main() !void {
         .x = 0.0,
         .y = 0.0,
         .w = ness.NES_WIDTH,
-        .h = ness.NES_HEIGHT,
+        .h = if (debug_mode) 160.0 else ness.NES_HEIGHT,
     };
 
     var rom = Rom.init(allocator, rom_abs_path, buffer) catch |err| switch (err) {
@@ -146,7 +154,14 @@ pub fn main() !void {
         _ = c.SDL_RenderTexture(renderer, texture, &src_rect, &dst_rect);
 
         if (debug_mode) {
-            debug.render_debug_mode(renderer, &system, &text, rom.prg_rom);
+            debug.render_debug_mode(
+                renderer,
+                &system,
+                &text,
+                rom.prg_rom,
+                pt_texture0,
+                pt_texture1,
+            );
         }
 
         _ = c.SDL_RenderPresent(renderer);

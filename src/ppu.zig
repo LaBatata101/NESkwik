@@ -1214,7 +1214,7 @@ pub const PPU = struct {
         return status;
     }
 
-    fn get_pattern_table(self: *Self, i: u8, palette: u8) Frame {
+    pub fn get_pattern_table(self: *Self, i: u8, palette: u8) Frame {
         var frame = Frame.init();
         for (0..16) |tile_y| {
             for (0..16) |tile_x| {
