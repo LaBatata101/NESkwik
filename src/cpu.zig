@@ -606,36 +606,16 @@ pub const CPU = struct {
                 self.mem_write(addr, self.register_y);
             },
             .CMP => self.cmp(opcode),
-            .CPX => {
-                self.compare(opcode.addressing_mode(), self.register_x);
-            },
-            .CPY => {
-                self.compare(opcode.addressing_mode(), self.register_y);
-            },
-            .BNE => {
-                self.branch(opcode.addressing_mode(), !self.status.zero_flag);
-            },
-            .BEQ => {
-                self.branch(opcode.addressing_mode(), self.status.zero_flag);
-            },
-            .BCC => {
-                self.branch(opcode.addressing_mode(), !self.status.carry_flag);
-            },
-            .BCS => {
-                self.branch(opcode.addressing_mode(), self.status.carry_flag);
-            },
-            .BPL => {
-                self.branch(opcode.addressing_mode(), !self.status.negative_flag);
-            },
-            .BMI => {
-                self.branch(opcode.addressing_mode(), self.status.negative_flag);
-            },
-            .BVC => {
-                self.branch(opcode.addressing_mode(), !self.status.overflow_flag);
-            },
-            .BVS => {
-                self.branch(opcode.addressing_mode(), self.status.overflow_flag);
-            },
+            .CPX => self.compare(opcode.addressing_mode(), self.register_x),
+            .CPY => self.compare(opcode.addressing_mode(), self.register_y),
+            .BNE => self.branch(opcode.addressing_mode(), !self.status.zero_flag),
+            .BEQ => self.branch(opcode.addressing_mode(), self.status.zero_flag),
+            .BCC => self.branch(opcode.addressing_mode(), !self.status.carry_flag),
+            .BCS => self.branch(opcode.addressing_mode(), self.status.carry_flag),
+            .BPL => self.branch(opcode.addressing_mode(), !self.status.negative_flag),
+            .BMI => self.branch(opcode.addressing_mode(), self.status.negative_flag),
+            .BVC => self.branch(opcode.addressing_mode(), !self.status.overflow_flag),
+            .BVS => self.branch(opcode.addressing_mode(), self.status.overflow_flag),
             .BIT => {
                 const data = self.mem_read(self.operand_address(opcode.addressing_mode()));
 
@@ -643,27 +623,13 @@ pub const CPU = struct {
                 self.status.overflow_flag = data & 0b0100_0000 != 0;
                 self.status.negative_flag = data & 0b1000_0000 != 0;
             },
-            .CLC => {
-                self.status.carry_flag = false;
-            },
-            .CLD => {
-                self.status.decimal_mode = false;
-            },
-            .SED => {
-                self.status.decimal_mode = true;
-            },
-            .CLI => {
-                self.status.interrupt_disable = false;
-            },
-            .CLV => {
-                self.status.overflow_flag = false;
-            },
-            .SEI => {
-                self.status.interrupt_disable = true;
-            },
-            .SEC => {
-                self.status.carry_flag = true;
-            },
+            .CLC => self.status.carry_flag = false,
+            .CLD => self.status.decimal_mode = false,
+            .SED => self.status.decimal_mode = true,
+            .CLI => self.status.interrupt_disable = false,
+            .CLV => self.status.overflow_flag = false,
+            .SEI => self.status.interrupt_disable = true,
+            .SEC => self.status.carry_flag = true,
             .DEC => self.dec(opcode),
             .JMP => {
                 const jmp_addr = self.operand_address(opcode.addressing_mode());
@@ -692,9 +658,7 @@ pub const CPU = struct {
                 self.register_y -%= 1;
                 self.update_zero_and_negative_flags(self.register_y);
             },
-            .PHA => {
-                self.stack_push(self.register_a);
-            },
+            .PHA => self.stack_push(self.register_a),
             .PLA => {
                 self.register_a = self.stack_pop();
                 self.update_zero_and_negative_flags(self.register_a);
@@ -747,12 +711,8 @@ pub const CPU = struct {
                 self.status.overflow_flag = (self.register_a >> 5) & 1 ^ (self.register_a >> 6) & 1 != 0;
                 self.update_zero_and_negative_flags(self.register_a);
             },
-            .ALR => {
-                self.register_a = self.lsr_value(self.@"and"(opcode, self.register_a));
-            },
-            .ATX => {
-                self.register_x = self.@"and"(opcode, self.register_a);
-            },
+            .ALR => self.register_a = self.lsr_value(self.@"and"(opcode, self.register_a)),
+            .ATX => self.register_x = self.@"and"(opcode, self.register_a),
             .AXA => {
                 const addr = self.operand_address(opcode.addressing_mode());
                 const result = self.register_x & self.register_a & 7;
