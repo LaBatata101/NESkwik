@@ -778,7 +778,11 @@ pub const CPU = struct {
                 const result = self.sp & @as(u8, @truncate(addr >> 8)) + 1;
                 self.mem_write(addr, result);
             },
-            .NOP, .TOP, .DOP, .KIL => {
+            .TOP, .DOP => {
+                // No-op instructions, read argument and ignore.
+                _ = self.operand_address(opcode);
+            },
+            .NOP, .KIL => {
                 // Do nothing! Any arguments are ignored.
             },
         }
