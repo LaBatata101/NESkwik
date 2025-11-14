@@ -696,7 +696,7 @@ pub const CPU = struct {
             .AXS => {
                 const value = self.mem_read(self.operand_address(opcode));
                 self.register_x &= self.register_a;
-                self.status.carry_flag = value > self.register_x;
+                self.status.carry_flag = self.register_x >= value;
                 self.register_x -%= value;
 
                 self.update_zero_and_negative_flags(self.register_x);
@@ -707,9 +707,25 @@ pub const CPU = struct {
 
                 self.register_a &= data;
                 self.register_a >>= 1;
+                self.register_a = (self.register_a & ~@as(u8, 0x80)) | @as(u8, @intFromBool(self.status.carry_flag)) << 7;
 
-                self.status.carry_flag = self.register_a & 0b0100_0000 != 0;
-                self.status.overflow_flag = (self.register_a >> 5) & 1 ^ (self.register_a >> 6) & 1 != 0;
+                const bit5 = (self.register_a >> 5) & 1 != 0;
+                const bit6 = (self.register_a >> 6) & 1 != 0;
+
+                if (bit5 and bit6) { // Both bits are 1: set C, clear V
+                    self.status.carry_flag = true;
+                    self.status.overflow_flag = false;
+                } else if (!bit5 and !bit6) { // Both bits are 0: clear C and V
+                    self.status.carry_flag = false;
+                    self.status.overflow_flag = false;
+                } else if (bit5 and !bit6) { // Only bit 5 is 1: set V, clear C
+                    self.status.carry_flag = false;
+                    self.status.overflow_flag = true;
+                } else { // Only bit 6 is 1: set C and V
+                    self.status.carry_flag = true;
+                    self.status.overflow_flag = true;
+                }
+
                 self.update_zero_and_negative_flags(self.register_a);
             },
             .ALR => self.register_a = self.lsr_value(self.@"and"(opcode, self.register_a)),
