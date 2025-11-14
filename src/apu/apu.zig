@@ -16,10 +16,10 @@ const NTSC_TICK_LENGTH_TABLE: [2][6]u64 = [_][6]u64{
 const VOLUME_MULT: i32 = ((@as(i16, 32767) / 16) / 3);
 
 const Frame = packed struct(u8) {
+    _: u6 = 0,
     /// `false` = 4-step, `true` = 5-step
     mode: bool = false,
     suppress_irq: bool = false,
-    _: u6 = 0,
 };
 
 const Jitter = union(enum) {
