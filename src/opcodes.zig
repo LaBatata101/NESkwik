@@ -78,6 +78,8 @@ const Instruction = struct {
     cycles: u8,
     /// The addressing mode this instruction is going to be executed with.
     addressing_mode: AdressingMode,
+    /// Does the instruction has a page cross penalty?
+    page_cross_penalty: bool = false,
 };
 
 pub const OpCode = union(enum) {
@@ -433,6 +435,12 @@ pub const OpCode = union(enum) {
         }
     }
 
+    pub fn has_page_cross_penalty(self: @This()) bool {
+        switch (self) {
+            inline else => |opcode| return opcode.page_cross_penalty,
+        }
+    }
+
     pub fn is_unofficial(self: @This()) bool {
         return switch (self) {
             // zig fmt: off
@@ -512,7 +520,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .ORA = .{ .code = 0x11, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0x12, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
@@ -537,7 +545,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .ORA = .{ .code = 0x19, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .NOP = .{ .code = 0x1A, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
@@ -547,11 +555,11 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .TOP = .{ .code = 0x1C, .size = 3, .cycles = 4, // +1 if page crossed
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .ORA = .{ .code = 0x1D, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .ASL = .{ .code = 0x1E, .size = 3, .cycles = 7, .addressing_mode = AdressingMode.AbsoluteX }
@@ -613,7 +621,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .AND = .{ .code = 0x31, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0x32, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
@@ -638,7 +646,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .AND = .{ .code = 0x39, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .NOP = .{ .code = 0x3A, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
@@ -648,11 +656,11 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .TOP = .{ .code = 0x3C, .size = 3, .cycles = 4, // +1 if page crossed
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .AND = .{ .code = 0x3D, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .ROL = .{ .code = 0x3E, .size = 3, .cycles = 7, .addressing_mode = AdressingMode.AbsoluteX }
@@ -714,7 +722,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .EOR = .{ .code = 0x51, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0x52, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
@@ -739,7 +747,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .EOR = .{ .code = 0x59, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .NOP = .{ .code = 0x5A, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
@@ -749,11 +757,11 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .TOP = .{ .code = 0x5C, .size = 3, .cycles = 4, // +1 if page crossed
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .EOR = .{ .code = 0x5D, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .LSR = .{ .code = 0x5E, .size = 3, .cycles = 7, .addressing_mode = AdressingMode.AbsoluteX }
@@ -815,7 +823,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .ADC = .{ .code = 0x71, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0x72, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
@@ -840,7 +848,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .ADC = .{ .code = 0x79, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .NOP = .{ .code = 0x7A, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
@@ -850,11 +858,11 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .TOP = .{ .code = 0x7C, .size = 3, .cycles = 4, // +1 if page crossed
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .ADC = .{ .code = 0x7D, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .ROR = .{ .code = 0x7E, .size = 3, .cycles = 7, .addressing_mode = AdressingMode.AbsoluteX }
@@ -1013,14 +1021,14 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .LDA = .{ .code = 0xB1, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0xB2, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
     },
     .{
          .LAX = .{ .code = 0xB3, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .LDY = .{ .code = 0xB4, .size = 2, .cycles = 4, .addressing_mode = AdressingMode.ZeroPageX }
@@ -1039,30 +1047,30 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .LDA = .{ .code = 0xB9, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .TSX = .{ .code = 0xBA, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
     },
     .{
          .LAS = .{ .code = 0xBB, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .LDY = .{ .code = 0xBC, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .LDA = .{ .code = 0xBD, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .LDX = .{ .code = 0xBE, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .LAX = .{ .code = 0xBF, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .CPY = .{ .code = 0xC0, .size = 2, .cycles = 2, .addressing_mode = AdressingMode.Immediate }
@@ -1117,7 +1125,8 @@ pub const OP_CODES = [_]OpCode{
             .addressing_mode = AdressingMode.Relative }
     },
     .{
-         .CMP = .{ .code = 0xD1, .size = 2, .cycles = 5, .addressing_mode = AdressingMode.IndirectY }
+         .CMP = .{ .code = 0xD1, .size = 2, .cycles = 5, // (+1 if page crossed)
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0xD2, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
@@ -1142,7 +1151,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .CMP = .{ .code = 0xD9, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .NOP = .{ .code = 0xDA, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
@@ -1152,11 +1161,11 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .TOP = .{ .code = 0xDC, .size = 3, .cycles = 4, // +1 if page crossed
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .CMP = .{ .code = 0xDD, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .DEC = .{ .code = 0xDE, .size = 3, .cycles = 7, .addressing_mode = AdressingMode.AbsoluteX }
@@ -1218,7 +1227,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .SBC = .{ .code = 0xF1, .size = 2, .cycles = 5, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.IndirectY }
+            .addressing_mode = AdressingMode.IndirectY, .page_cross_penalty = true }
     },
     .{
          .KIL = .{ .code = 0xF2, .size = 1, .cycles = 0, .addressing_mode = AdressingMode.Implicit }
@@ -1243,7 +1252,7 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .SBC = .{ .code = 0xF9, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteY }
+            .addressing_mode = AdressingMode.AbsoluteY, .page_cross_penalty = true }
     },
     .{
          .NOP = .{ .code = 0xFA, .size = 1, .cycles = 2, .addressing_mode = AdressingMode.Implicit }
@@ -1253,11 +1262,11 @@ pub const OP_CODES = [_]OpCode{
     },
     .{
          .TOP = .{ .code = 0xFC, .size = 3, .cycles = 4, // +1 if page crossed
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .SBC = .{ .code = 0xFD, .size = 3, .cycles = 4, // (+1 if page crossed)
-            .addressing_mode = AdressingMode.AbsoluteX }
+            .addressing_mode = AdressingMode.AbsoluteX, .page_cross_penalty = true }
     },
     .{
          .INC = .{ .code = 0xFE, .size = 3, .cycles = 7, .addressing_mode = AdressingMode.AbsoluteX }

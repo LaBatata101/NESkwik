@@ -218,19 +218,20 @@ pub const CPU = struct {
         return @as(u16, hi) << 8 | lo;
     }
 
-    fn operand_address(self: *Self, mode: AdressingMode) u16 {
-        return switch (mode) {
+    fn operand_address(self: *Self, opcode: opcodes.OpCode) u16 {
+        const has_page_cross_penalty = opcode.has_page_cross_penalty();
+        return switch (opcode.addressing_mode()) {
             AdressingMode.Immediate => self.pc,
             AdressingMode.ZeroPage => self.mem_read(self.pc),
             AdressingMode.ZeroPageX => {
                 const lo = self.mem_read(self.pc);
                 _ = self.mem_read(lo); // dummy read
-                return @as(u16, lo + self.register_x) & 0x00FF;
+                return lo +% self.register_x;
             },
             AdressingMode.ZeroPageY => {
                 const lo = self.mem_read(self.pc);
                 _ = self.mem_read(lo); // dummy read
-                return @as(u16, lo + self.register_y) & 0x00FF;
+                return lo +% self.register_y;
             },
             AdressingMode.Absolute => self.bus.mem_read_u16(self.pc),
             AdressingMode.AbsoluteX => {
@@ -238,7 +239,7 @@ pub const CPU = struct {
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
                 const result = @addWithOverflow(lo, self.register_x);
                 if (result[1] == 1) {
-                    self.bus.cycles += 1;
+                    if (has_page_cross_penalty) self.bus.cycles += 1;
                     _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
                     return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
@@ -250,7 +251,7 @@ pub const CPU = struct {
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
                 const result = @addWithOverflow(lo, self.register_y);
                 if (result[1] == 1) {
-                    self.bus.cycles += 1;
+                    if (has_page_cross_penalty) self.bus.cycles += 1;
                     _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
                     return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
@@ -299,7 +300,7 @@ pub const CPU = struct {
 
                 const result = @addWithOverflow(lo, self.register_y);
                 if (result[1] == 1) {
-                    self.bus.cycles += 1;
+                    if (has_page_cross_penalty) self.bus.cycles += 1;
                     _ = self.mem_read(@as(u16, hi) << 8 | result[0]); // dummy read
                     return @as(u16, hi +% 1) << 8 | result[0];
                 } else {
@@ -310,16 +311,16 @@ pub const CPU = struct {
         };
     }
 
-    fn branch(self: *Self, mode: AdressingMode, condition: bool) void {
+    fn branch(self: *Self, opcode: opcodes.OpCode, condition: bool) void {
         if (condition) {
             self.bus.cycles += 1;
-            const jump_addr = self.operand_address(mode);
+            const jump_addr = self.operand_address(opcode);
             self.pc = jump_addr;
         }
     }
 
-    fn compare(self: *Self, mode: AdressingMode, register: u8) void {
-        const addr = self.operand_address(mode);
+    fn compare(self: *Self, opcode: opcodes.OpCode, register: u8) void {
+        const addr = self.operand_address(opcode);
         const data = self.mem_read(addr);
         const result = register -% data;
 
@@ -328,11 +329,11 @@ pub const CPU = struct {
     }
 
     fn cmp(self: *Self, opcode: opcodes.OpCode) void {
-        self.compare(opcode.addressing_mode(), self.register_a);
+        self.compare(opcode, self.register_a);
     }
 
     fn dec(self: *Self, opcode: opcodes.OpCode) void {
-        const addr = self.operand_address(opcode.addressing_mode());
+        const addr = self.operand_address(opcode);
         const value = self.mem_read(addr);
         const result = value -% 1;
 
@@ -359,7 +360,7 @@ pub const CPU = struct {
     }
 
     fn @"and"(self: *Self, opcode: opcodes.OpCode, register: u8) u8 {
-        const addr = self.operand_address(opcode.addressing_mode());
+        const addr = self.operand_address(opcode);
         const data = self.mem_read(addr);
 
         const result = register & data;
@@ -382,7 +383,7 @@ pub const CPU = struct {
                 self.register_a = self.lsr_value(self.register_a);
             },
             else => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const value = self.mem_read(addr);
 
                 self.mem_write(addr, value); // dummy write
@@ -392,7 +393,7 @@ pub const CPU = struct {
     }
 
     fn eor(self: *Self, opcode: opcodes.OpCode) void {
-        const data = self.mem_read(self.operand_address(opcode.addressing_mode()));
+        const data = self.mem_read(self.operand_address(opcode));
         self.register_a ^= data;
         self.update_zero_and_negative_flags(self.register_a);
     }
@@ -407,7 +408,7 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(self.register_a);
             },
             else => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const value = self.mem_read(addr);
 
                 self.mem_write(addr, value); // dummy write
@@ -434,7 +435,7 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(self.register_a);
             },
             else => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 var value = self.mem_read(addr);
                 const is_bit7_set = value & (1 << 7) != 0;
 
@@ -464,7 +465,7 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(self.register_a);
             },
             else => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 var value = self.mem_read(addr);
                 const is_bit0_set = value & 1 != 0;
 
@@ -482,13 +483,13 @@ pub const CPU = struct {
     }
 
     fn ora(self: *Self, opcode: opcodes.OpCode) void {
-        const value = self.mem_read(self.operand_address(opcode.addressing_mode()));
+        const value = self.mem_read(self.operand_address(opcode));
         self.register_a |= value;
         self.update_zero_and_negative_flags(self.register_a);
     }
 
     fn inc(self: *Self, opcode: opcodes.OpCode) u8 {
-        const addr = self.operand_address(opcode.addressing_mode());
+        const addr = self.operand_address(opcode);
         const value = self.mem_read(addr);
         const result = value +% 1;
 
@@ -501,14 +502,14 @@ pub const CPU = struct {
     }
 
     fn lda(self: *Self, opcode: opcodes.OpCode) void {
-        const addr = self.operand_address(opcode.addressing_mode());
+        const addr = self.operand_address(opcode);
         const value = self.mem_read(addr);
         self.register_a = value;
         self.update_zero_and_negative_flags(self.register_a);
     }
 
     fn ldx(self: *Self, opcode: opcodes.OpCode) void {
-        const addr = self.operand_address(opcode.addressing_mode());
+        const addr = self.operand_address(opcode);
         const value = self.mem_read(addr);
         self.register_x = value;
         self.update_zero_and_negative_flags(self.register_x);
@@ -535,13 +536,13 @@ pub const CPU = struct {
         switch (opcode) {
             .ADC => {
                 // NOTE: ignoring decimal mode
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const data = self.mem_read(addr);
                 self.adc(data);
             },
             .SBC => {
                 // NOTE: ignoring decimal mode
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const data = self.mem_read(addr);
                 self.sbc(data);
             },
@@ -557,7 +558,7 @@ pub const CPU = struct {
             .LDA => self.lda(opcode),
             .LDX => self.ldx(opcode),
             .LDY => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const value = self.mem_read(addr);
                 self.register_y = value;
                 self.update_zero_and_negative_flags(self.register_y);
@@ -594,30 +595,30 @@ pub const CPU = struct {
                 _ = self.inc(opcode);
             },
             .STA => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 self.mem_write(addr, self.register_a);
             },
             .STX => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 self.mem_write(addr, self.register_x);
             },
             .STY => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 self.mem_write(addr, self.register_y);
             },
             .CMP => self.cmp(opcode),
-            .CPX => self.compare(opcode.addressing_mode(), self.register_x),
-            .CPY => self.compare(opcode.addressing_mode(), self.register_y),
-            .BNE => self.branch(opcode.addressing_mode(), !self.status.zero_flag),
-            .BEQ => self.branch(opcode.addressing_mode(), self.status.zero_flag),
-            .BCC => self.branch(opcode.addressing_mode(), !self.status.carry_flag),
-            .BCS => self.branch(opcode.addressing_mode(), self.status.carry_flag),
-            .BPL => self.branch(opcode.addressing_mode(), !self.status.negative_flag),
-            .BMI => self.branch(opcode.addressing_mode(), self.status.negative_flag),
-            .BVC => self.branch(opcode.addressing_mode(), !self.status.overflow_flag),
-            .BVS => self.branch(opcode.addressing_mode(), self.status.overflow_flag),
+            .CPX => self.compare(opcode, self.register_x),
+            .CPY => self.compare(opcode, self.register_y),
+            .BNE => self.branch(opcode, !self.status.zero_flag),
+            .BEQ => self.branch(opcode, self.status.zero_flag),
+            .BCC => self.branch(opcode, !self.status.carry_flag),
+            .BCS => self.branch(opcode, self.status.carry_flag),
+            .BPL => self.branch(opcode, !self.status.negative_flag),
+            .BMI => self.branch(opcode, self.status.negative_flag),
+            .BVC => self.branch(opcode, !self.status.overflow_flag),
+            .BVS => self.branch(opcode, self.status.overflow_flag),
             .BIT => {
-                const data = self.mem_read(self.operand_address(opcode.addressing_mode()));
+                const data = self.mem_read(self.operand_address(opcode));
 
                 self.status.zero_flag = self.register_a & data == 0;
                 self.status.overflow_flag = data & 0b0100_0000 != 0;
@@ -632,12 +633,12 @@ pub const CPU = struct {
             .SEC => self.status.carry_flag = true,
             .DEC => self.dec(opcode),
             .JMP => {
-                const jmp_addr = self.operand_address(opcode.addressing_mode());
+                const jmp_addr = self.operand_address(opcode);
                 self.pc = jmp_addr;
             },
             .JSR => {
                 self.stack_push_u16(self.pc + 2 - 1);
-                const jmp_addr = self.operand_address(opcode.addressing_mode());
+                const jmp_addr = self.operand_address(opcode);
                 self.pc = jmp_addr;
             },
             .RTS => {
@@ -693,7 +694,7 @@ pub const CPU = struct {
                 self.status.carry_flag = self.register_a & 0x80 != 0;
             },
             .AXS => {
-                const value = self.mem_read(self.operand_address(opcode.addressing_mode()));
+                const value = self.mem_read(self.operand_address(opcode));
                 self.register_x &= self.register_a;
                 self.status.carry_flag = value > self.register_x;
                 self.register_x -%= value;
@@ -701,7 +702,7 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(self.register_x);
             },
             .ARR => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const data = self.mem_read(addr);
 
                 self.register_a &= data;
@@ -714,12 +715,12 @@ pub const CPU = struct {
             .ALR => self.register_a = self.lsr_value(self.@"and"(opcode, self.register_a)),
             .ATX => self.register_x = self.@"and"(opcode, self.register_a),
             .AXA => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const result = self.register_x & self.register_a & 7;
                 self.mem_write(addr, result);
             },
             .SAX => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const result = self.register_a & self.register_x;
                 self.mem_write(addr, result);
             },
@@ -729,7 +730,7 @@ pub const CPU = struct {
             },
             .ISC => self.sbc(self.inc(opcode)),
             .LAS => {
-                const value = self.mem_read(self.operand_address(opcode.addressing_mode()));
+                const value = self.mem_read(self.operand_address(opcode));
                 const result = value & self.sp;
 
                 self.register_a = result;
@@ -739,8 +740,14 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(result);
             },
             .LAX => {
-                self.lda(opcode);
-                self.ldx(opcode);
+                const addr = self.operand_address(opcode);
+                const value = self.mem_read(addr);
+
+                self.register_a = value;
+                self.update_zero_and_negative_flags(self.register_a);
+
+                self.register_x = value;
+                self.update_zero_and_negative_flags(self.register_x);
             },
             .RLA => {
                 self.rol(opcode);
@@ -748,7 +755,7 @@ pub const CPU = struct {
             },
             .RRA => {
                 self.ror(opcode);
-                self.adc(self.mem_read(self.operand_address(opcode.addressing_mode())));
+                self.adc(self.mem_read(self.operand_address(opcode)));
             },
             .SLO => {
                 self.asl(opcode);
@@ -759,12 +766,12 @@ pub const CPU = struct {
                 self.eor(opcode);
             },
             .SXA => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const result = self.register_x & @as(u8, @truncate(addr >> 8)) + 1;
                 self.mem_write(addr, result);
             },
             .SYA => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 const result = self.register_y & @as(u8, @truncate(addr >> 8)) + 1;
                 self.mem_write(addr, result);
             },
@@ -773,13 +780,13 @@ pub const CPU = struct {
                 self.register_a = self.@"and"(opcode, self.register_a);
             },
             .XAS => {
-                const addr = self.operand_address(opcode.addressing_mode());
+                const addr = self.operand_address(opcode);
                 self.sp = self.register_x & self.register_a;
                 const result = self.sp & @as(u8, @truncate(addr >> 8)) + 1;
                 self.mem_write(addr, result);
             },
             .TOP, .DOP => {
-                // No-op instructions, read argument and ignore.
+                // No-op instructions, read argument and discard it.
                 _ = self.operand_address(opcode);
             },
             .NOP, .KIL => {
