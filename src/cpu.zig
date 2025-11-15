@@ -417,7 +417,7 @@ pub const CPU = struct {
 
                 self.mem_write(addr, result[0]);
                 self.status.carry_flag = result[1] == 1;
-                self.update_zero_and_negative_flags(value);
+                self.update_zero_and_negative_flags(result[0]);
             },
         }
     }
@@ -645,9 +645,10 @@ pub const CPU = struct {
                 self.pc = self.stack_pop_u16() + 1;
             },
             .RTI => {
+                const current_status = self.status;
                 self.status = @bitCast(self.stack_pop());
-                self.status.break_command = false;
-                self.status.break2 = true;
+                self.status.break_command = current_status.break_command;
+                self.status.break2 = current_status.break2;
 
                 self.pc = self.stack_pop_u16();
             },
@@ -671,9 +672,10 @@ pub const CPU = struct {
                 self.stack_push(@bitCast(copy_status));
             },
             .PLP => {
+                const current_status = self.status;
                 self.status = @bitCast(self.stack_pop());
-                self.status.break_command = false;
-                self.status.break2 = true;
+                self.status.break_command = current_status.break_command;
+                self.status.break2 = current_status.break2;
             },
             .BRK => {
                 // skips the following byte
@@ -706,6 +708,7 @@ pub const CPU = struct {
                 const data = self.mem_read(addr);
 
                 self.register_a &= data;
+
                 self.register_a >>= 1;
                 self.register_a = (self.register_a & ~@as(u8, 0x80)) | @as(u8, @intFromBool(self.status.carry_flag)) << 7;
 
@@ -729,7 +732,14 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(self.register_a);
             },
             .ALR => self.register_a = self.lsr_value(self.@"and"(opcode, self.register_a)),
-            .ATX => self.register_x = self.@"and"(opcode, self.register_a),
+            .ATX => {
+                const addr = self.operand_address(opcode);
+                const data = self.mem_read(addr);
+
+                self.register_a = data;
+                self.register_x = data;
+                self.update_zero_and_negative_flags(data);
+            },
             .AXA => {
                 const addr = self.operand_address(opcode);
                 const result = self.register_x & self.register_a & 7;
@@ -784,12 +794,22 @@ pub const CPU = struct {
             .SXA => {
                 const addr = self.operand_address(opcode);
                 const result = self.register_x & @as(u8, @truncate(addr >> 8)) + 1;
-                self.mem_write(addr, result);
+
+                const final_addr_hi = @as(u8, @truncate(addr >> 8)) & self.register_x;
+                const final_addr_lo = @as(u8, @truncate(addr));
+                const final_addr = (@as(u16, final_addr_hi) << 8) | final_addr_lo;
+
+                self.mem_write(final_addr, result);
             },
             .SYA => {
                 const addr = self.operand_address(opcode);
                 const result = self.register_y & @as(u8, @truncate(addr >> 8)) + 1;
-                self.mem_write(addr, result);
+
+                const final_addr_hi = @as(u8, @truncate(addr >> 8)) & self.register_y;
+                const final_addr_lo = @as(u8, @truncate(addr));
+                const final_addr = (@as(u16, final_addr_hi) << 8) | final_addr_lo;
+
+                self.mem_write(final_addr, result);
             },
             .XAA => {
                 self.txa();
@@ -2257,7 +2277,7 @@ test "0xCB: AXS" {
     cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(252, cpu.register_x);
-    try std.testing.expect(cpu.status.carry_flag);
+    try std.testing.expect(!cpu.status.carry_flag);
     try std.testing.expect(!cpu.status.zero_flag);
     try std.testing.expect(cpu.status.negative_flag);
 }
@@ -2375,9 +2395,9 @@ test "0xAB: ATX" {
     cpu2.register_a = 1;
     cpu2.run_instructions(&instructions);
 
-    try std.testing.expectEqual(0, cpu2.register_x);
+    try std.testing.expectEqual(2, cpu2.register_x);
     try std.testing.expect(!cpu2.status.negative_flag);
-    try std.testing.expect(cpu2.status.zero_flag);
+    try std.testing.expect(!cpu2.status.zero_flag);
 }
 
 test "0x9F: AXA" {
