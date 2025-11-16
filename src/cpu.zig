@@ -260,7 +260,7 @@ pub const CPU = struct {
             },
             AdressingMode.Relative => {
                 const offset: i8 = @bitCast(self.mem_read(self.pc));
-                _ = self.mem_read(self.pc); // dummy read
+                _ = self.mem_read(self.pc + 1); // dummy read
                 const jump_addr: u32 = @bitCast(@as(i32, self.pc) +% 1 +% offset);
                 if (jump_addr & 0xFF00 != (self.pc + 1) & 0xFF00) {
                     self.bus.cycles += 1;
