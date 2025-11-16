@@ -146,8 +146,8 @@ pub const APU = struct {
     }
 
     fn tick(self: *Self) void {
-        self.tick_cycle += 1;
         self.next_tick_cyc = self.global_cyc + NTSC_TICK_LENGTH_TABLE[@intFromBool(self.frame.mode)][self.tick_cycle];
+        self.tick_cycle += 1;
         if (self.frame.mode) {
             switch (self.tick_cycle) {
                 1 => {
