@@ -1171,7 +1171,12 @@ pub const PPU = struct {
     /// - Most games use `OAMDMA` instead of individual `OAMDATA` writes
     /// - Each sprite occupies 4 consecutive bytes in `OAM`
     pub fn oam_data_write(self: *Self, value: u8) void {
-        self.oam_data_register[self.oam_addr_register] = value;
+        var data = value;
+        // Check if the current address points to the attribute byte and mask out bits 2, 3 and 4.
+        if (self.oam_addr_register % 4 == 2) {
+            data &= 0xE3;
+        }
+        self.oam_data_register[self.oam_addr_register] = data;
         self.oam_addr_register +%= 1;
     }
 
