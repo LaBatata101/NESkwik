@@ -405,7 +405,7 @@ pub const PPU = struct {
         var dots_this_scanline: u16 = CYCLES_PER_SCANLINE;
 
         // On odd frames, the pre-render scanline is 1 dot shorter
-        if (self.scanline == PRE_RENDER_SCANLINE and self.frame_is_odd) {
+        if (self.scanline == PRE_RENDER_SCANLINE and self.frame_is_odd and self.is_rendering_enabled()) {
             dots_this_scanline -= 1;
         }
 
