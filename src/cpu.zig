@@ -238,9 +238,15 @@ pub const CPU = struct {
                 const lo = self.bus.mem_read(self.pc);
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
                 const result = @addWithOverflow(lo, self.register_x);
+
+                // Only do dummy read if the page or crossed or if it's a RMW instruction.
+                // RMW instructions don't have page cross penalty so we can use that to identify them.
+                if (result[1] == 1 or !has_page_cross_penalty) {
+                    _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
+                }
+
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.bus.cycles += 1;
-                    _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
                     return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
                     return (hi << 8) | result[0];
@@ -250,9 +256,15 @@ pub const CPU = struct {
                 const lo = self.bus.mem_read(self.pc);
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
                 const result = @addWithOverflow(lo, self.register_y);
+
+                // Only do dummy read if the page or crossed or if it's a RMW instruction.
+                // RMW instructions don't have page cross penalty so we can use that to identify them.
+                if (result[1] == 1 or !has_page_cross_penalty) {
+                    _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
+                }
+
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.bus.cycles += 1;
-                    _ = self.bus.mem_read((hi << 8) | result[0]); // dummy read
                     return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
                     return (hi << 8) | result[0];
