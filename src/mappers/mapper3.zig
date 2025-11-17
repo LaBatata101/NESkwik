@@ -17,6 +17,7 @@ const MapperParams = @import("mapper.zig").MapperParams;
 pub const Mapper3 = struct {
     prg_rom: []const u8,
     chr_rom: []const u8,
+    prg_ram: []u8,
 
     selected_chr_bank: u8,
     num_chr_banks: u8,
@@ -33,9 +34,13 @@ pub const Mapper3 = struct {
         // CNROM always has CHR ROM (never CHR RAM)
         const num_chr_banks: u8 = @intCast(params.chr_rom.len / 0x2000);
 
+        const prg_ram = try allocator.alloc(u8, params.prg_ram_size);
+        @memset(prg_ram, 0);
+
         self.* = .{
             .prg_rom = params.prg_rom,
             .chr_rom = params.chr_rom,
+            .prg_ram = prg_ram,
             .selected_chr_bank = 0,
             .num_chr_banks = num_chr_banks,
             .mirroring_mode = params.mirroring_mode,
@@ -62,6 +67,7 @@ pub const Mapper3 = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.allocator.free(self.prg_ram);
         self.allocator.destroy(self);
     }
 
@@ -79,17 +85,18 @@ pub const Mapper3 = struct {
     }
 
     pub fn prg_ram_read(self: *Self, addr: u16) u8 {
-        _ = self;
-        _ = addr;
-        // CNROM has no PRG RAM
-        return 0;
+        // CNROM has no PRG RAM, but we implement it for tests that use it.
+        if (self.prg_ram.len == 0) {
+            return 0;
+        }
+        return self.prg_ram[addr % self.prg_ram.len];
     }
 
     pub fn prg_ram_write(self: *Self, addr: u16, value: u8) void {
-        _ = self;
-        _ = addr;
-        _ = value;
-        // CNROM has no PRG RAM
+        // CNROM has no PRG RAM, but we implement it for tests that use it.
+        if (self.prg_ram.len > 0) {
+            self.prg_ram[addr % self.prg_ram.len] = value;
+        }
     }
 
     pub fn chr_read(self: *const Self, addr: u16) u8 {
