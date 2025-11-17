@@ -943,10 +943,11 @@ pub const PPU = struct {
     /// - After setting an address, subsequent `PPUDATA` reads/writes will use this address
     fn addr_write(self: *Self, value: u8) void {
         if (!self.write_toggle) {
-            const tmp_addr = self.tmp_addr.addr() & ~@as(u16, 0xFF00) | (@as(u16, value) << 8);
+            // The high byte write only sets bits 8-13. Bit 14 is cleared.
+            const tmp_addr = (self.tmp_addr.addr() & 0x00FF) | (@as(u16, value & 0x3F) << 8);
             self.tmp_addr = @bitCast(tmp_addr);
         } else {
-            const tmp_addr = self.tmp_addr.addr() & ~@as(u16, 0xFF) | value;
+            const tmp_addr = (self.tmp_addr.addr() & 0xFF00) | value;
             self.tmp_addr = @bitCast(tmp_addr);
             self.addr_register = self.tmp_addr;
         }
@@ -1065,7 +1066,7 @@ pub const PPU = struct {
             self.increment_vram_addr();
         }
 
-        if (addr >= 0x3F00) { // palette address don't have buffering
+        if ((addr & 0x3FFF) >= 0x3F00) { // palette address don't have buffering
             // Palette read should also read VRAM into internal data buffer
             self.internal_data_buf = self.ppu_read(addr & 0x2FFF);
             // The high 2 bits of palette are from whatever it was on open bus.
