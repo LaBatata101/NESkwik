@@ -5,6 +5,10 @@ const render = @import("render.zig");
 const Rom = @import("rom.zig").Rom;
 const Frame = render.Frame;
 
+/// Aprox. amount of CPU cycles equivalent to 1 second.
+const CPU_ONE_SEC_CYLES: u64 = 1_790_000;
+/// Aprox. amount of PPU cycles equivalent to 1 second.
+const PPU_ONE_SEC_CYLES: u64 = CPU_ONE_SEC_CYLES / 3;
 const CYCLES_PER_SCANLINE: u16 = 341;
 const SCANLINES_PER_FRAME: u16 = 262;
 const CYCLES_PER_FRAME: u64 = @as(u64, CYCLES_PER_SCANLINE) * @as(u64, SCANLINES_PER_FRAME);
@@ -304,6 +308,8 @@ pub const PPU = struct {
     /// A fake dynamic latch representing the capacitance of the wires in the
     /// PPU that we have to emulate.
     dynamic_latch: u8,
+    // Stores the last time the data passed through the bus.
+    last_cycle_written: u64,
 
     frame_is_odd: bool,
 
@@ -339,6 +345,7 @@ pub const PPU = struct {
             .next_vblank_cpu_cycle = ppu_to_cpu_cycle(1),
             .dynamic_latch = 0,
             .frame_is_odd = false,
+            .last_cycle_written = 0,
         };
     }
 
@@ -368,6 +375,7 @@ pub const PPU = struct {
         self.tmp_addr = .{};
         self.write_toggle = false;
         self.frame_is_odd = false;
+        self.last_cycle_written = 0;
     }
 
     pub fn run_to(self: *Self, cpu_cycle: u64) void {
@@ -853,10 +861,15 @@ pub const PPU = struct {
     }
 
     pub fn cpu_read(self: *Self, addr: u16) u8 {
+        const decayed_value = if (self.global_cycle > PPU_ONE_SEC_CYLES + self.last_cycle_written)
+            0
+        else
+            self.dynamic_latch;
         const mirrored_addr = 0x2000 | (addr & 0x0007);
         const value = switch (mirrored_addr) {
-            0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => self.dynamic_latch,
-            0x2002 => @as(u8, @bitCast(self.status_read())) | (self.dynamic_latch & 0b0001_1111),
+            // If it has passed 1 second return 0 to emulate the decay of the open bus.
+            0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => decayed_value,
+            0x2002 => @as(u8, @bitCast(self.status_read())) | (decayed_value & 0b0001_1111),
             0x2004 => self.oam_data_read(),
             0x2007 => self.data_read(),
             else => unreachable,
@@ -879,6 +892,7 @@ pub const PPU = struct {
     pub fn cpu_write(self: *Self, addr: u16, data: u8) void {
         const mirrored_addr = 0x2000 | (addr & 0x0007);
         self.dynamic_latch = data;
+        self.last_cycle_written = self.global_cycle;
         switch (mirrored_addr) {
             0x2000 => self.ctrl_write(data),
             0x2001 => self.mask_write(data),
@@ -1054,7 +1068,8 @@ pub const PPU = struct {
         if (addr >= 0x3F00) { // palette address don't have buffering
             // Palette read should also read VRAM into internal data buffer
             self.internal_data_buf = self.ppu_read(addr & 0x2FFF);
-            return byte;
+            // The high 2 bits of palette are from whatever it was on open bus.
+            return (byte & 0b0011_1111) | (self.dynamic_latch & 0b1100_0000);
         } else {
             const result = self.internal_data_buf;
             self.internal_data_buf = byte;
