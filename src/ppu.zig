@@ -305,6 +305,8 @@ pub const PPU = struct {
     /// PPU that we have to emulate.
     dynamic_latch: u8,
 
+    frame_is_odd: bool,
+
     const Self = @This();
     const PRE_RENDER_SCANLINE: u16 = 261;
 
@@ -336,6 +338,7 @@ pub const PPU = struct {
             .next_vblank_ppu_cycle = 1,
             .next_vblank_cpu_cycle = ppu_to_cpu_cycle(1),
             .dynamic_latch = 0,
+            .frame_is_odd = false,
         };
     }
 
@@ -364,6 +367,7 @@ pub const PPU = struct {
         self.status_register = .{};
         self.tmp_addr = .{};
         self.write_toggle = false;
+        self.frame_is_odd = false;
     }
 
     pub fn run_to(self: *Self, cpu_cycle: u64) void {
@@ -390,18 +394,32 @@ pub const PPU = struct {
         self.cycle += 1;
         self.global_cycle += 1;
 
-        if (self.cycle >= CYCLES_PER_SCANLINE) {
-            self.cycle = 0;
-            self.scanline = (self.scanline + 1) % SCANLINES_PER_FRAME;
-            self.frame_complete = self.scanline == 0;
+        var dots_this_scanline: u16 = CYCLES_PER_SCANLINE;
+
+        // On odd frames, the pre-render scanline is 1 dot shorter
+        if (self.scanline == PRE_RENDER_SCANLINE and self.frame_is_odd) {
+            dots_this_scanline -= 1;
         }
 
+        if (self.cycle >= dots_this_scanline) {
+            self.cycle = 0;
+            self.scanline = (self.scanline + 1) % SCANLINES_PER_FRAME;
+
+            // Check if we just wrapped to a new frame
+            if (self.scanline == 0) {
+                self.frame_is_odd = !self.frame_is_odd;
+                self.frame_complete = true;
+            } else {
+                self.frame_complete = false;
+            }
+        }
     }
 
     fn vblank_scanline(self: *Self) void {
         if (self.scanline == 241 and self.cycle == 1) {
             self.status_register.vblank = true; // end of frame, set vblank
-            self.next_vblank_ppu_cycle += CYCLES_PER_FRAME;
+            const cycles_this_frame = if (self.frame_is_odd) CYCLES_PER_FRAME - 1 else CYCLES_PER_FRAME;
+            self.next_vblank_ppu_cycle += cycles_this_frame;
             self.next_vblank_cpu_cycle = ppu_to_cpu_cycle(self.next_vblank_ppu_cycle);
 
             if (self.ctrl_register.generate_nmi) {
