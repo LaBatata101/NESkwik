@@ -12,6 +12,7 @@ const trace = @import("trace.zig").trace;
 
 pub const Settings = struct {
     trace_cpu: bool = false,
+    disable_audio: bool = false,
 };
 
 pub const System = struct {
@@ -46,6 +47,8 @@ pub const System = struct {
         apu.* = try APU.init(allocator, try SDLAudioOut.init(allocator));
         bus.* = Bus.init(rom, ppu, apu);
         cpu.* = CPU.init(bus);
+
+        apu.device.disable = settings.disable_audio;
 
         const keymap1, const keymap2 = try Self.init_keymaps(allocator);
 

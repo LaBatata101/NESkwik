@@ -142,9 +142,43 @@ pub fn build(b: *std.Build) void {
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
     const no_run = b.option(bool, "no-run", "Don't run the test") orelse false;
+    const rom_tests_enabled = b.option(bool, "rom-tests", "Run ROM tests. This is very slow!") orelse false;
 
     const test_step = b.step("test", "Run tests");
+    if (!no_run and rom_tests_enabled) {
+        const test_exe = b.addExecutable(.{
+            .name = "rom-tests",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/test_runners/rom_test_runner.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "ness", .module = mod },
+                },
+            }),
+        });
+        const rom_mod_test_artifacts = b.addInstallArtifact(test_exe, .{
+            .dest_dir = .{
+                .override = .{
+                    .custom = "tests",
+                },
+            },
+        });
+        test_exe.root_module.addIncludePath(b.path("third-party/blip_buf-1.1.0"));
 
+        test_exe.root_module.linkLibrary(sdl_lib);
+        test_exe.root_module.linkLibrary(blip_buf_lib);
+        test_exe.root_module.link_libc = true;
+
+        const run_rom_tests = b.addRunArtifact(test_exe);
+
+        for (test_filters) |filter| {
+            run_rom_tests.addArg(filter);
+        }
+
+        test_step.dependOn(&rom_mod_test_artifacts.step);
+        test_step.dependOn(&run_rom_tests.step);
+    } else {
         // Creates an executable that will run `test` blocks from the provided module.
         // Here `mod` needs to define a target, which is why earlier we made sure to
         // set the releative field.
@@ -186,4 +220,5 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run_mod_tests.step);
             test_step.dependOn(&run_exe_tests.step);
         }
+    }
 }

@@ -19,6 +19,8 @@ pub const SDLAudioOut = struct {
     mutex: std.Thread.Mutex,
     cond: std.Thread.Condition,
     stream: *c.SDL_AudioStream,
+    // To disable the audio output when running the test ROMs from CLI.
+    disable: bool = false,
 
     const Self = @This();
 
@@ -58,6 +60,8 @@ pub const SDLAudioOut = struct {
     }
 
     pub fn play(self: *Self, buffer: []const Sample) void {
+        if (self.disable) return;
+
         self.wait(buffer.len);
         self.mutex.lock();
         defer self.mutex.unlock();
