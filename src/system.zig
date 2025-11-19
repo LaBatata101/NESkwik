@@ -121,17 +121,18 @@ pub const System = struct {
     }
 
     pub fn tick(self: *Self) void {
+        if (self.apu.irq_interrupt) {
+            self.cpu.interrupt(CPU.IRQ);
+        }
+
+        self.cpu.tick();
+
         if (self.ppu.requested_run_cycle() <= self.bus.cycles) {
             self.run_ppu();
         }
         if (self.apu.requested_run_cycle() <= self.bus.cycles) {
             self.run_apu();
         }
-        if (self.bus.rom.mapper_irq_active()) {
-            self.cpu.interrupt(CPU.IRQ);
-        }
-
-        self.cpu.tick();
     }
 
     pub fn run_frame(self: *Self) void {
