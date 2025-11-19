@@ -1,10 +1,12 @@
 const std = @import("std");
 
+const Rom = @import("../rom.zig").Rom;
 const buffer = @import("buffer.zig");
 const SDLAudioOut = @import("../sdl_audio.zig").SDLAudioOut;
 const Pulse = @import("channels/pulse.zig").Pulse;
 const Triangle = @import("channels/triangle.zig").Triangle;
 const Noise = @import("channels/noise.zig").Noise;
+const DMC = @import("channels/dmc.zig").DMC;
 const SampleBuffer = buffer.SampleBuffer;
 const Waveform = buffer.Waveform;
 
@@ -35,6 +37,7 @@ pub const APU = struct {
     triangle: Triangle,
     noise: Noise,
     frame: Frame,
+    dmc: DMC,
 
     pulse_buffer: *SampleBuffer,
     tnd_buffer: *SampleBuffer,
@@ -53,7 +56,8 @@ pub const APU = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, device: *SDLAudioOut) !Self {
+    /// `rom` is used by the DMC channel to read the PRG-ROM.
+    pub fn init(allocator: std.mem.Allocator, device: *SDLAudioOut, rom: *Rom) !Self {
         const sample_rate = device.sampleRate();
 
         const pulse_buffer = try SampleBuffer.init(allocator, sample_rate);
@@ -67,6 +71,7 @@ pub const APU = struct {
             .pulse2 = Pulse.init(true, Waveform.init(pulse_buffer, VOLUME_MULT)),
             .triangle = Triangle.init(Waveform.init(tnd_buffer, VOLUME_MULT)),
             .noise = Noise.init(Waveform.init(tnd_buffer, VOLUME_MULT)),
+            .dmc = DMC.init(Waveform.init(tnd_buffer, VOLUME_MULT), rom),
             .frame = .{},
 
             .pulse_buffer = pulse_buffer,
@@ -107,6 +112,10 @@ pub const APU = struct {
         self.last_frame_cyc = 0;
         self.irq_interrupt = false;
         self.jitter = Jitter.None;
+    }
+
+    pub fn irq_triggered(self: *const Self) bool {
+        return self.irq_interrupt or self.dmc.irq_pending;
     }
 
     pub fn run_to(self: *Self, cpu_cycle: u64) void {
@@ -187,7 +196,6 @@ pub const APU = struct {
         self.pulse2.envelope_tick();
         self.triangle.envelope_tick();
         self.noise.envelope_tick();
-        // TODO: tick DMC channels here?
     }
 
     fn length_tick(self: *Self) void {
@@ -195,7 +203,6 @@ pub const APU = struct {
         self.pulse2.length_tick();
         self.triangle.length_tick();
         self.noise.length_tick();
-        // TODO: tick DMC channels here?
     }
 
     fn raise_irq(self: *Self) void {
@@ -211,7 +218,7 @@ pub const APU = struct {
         self.pulse2.play(from, to);
         self.triangle.play(from, to);
         self.noise.play(from, to);
-        // TODO play DMC channels
+        self.dmc.play(from, to);
     }
 
     fn transfer(self: *Self) void {
@@ -270,8 +277,9 @@ pub const APU = struct {
         status |= self.pulse2.length_counter.active() << 1;
         status |= self.triangle.length_counter.active() << 2;
         status |= self.noise.length_counter.active() << 3;
-        // TODO: DMC channel?
+        status |= if (self.dmc.bytes_remaining > 0) @as(u8, 1 << 4) else 0;
         status |= if (self.irq_interrupt) @as(u8, 1 << 6) else 0;
+        status |= if (self.dmc.irq_pending) @as(u8, 1 << 7) else 0;
         self.irq_interrupt = false;
 
         self.run_to(cycle);
@@ -284,8 +292,9 @@ pub const APU = struct {
         status |= self.pulse2.length_counter.active() << 1;
         status |= self.triangle.length_counter.active() << 2;
         status |= self.noise.length_counter.active() << 3;
-        // TODO: DMC channel?
+        status |= if (self.dmc.bytes_remaining > 0) @as(u8, 1 << 4) else 0;
         status |= if (self.irq_interrupt) @as(u8, 1 << 6) else 0;
+        status |= if (self.dmc.irq_pending) @as(u8, 1 << 7) else 0;
         return status;
     }
 
@@ -295,15 +304,14 @@ pub const APU = struct {
             0x4004, 0x4005, 0x4006, 0x4007 => self.pulse2.write(addr, value),
             0x4008, 0x4009, 0x400A, 0x400B => self.triangle.write(addr, value),
             0x400C, 0x400D, 0x400E, 0x400F => self.noise.write(addr, value),
-            0x4010, 0x4011, 0x4012, 0x4013 => {
-                // TODO: DMC
-            },
+            0x4010, 0x4011, 0x4012, 0x4013 => self.dmc.write(addr, value),
             0x4015 => {
                 self.pulse1.length_counter.set_enable(value & 0b0000_0001 != 0);
                 self.pulse2.length_counter.set_enable(value & 0b0000_0010 != 0);
                 self.triangle.length_counter.set_enable(value & 0b0000_0100 != 0);
                 self.noise.length_counter.set_enable(value & 0b0000_1000 != 0);
-                // TODO: DMC?
+                self.dmc.set_enabled(value & 0b0001_0000 != 0);
+                self.dmc.irq_pending = false;
             },
             0x4017 => {
                 if (self.global_cycle % 2 == 0) {

@@ -44,7 +44,7 @@ pub const System = struct {
         const bus = try allocator.create(Bus);
 
         ppu.* = PPU.init(rom);
-        apu.* = try APU.init(allocator, try SDLAudioOut.init(allocator));
+        apu.* = try APU.init(allocator, try SDLAudioOut.init(allocator), rom);
         bus.* = Bus.init(rom, ppu, apu);
         cpu.* = CPU.init(bus);
 
@@ -121,7 +121,7 @@ pub const System = struct {
     }
 
     pub fn tick(self: *Self) void {
-        if (self.apu.irq_interrupt) {
+        if (self.bus.rom.mapper_irq_active() or self.apu.irq_triggered()) {
             self.cpu.interrupt(CPU.IRQ);
         }
 
