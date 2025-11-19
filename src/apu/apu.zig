@@ -41,9 +41,9 @@ pub const APU = struct {
 
     device: *SDLAudioOut,
 
-    global_cyc: u64,
+    global_cycle: u64,
     tick_cycle: u8,
-    next_tick_cyc: u64,
+    next_tick_cycle: u64,
     next_transfer_cyc: u64,
     last_frame_cyc: u64,
 
@@ -74,9 +74,9 @@ pub const APU = struct {
 
             .device = device,
 
-            .global_cyc = 0,
+            .global_cycle = 0,
             .tick_cycle = 0,
-            .next_tick_cyc = NTSC_TICK_LENGTH_TABLE[0][0],
+            .next_tick_cycle = NTSC_TICK_LENGTH_TABLE[0][0],
             .next_transfer_cyc = clocks_needed,
             .last_frame_cyc = 0,
 
@@ -100,9 +100,9 @@ pub const APU = struct {
         self.triangle = Triangle.init(Waveform.init(self.tnd_buffer, VOLUME_MULT));
         self.noise = Noise.init(Waveform.init(self.tnd_buffer, VOLUME_MULT));
         self.frame = .{};
-        self.global_cyc = 0;
+        self.global_cycle = 0;
         self.tick_cycle = 0;
-        self.next_tick_cyc = NTSC_TICK_LENGTH_TABLE[0][0];
+        self.next_tick_cycle = NTSC_TICK_LENGTH_TABLE[0][0];
         self.next_transfer_cyc = self.pulse_buffer.clocks_needed();
         self.last_frame_cyc = 0;
         self.irq_interrupt = false;
@@ -110,9 +110,9 @@ pub const APU = struct {
     }
 
     pub fn run_to(self: *Self, cpu_cycle: u64) void {
-        while (self.global_cyc < cpu_cycle) {
-            const current_cycle = self.global_cyc;
-            var next_step = @min(cpu_cycle, self.next_tick_cyc);
+        while (self.global_cycle < cpu_cycle) {
+            const current_cycle = self.global_cycle;
+            var next_step = @min(cpu_cycle, self.next_tick_cycle);
             next_step = @min(next_step, self.next_transfer_cyc);
 
             switch (self.jitter) {
@@ -124,29 +124,29 @@ pub const APU = struct {
             }
 
             self.play(current_cycle, next_step);
-            self.global_cyc = next_step;
+            self.global_cycle = next_step;
 
             switch (self.jitter) {
                 .Delay => |data| {
                     const time, const value = data;
-                    if (self.global_cyc == time) {
+                    if (self.global_cycle == time) {
                         self.set_4017(value);
                         self.jitter = Jitter.None;
                     }
                 },
                 else => {},
             }
-            if (self.global_cyc == self.next_tick_cyc) {
+            if (self.global_cycle == self.next_tick_cycle) {
                 self.tick();
             }
-            if (self.global_cyc == self.next_transfer_cyc) {
+            if (self.global_cycle == self.next_transfer_cyc) {
                 self.transfer();
             }
         }
     }
 
     fn tick(self: *Self) void {
-        self.next_tick_cyc = self.global_cyc + NTSC_TICK_LENGTH_TABLE[@intFromBool(self.frame.mode)][self.tick_cycle];
+        self.next_tick_cycle = self.global_cycle + NTSC_TICK_LENGTH_TABLE[@intFromBool(self.frame.mode)][self.tick_cycle];
         self.tick_cycle += 1;
         if (self.frame.mode) {
             switch (self.tick_cycle) {
@@ -175,7 +175,7 @@ pub const APU = struct {
                     self.tick_cycle = 0;
                     self.envelope_tick();
                     self.length_tick();
-                    return self.raise_irq();
+                    self.raise_irq();
                 },
                 else => self.tick_cycle = 0,
             }
@@ -215,7 +215,7 @@ pub const APU = struct {
     }
 
     fn transfer(self: *Self) void {
-        const cpu_cyc = self.global_cyc;
+        const cpu_cyc = self.global_cycle;
         const cycles_since_last_frame: u32 = @intCast(cpu_cyc - self.last_frame_cyc);
         self.last_frame_cyc = cpu_cyc;
 
@@ -250,7 +250,7 @@ pub const APU = struct {
     /// Min of the next APU IRQ, the next DMC IRQ, and the next tick time. When
     /// the CPU cycle reaches this number, the CPU must run the APU.
     pub fn requested_run_cycle(self: Self) u64 {
-        return self.next_tick_cyc;
+        return self.next_tick_cycle;
     }
 
     fn set_4017(self: *Self, value: u8) void {
@@ -260,7 +260,7 @@ pub const APU = struct {
         }
 
         self.tick_cycle = 0;
-        self.next_tick_cyc = self.global_cyc + NTSC_TICK_LENGTH_TABLE[@intFromBool(self.frame.mode)][0];
+        self.next_tick_cycle = self.global_cycle + NTSC_TICK_LENGTH_TABLE[@intFromBool(self.frame.mode)][0];
     }
 
     pub fn read_status(self: *Self, cycle: u64) u8 {
@@ -306,10 +306,10 @@ pub const APU = struct {
                 // TODO: DMC?
             },
             0x4017 => {
-                if (self.global_cyc % 2 == 0) {
+                if (self.global_cycle % 2 == 0) {
                     self.set_4017(value);
                 } else {
-                    self.jitter = .{ .Delay = .{ self.global_cyc + 1, value } };
+                    self.jitter = .{ .Delay = .{ self.global_cycle + 1, value } };
                 }
             },
             else => {
