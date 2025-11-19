@@ -17,9 +17,9 @@ const VOLUME_MULT: i32 = ((@as(i16, 32767) / 16) / 3);
 
 const Frame = packed struct(u8) {
     _: u6 = 0,
+    suppress_irq: bool = false,
     /// `false` = 4-step, `true` = 5-step
     mode: bool = false,
-    suppress_irq: bool = false,
 };
 
 const Jitter = union(enum) {
