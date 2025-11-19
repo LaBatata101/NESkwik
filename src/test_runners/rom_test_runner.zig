@@ -126,7 +126,7 @@ pub fn main() !void {
         for (state.failed_tests.items) |failed_test| {
             std.debug.print("\n{s}", .{failed_test.name});
             if (failed_test.output.len > 0) {
-                std.debug.print(" - output: {s}\n{s}", .{ failed_test.output, "=" ** 15 });
+                std.debug.print(" - output:\n{s}\n{s}", .{ failed_test.output, "=" ** 15 });
             }
             std.debug.print("\n", .{});
         }
