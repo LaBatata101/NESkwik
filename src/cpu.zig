@@ -107,6 +107,8 @@ pub const CPU = struct {
     /// results of the operation. Each flag has a single bit within the register.
     status: ProcessorStatus,
 
+    irq_delay: ?bool,
+
     bus: *Bus,
 
     const Self = @This();
@@ -151,6 +153,7 @@ pub const CPU = struct {
             .register_y = 0,
             .status = initial_status,
             .bus = bus,
+            .irq_delay = null,
         };
     }
 
@@ -173,6 +176,7 @@ pub const CPU = struct {
         self.register_x = 0;
         self.register_y = 0;
         self.sp = STACK_TOP;
+        self.irq_delay = null;
 
         self.status = .{};
         self.status.interrupt_disable = true;
@@ -540,6 +544,11 @@ pub const CPU = struct {
     }
 
     pub fn tick(self: *Self) void {
+        if (self.irq_delay) |v| {
+            self.status.interrupt_disable = v;
+            self.irq_delay = null;
+        }
+
         const code = self.mem_read(self.pc);
         const opcode = opcodes.OP_CODES[code];
         self.pc += 1;
@@ -639,9 +648,9 @@ pub const CPU = struct {
             .CLC => self.status.carry_flag = false,
             .CLD => self.status.decimal_mode = false,
             .SED => self.status.decimal_mode = true,
-            .CLI => self.status.interrupt_disable = false,
+            .CLI => self.irq_delay = false,
             .CLV => self.status.overflow_flag = false,
-            .SEI => self.status.interrupt_disable = true,
+            .SEI => self.irq_delay = true,
             .SEC => self.status.carry_flag = true,
             .DEC => self.dec(opcode),
             .JMP => {
@@ -684,10 +693,13 @@ pub const CPU = struct {
                 self.stack_push(@bitCast(copy_status));
             },
             .PLP => {
-                const current_status = self.status;
+                const old_status = self.status;
                 self.status = @bitCast(self.stack_pop());
-                self.status.break_command = current_status.break_command;
-                self.status.break2 = current_status.break2;
+                self.status.break_command = old_status.break_command;
+                self.status.break2 = old_status.break2;
+
+                self.irq_delay = self.status.interrupt_disable;
+                self.status.interrupt_disable = old_status.interrupt_disable;
             },
             .BRK => {
                 // skips the following byte
@@ -858,10 +870,17 @@ pub const CPU = struct {
         if (int.type == .IRQ and self.status.interrupt_disable) {
             return;
         }
+
         self.stack_push_u16(self.pc);
         var status = self.status;
         status.break_command = int.flags.break_command;
         status.break2 = int.flags.break2;
+
+        if (self.irq_delay) |v| {
+            status.interrupt_disable = v;
+        }
+
+        self.irq_delay = null;
 
         self.stack_push(@bitCast(status));
         self.status.interrupt_disable = true;
@@ -1782,8 +1801,8 @@ test "0x38: SEC Set Carry Flag" {
 
 test "0x58: CLI Clear Interrupt Disable" {
     const alloc = std.testing.allocator;
-    //                          SEI   CLI
-    const instructions = [_]u8{ 0x78, 0x58 };
+    //                          SEI   CLI   NOP
+    const instructions = [_]u8{ 0x78, 0x58, 0x1A };
     var test_rom = rom.TestRom.init(alloc, &instructions);
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
