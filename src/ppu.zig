@@ -956,8 +956,16 @@ pub const PPU = struct {
     }
 
     fn increment_vram_addr(self: *Self) void {
-        const new_addr = self.addr_register.addr() +% self.ctrl_register.vram_addr_increment();
-        self.addr_register = @bitCast(new_addr);
+        if (self.scanline >= 240 or !self.is_rendering_enabled()) {
+            const new_addr = self.addr_register.addr() +% self.ctrl_register.vram_addr_increment();
+            self.addr_register = @bitCast(new_addr);
+        } else {
+            // "During rendering (on the pre-render line and the visible lines 0-239, provided either background or
+            // sprite rendering is enabled), " it will update v in an odd way, triggering a coarse X increment and a
+            // Y increment simultaneously"
+            self.increment_scroll_x();
+            self.increment_scroll_y();
+        }
     }
 
     /// Mirrors PPU VRAM addresses according to the configured mirroring mode.
@@ -1059,12 +1067,7 @@ pub const PPU = struct {
         const addr = self.addr_register.addr();
         const byte = self.ppu_read(addr);
 
-        if (self.is_rendering()) { // `v` register is incremented strangely if we're reading during rendering.
-            self.increment_scroll_x();
-            self.increment_scroll_y();
-        } else {
-            self.increment_vram_addr();
-        }
+        self.increment_vram_addr();
 
         if ((addr & 0x3FFF) >= 0x3F00) { // palette address don't have buffering
             // Palette read should also read VRAM into internal data buffer
@@ -1119,12 +1122,7 @@ pub const PPU = struct {
             std.debug.panic("PPU: unexpected access to mirrored space 0x{X:04} while writing\n", .{addr});
         }
 
-        if (self.is_rendering()) { // `v` register is incremented strangely if we're writing during rendering.
-            self.increment_scroll_x();
-            self.increment_scroll_y();
-        } else {
-            self.increment_vram_addr();
-        }
+        self.increment_vram_addr();
     }
 
     /// Write a value to the `PPUCTRL` register.
