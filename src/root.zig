@@ -18,6 +18,8 @@ pub const CPU = cpu.CPU;
 pub const Rom = rom.Rom;
 pub const SYSTEM_PALLETE = render.SYSTEM_PALETTE;
 
+pub const utils = @import("utils/sdl.zig");
+
 pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_main.h");

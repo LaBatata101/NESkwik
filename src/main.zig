@@ -8,6 +8,7 @@ const debug = ness.debug;
 const System = ness.System;
 const FPSManager = ness.render.FPSManager;
 const TextRenderer = ness.gui.TextRenderer;
+const sdlError = ness.utils.sdlError;
 
 const SCALE = 3;
 
@@ -75,19 +76,20 @@ pub fn main() !void {
     _ = try file.read(buffer);
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO)) {
-        sdlPanic();
+        std.debug.print("Failed to initialize SDL: {s}\n", .{c.SDL_GetError()});
+        return;
     }
     defer c.SDL_Quit();
 
     const window_width = (ness.NES_WIDTH + if (debug_mode) @as(c_int, ness.DEBUG_WIDTH) else 0) * SCALE;
     const window_height = ness.NES_HEIGHT * SCALE;
-    const window = c.SDL_CreateWindow("NESS 0.1", window_width, window_height, 0) orelse sdlPanic();
+    const window = sdlError(c.SDL_CreateWindow("NESS 0.1", window_width, window_height, 0));
     defer c.SDL_DestroyWindow(window);
 
-    const renderer = c.SDL_CreateRenderer(window, null) orelse sdlPanic();
+    const renderer = sdlError(c.SDL_CreateRenderer(window, null));
     defer c.SDL_DestroyRenderer(renderer);
 
-    _ = c.SDL_SetRenderScale(renderer, SCALE, SCALE);
+    sdlError(c.SDL_SetRenderScale(renderer, SCALE, SCALE));
 
     const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 256, 240);
     defer c.SDL_DestroyTexture(texture);
@@ -98,9 +100,9 @@ pub fn main() !void {
     const pt_texture1 = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 128, 128);
     defer c.SDL_DestroyTexture(pt_texture1);
 
-    _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
-    _ = c.SDL_SetTextureScaleMode(pt_texture0, c.SDL_SCALEMODE_NEAREST);
-    _ = c.SDL_SetTextureScaleMode(pt_texture1, c.SDL_SCALEMODE_NEAREST);
+    sdlError(c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST));
+    sdlError(c.SDL_SetTextureScaleMode(pt_texture0, c.SDL_SCALEMODE_NEAREST));
+    sdlError(c.SDL_SetTextureScaleMode(pt_texture1, c.SDL_SCALEMODE_NEAREST));
 
     const src_rect = c.SDL_FRect{
         .x = 0.0,
@@ -149,9 +151,9 @@ pub fn main() !void {
             system.run_frame();
         }
 
-        _ = c.SDL_RenderClear(renderer);
-        _ = c.SDL_UpdateTexture(texture, null, system.frame_buffer(), ness.NES_WIDTH * SCALE);
-        _ = c.SDL_RenderTexture(renderer, texture, &src_rect, &dst_rect);
+        sdlError(c.SDL_RenderClear(renderer));
+        sdlError(c.SDL_UpdateTexture(texture, null, system.frame_buffer(), ness.NES_WIDTH * SCALE));
+        sdlError(c.SDL_RenderTexture(renderer, texture, &src_rect, &dst_rect));
 
         if (debug_mode) {
             debug.render_debug_mode(
@@ -164,7 +166,7 @@ pub fn main() !void {
             );
         }
 
-        _ = c.SDL_RenderPresent(renderer);
+        sdlError(c.SDL_RenderPresent(renderer));
         _ = fps_manager.delay();
     }
 }
@@ -186,9 +188,4 @@ fn process_input(system: *System, step_mode: *bool) void {
             else => {},
         }
     }
-}
-
-fn sdlPanic() noreturn {
-    const str = @as(?[*:0]const u8, c.SDL_GetError()) orelse "unknown error";
-    @panic(std.mem.sliceTo(str, 0));
 }

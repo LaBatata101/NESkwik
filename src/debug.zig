@@ -6,6 +6,7 @@ const opcodes = @import("opcodes.zig");
 const ProcessorStatus = @import("cpu.zig").ProcessorStatus;
 const trace = @import("trace.zig");
 const Color = @import("render.zig").Color;
+const sdlError = @import("utils/sdl.zig").sdlError;
 const SYSTEM_PALETTE = @import("render.zig").SYSTEM_PALETTE;
 
 const NES_WIDTH = @import("root.zig").NES_WIDTH;
@@ -13,24 +14,24 @@ const NES_HEIGHT = @import("root.zig").NES_HEIGHT;
 const DEBUG_WIDTH = @import("root.zig").DEBUG_WIDTH;
 
 pub fn render_debug_mode(
-    renderer: *c.SDL_Renderer,
+    renderer: ?*c.SDL_Renderer,
     system: *System,
     text: *TextRenderer,
     prg_rom: []const u8,
     pt_texture0: *c.SDL_Texture,
     pt_texture1: *c.SDL_Texture,
 ) void {
-    _ = c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255);
+    sdlError(c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255));
     var debug_bg_rect = c.SDL_FRect{
         .x = @floatFromInt(NES_WIDTH),
         .y = 0.0,
         .w = @floatFromInt(DEBUG_WIDTH),
         .h = @floatFromInt(NES_HEIGHT),
     };
-    _ = c.SDL_RenderFillRect(renderer, &debug_bg_rect);
+    sdlError(c.SDL_RenderFillRect(renderer, &debug_bg_rect));
 
-    _ = c.SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
-    _ = c.SDL_RenderLine(renderer, @floatFromInt(NES_WIDTH), 0.0, @floatFromInt(NES_WIDTH), @floatFromInt(NES_HEIGHT));
+    sdlError(c.SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255));
+    sdlError(c.SDL_RenderLine(renderer, @floatFromInt(NES_WIDTH), 0.0, @floatFromInt(NES_WIDTH), @floatFromInt(NES_HEIGHT)));
 
     var buffer: [23]u8 = undefined;
     var addr_mode_buffer: [27]u8 = undefined;
@@ -105,7 +106,7 @@ pub fn render_debug_mode(
         system.bus.cycles,
     });
 
-    _ = c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255);
+    sdlError(c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255));
     const pt_size = 64.0;
     const pt_y = 172.5;
     const pt_x_1 = 10.0;
@@ -116,8 +117,8 @@ pub fn render_debug_mode(
     const frame_pt1 = system.ppu.get_pattern_table(1, 0);
 
     const pitch = NES_WIDTH * 3;
-    _ = c.SDL_UpdateTexture(pt_texture0, null, &frame_pt0.data, pitch);
-    _ = c.SDL_UpdateTexture(pt_texture1, null, &frame_pt1.data, pitch);
+    sdlError(c.SDL_UpdateTexture(pt_texture0, null, &frame_pt0.data, pitch));
+    sdlError(c.SDL_UpdateTexture(pt_texture1, null, &frame_pt1.data, pitch));
 
     const dest_rect0 = c.SDL_FRect{
         .x = pt_x_1,
@@ -125,7 +126,7 @@ pub fn render_debug_mode(
         .w = pt_size,
         .h = pt_size,
     };
-    _ = c.SDL_RenderTexture(renderer, pt_texture0, null, &dest_rect0);
+    sdlError(c.SDL_RenderTexture(renderer, pt_texture0, null, &dest_rect0));
 
     const dest_rect1 = c.SDL_FRect{
         .x = pt_x_2,
@@ -133,7 +134,7 @@ pub fn render_debug_mode(
         .w = pt_size,
         .h = pt_size,
     };
-    _ = c.SDL_RenderTexture(renderer, pt_texture1, null, &dest_rect1);
+    sdlError(c.SDL_RenderTexture(renderer, pt_texture1, null, &dest_rect1));
 
     const palette_start_x = pt_x_2 + pt_size + 10.0;
     render_palettes(renderer, system, text, palette_start_x, 162.5);
@@ -152,7 +153,7 @@ fn format_status(status: ProcessorStatus) [8]u8 {
 }
 
 fn render_palettes(
-    renderer: *c.SDL_Renderer,
+    renderer: ?*c.SDL_Renderer,
     system: *System,
     text: *TextRenderer,
     start_x: f32,
@@ -171,7 +172,7 @@ fn render_palettes(
 
             const palette_index = palette_ram[i];
             const color = SYSTEM_PALETTE[palette_index & 0x3F];
-            _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+            sdlError(c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a));
 
             const grid_x: f32 = @floatFromInt(palette_num % 2);
             const grid_y: f32 = @floatFromInt(palette_num / 2);
@@ -188,7 +189,7 @@ fn render_palettes(
                 .w = swatch_size,
                 .h = swatch_size,
             };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
+            sdlError(c.SDL_RenderFillRect(renderer, &rect));
         }
     }
 
@@ -207,7 +208,7 @@ fn render_palettes(
 
             const palette_index = palette_ram[palette_addr];
             const color = SYSTEM_PALETTE[palette_index & 0x3F];
-            _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+            sdlError(c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a));
 
             const grid_x: f32 = @floatFromInt(palette_num % 2);
             const grid_y: f32 = @floatFromInt(palette_num / 2);
@@ -224,9 +225,9 @@ fn render_palettes(
                 .w = swatch_size,
                 .h = swatch_size,
             };
-            _ = c.SDL_RenderFillRect(renderer, &rect);
+            sdlError(c.SDL_RenderFillRect(renderer, &rect));
         }
     }
 
-    _ = c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255);
+    sdlError(c.SDL_SetRenderDrawColor(renderer, 43, 40, 40, 255));
 }
