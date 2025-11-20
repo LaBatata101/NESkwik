@@ -175,6 +175,10 @@ pub const Rom = struct {
     pub fn mapper_irq_active(self: *Self) bool {
         return self.mapper.irq_active();
     }
+
+    pub fn mapper_ppu_address_updated(self: *Self, addr: u16) void {
+        self.mapper.ppu_address_updated(addr);
+    }
 };
 
 pub const TestRom = struct {

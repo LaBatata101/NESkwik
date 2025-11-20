@@ -840,8 +840,11 @@ pub const PPU = struct {
         return render.SYSTEM_PALETTE[self.ppu_read(0x3F00 + @as(u16, palette_index * 4) + pixel_index) & 0x3F];
     }
 
-    fn ppu_read(self: *const Self, addr: u16) u8 {
+    fn ppu_read(self: *Self, addr: u16) u8 {
         const new_addr = addr & 0x3FFF;
+        if (new_addr < 0x2000) {
+            self.rom.mapper_ppu_address_updated(new_addr);
+        }
         return switch (new_addr) {
             0...0x1FFF => self.rom.chr_read(new_addr),
             0x2000...0x3EFF => self.vram[self.mirror_vram_addr(new_addr)],
@@ -878,7 +881,7 @@ pub const PPU = struct {
         return value;
     }
 
-    pub fn cpu_peek(self: *const Self, addr: u16) u8 {
+    pub fn cpu_peek(self: *Self, addr: u16) u8 {
         const mirrored_addr = 0x2000 | (addr & 0x0007);
         return switch (mirrored_addr) {
             0x2000, 0x2001, 0x2003, 0x2005, 0x2006 => self.dynamic_latch,
@@ -950,6 +953,8 @@ pub const PPU = struct {
             const tmp_addr = (self.tmp_addr.addr() & 0xFF00) | value;
             self.tmp_addr = @bitCast(tmp_addr);
             self.addr_register = self.tmp_addr;
+
+            self.rom.mapper_ppu_address_updated(tmp_addr & 0x3FFF);
         }
 
         self.write_toggle = !self.write_toggle;

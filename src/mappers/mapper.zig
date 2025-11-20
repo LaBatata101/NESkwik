@@ -4,6 +4,7 @@ const Mapper0 = @import("mapper0.zig").Mapper0;
 const Mapper1 = @import("mapper1.zig").Mapper1;
 const Mapper2 = @import("mapper2.zig").Mapper2;
 const Mapper3 = @import("mapper3.zig").Mapper3;
+const Mapper4 = @import("mapper4.zig").Mapper4;
 
 pub const MapperParams = struct {
     rom_path: []const u8,
@@ -19,6 +20,12 @@ pub const Mapper = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    const DefaultImpl = struct {
+        fn ppu_address_updated(ptr: *anyopaque, addr: u16) void {
+            _ = ptr;
+            _ = addr;
+        }
+    };
     pub const VTable = struct {
         deinit: *const fn (ptr: *anyopaque) void,
         prg_rom_read: *const fn (ptr: *anyopaque, addr: u16) u8,
@@ -29,6 +36,7 @@ pub const Mapper = struct {
         chr_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
         mirroring: *const fn (ptr: *const anyopaque) Mirroring,
         irq_active: *const fn (ptr: *anyopaque) bool,
+        ppu_address_updated: *const fn (ptr: *anyopaque, addr: u16) void = @ptrCast(&DefaultImpl.ppu_address_updated),
     };
 
     const Self = @This();
@@ -49,6 +57,10 @@ pub const Mapper = struct {
             },
             3 => {
                 const mapper = try Mapper3.init(allocator, params);
+                return mapper.as_mapper();
+            },
+            4 => {
+                const mapper = try Mapper4.init(allocator, params);
                 return mapper.as_mapper();
             },
             else => std.debug.panic("Unsupported mapper: {}\n", .{mapper_id}),
@@ -98,5 +110,8 @@ pub const Mapper = struct {
     pub fn irq_active(self: *Self) bool {
         return self.vtable.irq_active(self.ptr);
     }
-    // }
+
+    pub fn ppu_address_updated(self: *Self, addr: u16) void {
+        self.vtable.ppu_address_updated(self.ptr, addr);
+    }
 };
