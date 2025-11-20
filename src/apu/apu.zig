@@ -71,7 +71,7 @@ pub const APU = struct {
             .pulse2 = Pulse.init(true, Waveform.init(pulse_buffer, VOLUME_MULT)),
             .triangle = Triangle.init(Waveform.init(tnd_buffer, VOLUME_MULT)),
             .noise = Noise.init(Waveform.init(tnd_buffer, VOLUME_MULT)),
-            .dmc = DMC.init(Waveform.init(tnd_buffer, VOLUME_MULT), rom),
+            .dmc = DMC.init(Waveform.init(tnd_buffer, @divTrunc(VOLUME_MULT, 3)), rom),
             .frame = .{},
 
             .pulse_buffer = pulse_buffer,
