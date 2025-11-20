@@ -137,7 +137,7 @@ pub const CPU = struct {
         .type = .NMI,
         .vector_addr = 0xFFFA,
         .flags = .{ .break_command = false, .break2 = true },
-        .cycles = 8,
+        .cycles = 7,
     };
 
     pub fn init(bus: *Bus) CPU {
