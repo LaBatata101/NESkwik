@@ -11,6 +11,7 @@ const TextRenderer = ness.gui.TextRenderer;
 const sdlError = ness.utils.sdlError;
 
 const SCALE = 3;
+const CURSOR_HIDE_DELAY_MS = 3000;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
@@ -83,13 +84,21 @@ pub fn main() !void {
 
     const window_width = (ness.NES_WIDTH + if (debug_mode) @as(c_int, ness.DEBUG_WIDTH) else 0) * SCALE;
     const window_height = ness.NES_HEIGHT * SCALE;
-    const window = sdlError(c.SDL_CreateWindow("NESS 0.1", window_width, window_height, 0));
+    const window = sdlError(c.SDL_CreateWindow("NESS 0.1", window_width, window_height, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY));
     defer c.SDL_DestroyWindow(window);
 
     const renderer = sdlError(c.SDL_CreateRenderer(window, null));
     defer c.SDL_DestroyRenderer(renderer);
 
-    sdlError(c.SDL_SetRenderScale(renderer, SCALE, SCALE));
+    const logical_w = ness.NES_WIDTH + if (debug_mode) @as(c_int, ness.DEBUG_WIDTH) else 0;
+    const logical_h = ness.NES_HEIGHT;
+
+    sdlError(c.SDL_SetRenderLogicalPresentation(
+        renderer,
+        logical_w,
+        logical_h,
+        c.SDL_LOGICAL_PRESENTATION_LETTERBOX,
+    ));
 
     const texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB24, c.SDL_TEXTUREACCESS_STREAMING, 256, 240);
     defer c.SDL_DestroyTexture(texture);
@@ -145,8 +154,11 @@ pub fn main() !void {
     var text = TextRenderer.init(renderer);
     defer text.deinit();
 
+    var last_mouse_activity_time: u64 = c.SDL_GetTicks();
+    var is_cursor_hidden: bool = false;
+
     while (!system.quit) {
-        process_input(&system, &step_mode);
+        process_input(window, &system, &step_mode, &last_mouse_activity_time, &is_cursor_hidden);
         if (!step_mode) {
             system.run_frame();
         }
@@ -168,10 +180,31 @@ pub fn main() !void {
 
         sdlError(c.SDL_RenderPresent(renderer));
         _ = fps_manager.delay();
+
+        const now = c.SDL_GetTicks();
+        const flags = c.SDL_GetWindowFlags(window);
+        const is_fullscreen = (flags & c.SDL_WINDOW_FULLSCREEN) != 0;
+
+        if (is_fullscreen) {
+            if (!is_cursor_hidden and (now - last_mouse_activity_time > CURSOR_HIDE_DELAY_MS)) {
+                sdlError(c.SDL_HideCursor());
+                is_cursor_hidden = true;
+            }
+        } else if (is_cursor_hidden) { // Always show cursor if not in fullscreen
+            sdlError(c.SDL_ShowCursor());
+            is_cursor_hidden = false;
+            last_mouse_activity_time = now;
+        }
     }
 }
 
-fn process_input(system: *System, step_mode: *bool) void {
+fn process_input(
+    window: ?*c.SDL_Window,
+    system: *System,
+    step_mode: *bool,
+    last_mouse_activity_time: *u64,
+    is_cursor_hidden: *bool,
+) void {
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -182,7 +215,22 @@ fn process_input(system: *System, step_mode: *bool) void {
                 c.SDLK_F10 => system.tick(),
                 c.SDLK_F11 => system.run_frame(),
                 c.SDLK_R => system.reset(),
+                c.SDLK_F => {
+                    const flags = c.SDL_GetWindowFlags(window);
+                    if (flags & c.SDL_WINDOW_FULLSCREEN != 0) {
+                        sdlError(c.SDL_SetWindowFullscreen(window, false));
+                    } else {
+                        sdlError(c.SDL_SetWindowFullscreen(window, true));
+                    }
+                },
                 else => |key_code| system.controller_keydown(key_code),
+            },
+            c.SDL_EVENT_MOUSE_MOTION => {
+                last_mouse_activity_time.* = c.SDL_GetTicks();
+                if (is_cursor_hidden.*) {
+                    sdlError(c.SDL_ShowCursor());
+                    is_cursor_hidden.* = false;
+                }
             },
             c.SDL_EVENT_KEY_UP => system.controller_keyup(event.key.key),
             else => {},
