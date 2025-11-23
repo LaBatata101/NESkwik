@@ -113,6 +113,7 @@ const BgData = struct {
     shifter_pattern_lo: u16 = 0,
     shifter_pattern_hi: u16 = 0,
 
+    tile_addr: u16 = 0,
     next_tile_lo: u8 = 0,
     next_tile_hi: u8 = 0,
     next_tile_id: u8 = 0,
@@ -168,6 +169,7 @@ const SpriteData = struct {
 
     attributes: [8]OamAttr = [_]OamAttr{.{}} ** 8,
     x_pos: [8]u8 = [_]u8{0} ** 8,
+    has_sprite_at_x: [256]bool = [_]bool{false} ** 256,
 
     zero_hit_possible: bool = false,
     zero_being_rendered: bool = false,
@@ -312,6 +314,7 @@ pub const PPU = struct {
     last_cycle_written: u64,
 
     frame_is_odd: bool,
+    current_frame_buffer_index: usize,
 
     const Self = @This();
     const PRE_RENDER_SCANLINE: u16 = 261;
@@ -346,6 +349,7 @@ pub const PPU = struct {
             .dynamic_latch = 0,
             .frame_is_odd = false,
             .last_cycle_written = 0,
+            .current_frame_buffer_index = 0,
         };
     }
 
@@ -438,8 +442,10 @@ pub const PPU = struct {
 
     fn render_scanline(self: *Self) void {
         switch (self.cycle) {
-            // Idle cycle.
-            0 => {},
+            // Idle cycle. Just set the index for the frame buffer.
+            0 => {
+                self.current_frame_buffer_index = @as(usize, self.scanline) * 256 * 3;
+            },
             // The data for each tile is fetched during this phase.
             1...256 => self.render_cycle(),
             // The tile data for the sprites on the next scanline are fetched here.
@@ -449,6 +455,10 @@ pub const PPU = struct {
             // Two bytes are fetched, but the purpose for this is unknown.
             337...340 => self.unknown_fetch(),
             else => std.debug.panic("PPU cycle should be bigger than 340. Got {}\n", .{self.cycle}),
+        }
+
+        if (self.cycle == 257) {
+            @memset(&self.sprite_data.has_sprite_at_x, false);
         }
 
         // Sprite evaluation doesn't happen on the pre-render scanline or if the rendering is disabled.
@@ -475,16 +485,17 @@ pub const PPU = struct {
         // Render the pixel if we're not on the pre-render scanline.
         if (self.scanline != PRE_RENDER_SCANLINE) {
             const palette, const pixel = self.render_pixel();
-            self.frame_buffer.set_pixel(
-                @as(u16, @bitCast(self.cycle - 1)),
-                @as(u16, @bitCast(self.scanline)),
-                self.get_color(palette, pixel),
-            );
+            const color = self.get_color(palette, pixel);
+
+            const idx = self.current_frame_buffer_index;
+            self.frame_buffer.data[idx] = color.r;
+            self.frame_buffer.data[idx + 1] = color.g;
+            self.frame_buffer.data[idx + 2] = color.b;
+
+            self.current_frame_buffer_index += 3;
         }
 
-        // Shift registers
         self.shift_registers();
-        self.shift_sprite_registers();
     }
 
     fn fetch_next_sprite_cycle(self: *Self) void {
@@ -662,55 +673,66 @@ pub const PPU = struct {
         const tile_addr_lo = bank | tile_idx << 4 | offset;
         const tile_addr_hi = tile_addr_lo + 8;
 
-        var tile_byte_lo = self.ppu_read(tile_addr_lo);
-        var tile_byte_hi = self.ppu_read(tile_addr_hi);
-        if (oam_entry.attr.horizontally_flipped) { // horizontally flipped?
-            tile_byte_lo = flip_byte(tile_byte_lo);
-            tile_byte_hi = flip_byte(tile_byte_hi);
-        }
+        const tile_byte_lo = self.chr_read(tile_addr_lo);
+        const tile_byte_hi = self.chr_read(tile_addr_hi);
 
         self.sprite_data.x_pos[sprite_idx] = oam_entry.x;
         self.sprite_data.attributes[sprite_idx] = oam_entry.attr;
         self.sprite_data.shifter_pattern_lo[sprite_idx] = tile_byte_lo;
         self.sprite_data.shifter_pattern_hi[sprite_idx] = tile_byte_hi;
+
+        const sprite_x = oam_entry.x;
+        for (0..8) |i| {
+            if (sprite_x + i < 256) {
+                self.sprite_data.has_sprite_at_x[sprite_x + i] = true;
+            }
+        }
     }
 
     fn render_pixel(self: *Self) struct { u8, u8 } {
         var bg_pixel: u8 = 0; // 2-bit pixel to be rendered
         var bg_palette: u8 = 0; // 3-bit index of the palette the pixel indexes
         if (self.mask_register.render_background and (self.mask_register.render_background_left or self.cycle > 8)) {
-            const pixel_lo = std.math.shr(u16, self.bg_data.shifter_pattern_lo, 15 - self.fine_x) & 1;
-            const pixel_hi = std.math.shr(u16, self.bg_data.shifter_pattern_hi, 15 - self.fine_x) & 1;
+            const pixel_lo = (self.bg_data.shifter_pattern_lo >> @as(u4, @intCast(15 - self.fine_x))) & 1;
+            const pixel_hi = (self.bg_data.shifter_pattern_hi >> @as(u4, @intCast(15 - self.fine_x))) & 1;
             bg_pixel = @truncate((pixel_hi << 1) | pixel_lo);
 
-            const palette_lo = std.math.shr(u8, self.bg_data.shifter_attr_lo, 7 - self.fine_x) & 1;
-            const palette_hi = std.math.shr(u8, self.bg_data.shifter_attr_hi, 7 - self.fine_x) & 1;
+            const palette_lo = (self.bg_data.shifter_attr_lo >> @as(u3, @intCast(7 - self.fine_x))) & 1;
+            const palette_hi = (self.bg_data.shifter_attr_hi >> @as(u3, @intCast(7 - self.fine_x))) & 1;
             bg_palette = (palette_hi << 1) | palette_lo;
         }
 
         var sprite_pixel: u8 = 0;
         var sprite_palette: u8 = 0;
         var sprite_priority: bool = false;
-        if (self.mask_register.render_sprite and (self.mask_register.render_sprite_left or self.cycle > 8)) {
+        if (self.sprite_data.has_sprite_at_x[self.cycle - 1] and
+            self.mask_register.render_sprite and
+            (self.mask_register.render_sprite_left or self.cycle > 8))
+        {
             for (0..self.sprite_data.count) |i| {
-                if (self.sprite_data.x_pos[i] != 0) {
-                    continue;
-                }
+                const sprite_x = self.sprite_data.x_pos[i];
 
-                const sprite_pixel_lo = self.sprite_data.shifter_pattern_lo[i] >> 7;
-                const sprite_pixel_hi = self.sprite_data.shifter_pattern_hi[i] >> 7;
-                sprite_pixel = (sprite_pixel_hi << 1) | sprite_pixel_lo;
+                const diff = @as(i16, @bitCast(self.cycle)) - @as(i16, @intCast(sprite_x)) - 1;
 
-                // Extract the palette from the bottom two bits. The foreground palettes are the latter 4 in the
-                // palette memory.
-                sprite_palette = @as(u8, self.sprite_data.attributes[i].palette) + 4;
-                sprite_priority = !self.sprite_data.attributes[i].priority;
+                if (diff >= 0 and diff < 8) {
+                    const attr = self.sprite_data.attributes[i];
+                    const shift: u3 = if (attr.horizontally_flipped) @intCast(diff) else @intCast(7 - diff);
 
-                if (sprite_pixel != 0) {
-                    if (bg_pixel != 0 and i == 0 and self.cycle != 256 and self.sprite_data.zero_being_rendered) {
-                        self.status_register.sprite_zero_hit = true;
+                    const sprite_pixel_lo = (self.sprite_data.shifter_pattern_lo[i] >> shift) & 1;
+                    const sprite_pixel_hi = (self.sprite_data.shifter_pattern_hi[i] >> shift) & 1;
+                    sprite_pixel = (sprite_pixel_hi << 1) | sprite_pixel_lo;
+
+                    if (sprite_pixel != 0) {
+                        // Extract the palette from the bottom two bits. The foreground palettes are the latter 4 in the
+                        // palette memory.
+                        sprite_palette = @as(u8, self.sprite_data.attributes[i].palette) + 4;
+                        sprite_priority = !self.sprite_data.attributes[i].priority;
+
+                        if (bg_pixel != 0 and i == 0 and self.cycle != 256 and self.sprite_data.zero_being_rendered) {
+                            self.status_register.sprite_zero_hit = true;
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
@@ -728,11 +750,14 @@ pub const PPU = struct {
     }
 
     fn fetch_tile_data(self: *Self) void {
-        switch (@rem(self.cycle, 8)) {
+        switch (self.cycle & 0x07) {
             // Fetch the next background tile ID
             1 => {
                 const tile_addr = 0x2000 | (self.addr_register.addr() & 0x0FFF);
-                self.bg_data.next_tile_id = self.ppu_read(tile_addr);
+                self.bg_data.next_tile_id = self.vram_read(tile_addr);
+                self.bg_data.tile_addr = self.ctrl_register.bg_pattern_addr() +
+                    (@as(u16, self.bg_data.next_tile_id) << 4) +
+                    self.addr_register.fine_y;
             },
             // Fetch the next background tile attribute.
             3 => {
@@ -742,21 +767,15 @@ pub const PPU = struct {
                     ((@as(u16, self.addr_register.coarse_y) << 1) & 0b111000) |
                     ((@as(u16, self.addr_register.coarse_x) >> 2) & 0b111);
                 const shift = ((self.addr_register.coarse_y << 1) & 0b100) | (self.addr_register.coarse_x & 0b10);
-                self.bg_data.next_tile_attr = std.math.shr(u8, self.ppu_read(attr_addr), shift);
+                self.bg_data.next_tile_attr = std.math.shr(u8, self.vram_read(attr_addr), shift);
             },
             5 => {
                 // Fetch the next background tile LSB bit plane from the pattern memory.
-                const tile_addr = self.ctrl_register.bg_pattern_addr() +
-                    (@as(u16, self.bg_data.next_tile_id) << 4) +
-                    self.addr_register.fine_y;
-                self.bg_data.next_tile_lo = self.ppu_read(tile_addr);
+                self.bg_data.next_tile_lo = self.chr_read(self.bg_data.tile_addr);
             },
             7 => {
                 // Fetch the next background tile MSB bit plane from the pattern memory.
-                const tile_addr = self.ctrl_register.bg_pattern_addr() +
-                    (@as(u16, self.bg_data.next_tile_id) << 4) +
-                    self.addr_register.fine_y + 8;
-                self.bg_data.next_tile_hi = self.ppu_read(tile_addr);
+                self.bg_data.next_tile_hi = self.chr_read(self.bg_data.tile_addr + 8);
             },
             else => {},
         }
@@ -809,17 +828,6 @@ pub const PPU = struct {
         self.bg_data.shifter_attr_hi |= self.bg_data.next_attr_hi;
     }
 
-    fn shift_sprite_registers(self: *Self) void {
-        for (0..8) |i| {
-            if (self.sprite_data.x_pos[i] > 0) {
-                self.sprite_data.x_pos[i] -= 1;
-            } else {
-                self.sprite_data.shifter_pattern_hi[i] <<= 1;
-                self.sprite_data.shifter_pattern_lo[i] <<= 1;
-            }
-        }
-    }
-
     fn is_rendering_enabled(self: *const Self) bool {
         return self.mask_register.render_background or self.mask_register.render_sprite;
     }
@@ -833,20 +841,25 @@ pub const PPU = struct {
     }
 
     fn get_color(self: *Self, palette_index: u8, pixel_index: u8) render.Color {
-        // "0x3F00"       - Offset into PPU addressable range where palettes are stored
         // "palette_index * 4" - Each palette is 4 bytes in size
         // "pixel_index"        - Each pixel index is either 0, 1, 2 or 3
         // "& 0x3F"       - Stops us reading beyond the bounds of the SYSTEM_PALETTE array
-        return render.SYSTEM_PALETTE[self.ppu_read(0x3F00 + @as(u16, palette_index * 4) + pixel_index) & 0x3F];
+        const addr = 0x1F & (@as(u16, palette_index * 4) + pixel_index);
+        const final_addr = switch (addr) {
+            0x10, 0x14, 0x18, 0x1C => addr - 0x10,
+            else => addr,
+        };
+        const color_idx = self.palette_table[final_addr] & if (self.mask_register.greyscale) @as(u8, 0x30) else 0x3F;
+        return render.SYSTEM_PALETTE[color_idx];
     }
 
     fn ppu_read(self: *Self, addr: u16) u8 {
         const new_addr = addr & 0x3FFF;
-        if (new_addr < 0x2000) {
-            self.rom.mapper_ppu_address_updated(new_addr);
-        }
         return switch (new_addr) {
-            0...0x1FFF => self.rom.chr_read(new_addr),
+            0...0x1FFF => {
+                self.rom.mapper_ppu_address_updated(new_addr);
+                return self.rom.chr_read(new_addr);
+            },
             0x2000...0x3EFF => self.vram[self.mirror_vram_addr(new_addr)],
             0x3F00...0x3FFF => {
                 var palette_addr = new_addr & 0x1F;
@@ -861,6 +874,15 @@ pub const PPU = struct {
                 return 0;
             },
         };
+    }
+
+    fn chr_read(self: *Self, addr: u16) u8 {
+        self.rom.mapper_ppu_address_updated(addr);
+        return self.rom.chr_read(addr);
+    }
+
+    fn vram_read(self: *Self, addr: u16) u8 {
+        return self.vram[self.mirror_vram_addr(addr)];
     }
 
     pub fn cpu_read(self: *Self, addr: u16) u8 {
