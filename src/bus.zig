@@ -70,7 +70,7 @@ pub const Bus = struct {
             0x4016 => self.controllers.cntrl1_peek(),
             0x4017 => self.controllers.cntrl2_peek(),
             0x6000...0x7FFF => self.rom.prg_ram_read(addr),
-            0x4020...0x5FFF, 0x8000...0xFFFF => self.rom.prg_rom_read(addr),
+            0x8000...0xFFFF => self.rom.prg_rom_read(addr),
             else => return 0,
         };
     }
@@ -83,7 +83,7 @@ pub const Bus = struct {
             0x4000...0x4013, 0x4015, 0x4017 => self.apu.write(addr, data),
             0x4016 => self.controllers.set_strobe(data),
             0x6000...0x7FFF => self.rom.prg_ram_write(addr, data),
-            0x4020...0x5FFF, 0x8000...0xFFFF => self.rom.prg_rom_write(addr, data),
+            0x8000...0xFFFF => self.rom.prg_rom_write(addr, data),
             else => std.log.warn("BUS: Ignoring mem write at 0x{X:04}", .{addr}),
         }
     }
