@@ -121,18 +121,22 @@ pub const System = struct {
     }
 
     pub fn tick(self: *Self) void {
+        self.ppu.tick();
+        self.ppu.tick();
+        self.ppu.tick();
+
         if (self.bus.rom.mapper_irq_active() or self.apu.irq_triggered()) {
             self.cpu.interrupt(CPU.IRQ);
         }
 
-        self.cpu.tick();
+        if (self.ppu.nmi_interrupt) {
+            self.ppu.nmi_interrupt = false;
+            self.cpu.interrupt(CPU.NMI);
+        }
 
-        if (self.ppu.requested_run_cycle() <= self.bus.cycles) {
-            self.run_ppu();
-        }
-        if (self.apu.requested_run_cycle() <= self.bus.cycles) {
-            self.run_apu();
-        }
+        self.cpu.step();
+        self.apu.step();
+        self.bus.cycles += 1;
     }
 
     pub fn run_frame(self: *Self) void {
@@ -154,7 +158,7 @@ pub const System = struct {
     }
 
     fn run_apu(self: *Self) void {
-        self.apu.run_to(self.bus.cycles);
+        self.apu.step(self.bus.cycles);
         if (self.apu.irq_interrupt) {
             self.cpu.interrupt(CPU.IRQ);
         }

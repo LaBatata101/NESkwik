@@ -118,39 +118,28 @@ pub const APU = struct {
         return self.irq_interrupt or self.dmc.irq_pending;
     }
 
-    pub fn run_to(self: *Self, cpu_cycle: u64) void {
-        while (self.global_cycle < cpu_cycle) {
-            const current_cycle = self.global_cycle;
-            var next_step = @min(cpu_cycle, self.next_tick_cycle);
-            next_step = @min(next_step, self.next_transfer_cyc);
+    pub fn step(self: *Self) void {
+        const current_cycle = self.global_cycle;
+        const next_step = current_cycle + 1;
 
-            switch (self.jitter) {
-                .Delay => |data| {
-                    const time, _ = data;
-                    next_step = @min(next_step, time);
-                },
-                else => {},
-            }
+        switch (self.jitter) {
+            .Delay => |data| {
+                const time, const value = data;
+                if (current_cycle == time) {
+                    self.set_4017(value);
+                    self.jitter = Jitter.None;
+                }
+            },
+            else => {},
+        }
 
-            self.play(current_cycle, next_step);
-            self.global_cycle = next_step;
-
-            switch (self.jitter) {
-                .Delay => |data| {
-                    const time, const value = data;
-                    if (self.global_cycle == time) {
-                        self.set_4017(value);
-                        self.jitter = Jitter.None;
-                    }
-                },
-                else => {},
-            }
-            if (self.global_cycle == self.next_tick_cycle) {
-                self.tick();
-            }
-            if (self.global_cycle == self.next_transfer_cyc) {
-                self.transfer();
-            }
+        self.play(current_cycle, next_step);
+        self.global_cycle = next_step;
+        if (self.global_cycle == self.next_tick_cycle) {
+            self.tick();
+        }
+        if (self.global_cycle == self.next_transfer_cyc) {
+            self.transfer();
         }
     }
 
@@ -270,8 +259,8 @@ pub const APU = struct {
         self.next_tick_cycle = self.global_cycle + NTSC_TICK_LENGTH_TABLE[@intFromBool(self.frame.mode)][0];
     }
 
-    pub fn read_status(self: *Self, cycle: u64) u8 {
-        self.run_to(cycle - 1);
+    pub fn read_status(self: *Self) u8 {
+        // self.run_to(cycle - 1);
         var status: u8 = 0;
         status |= self.pulse1.length_counter.active();
         status |= self.pulse2.length_counter.active() << 1;
@@ -282,7 +271,7 @@ pub const APU = struct {
         status |= if (self.dmc.irq_pending) @as(u8, 1 << 7) else 0;
         self.irq_interrupt = false;
 
-        self.run_to(cycle);
+        // self.run_to(cycle);
         return status;
     }
 

@@ -44,7 +44,7 @@ pub const Bus = struct {
                 if (addr == 0x4014) {
                     return self.ppu.dynamic_latch;
                 }
-                return self.apu.read_status(self.cycles);
+                return self.apu.read_status();
             },
             0x4016 => self.controllers.cntrl1_read(),
             0x4017 => self.controllers.cntrl2_read(),
