@@ -63,7 +63,7 @@ pub const Mapper = struct {
                 const mapper = try Mapper4.init(allocator, params);
                 return mapper.as_mapper();
             },
-            else => std.debug.panic("Unsupported mapper: {}\n", .{mapper_id}),
+            else => return error.UnsupportedMapper,
         }
     }
 

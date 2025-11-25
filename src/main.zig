@@ -53,14 +53,19 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    const rom_abs_path = try std.fs.cwd().realpathAlloc(allocator, rom_filepath);
+    const rom_abs_path = std.fs.cwd().realpathAlloc(allocator, rom_filepath) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("File not found!\n", .{});
+            std.process.exit(1);
+        },
+        else => {
+            std.debug.print("Another error ocurred: {any}\n", .{err});
+            std.process.exit(1);
+        },
+    };
     defer allocator.free(rom_abs_path);
 
     const file = std.fs.openFileAbsolute(rom_abs_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            std.debug.print("file not found!\n", .{});
-            std.process.exit(1);
-        },
         else => {
             std.debug.print("Error while opening file: {any}\n", .{err});
             std.process.exit(1);
@@ -130,15 +135,19 @@ pub fn main() !void {
 
     var rom = Rom.init(allocator, rom_abs_path, buffer) catch |err| switch (err) {
         error.InvalidNesFormat => {
-            std.debug.print("ROM format not supported!\n", .{});
+            std.debug.print("Error: ROM format not supported!\n", .{});
             std.process.exit(1);
         },
         error.OutOfMemory => {
-            std.debug.print("Error allocating resources for ROM\n", .{});
+            std.debug.print("Error: Failed to allocate resources for ROM\n", .{});
+            std.process.exit(1);
+        },
+        error.UnsupportedMapper => {
+            std.debug.print("Error: Mapper not supported\n", .{});
             std.process.exit(1);
         },
         else => {
-            std.debug.print("another error ocurred: {any}\n", .{err});
+            std.debug.print("Another error ocurred: {any}\n", .{err});
             std.process.exit(1);
         },
     };
