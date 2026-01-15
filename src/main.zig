@@ -166,6 +166,11 @@ pub fn main() !void {
     var last_mouse_activity_time: u64 = c.SDL_GetTicks();
     var is_cursor_hidden: bool = false;
 
+    var last_frame = c.SDL_GetTicks();
+    var dt: u64 = @divTrunc(1000, 60);
+
+    var last_second = last_frame;
+    // var last_frame_no: u64 = 0;
     while (!system.quit) {
         process_input(window, &system, &step_mode, &last_mouse_activity_time, &is_cursor_hidden);
         if (!step_mode) {
@@ -173,7 +178,7 @@ pub fn main() !void {
         }
 
         sdlError(c.SDL_RenderClear(renderer));
-        sdlError(c.SDL_UpdateTexture(texture, null, system.frame_buffer(), ness.NES_WIDTH * SCALE));
+        sdlError(c.SDL_UpdateTexture(texture, null, system.frame_buffer(), ness.NES_WIDTH * 3));
         sdlError(c.SDL_RenderTexture(renderer, texture, &src_rect, &dst_rect));
 
         if (debug_mode) {
@@ -188,7 +193,7 @@ pub fn main() !void {
         }
 
         sdlError(c.SDL_RenderPresent(renderer));
-        _ = fps_manager.delay();
+        // _ = fps_manager.delay();
 
         const now = c.SDL_GetTicks();
         const flags = c.SDL_GetWindowFlags(window);
@@ -203,6 +208,12 @@ pub fn main() !void {
             sdlError(c.SDL_ShowCursor());
             is_cursor_hidden = false;
             last_mouse_activity_time = now;
+        }
+
+        dt = now - last_frame;
+        last_frame = now;
+        while (now > last_second + 1000) {
+            last_second += 1000;
         }
     }
 }

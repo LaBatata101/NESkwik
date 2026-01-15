@@ -268,6 +268,8 @@ pub const Mapper4 = struct {
     }
 
     fn ppu_address_updated(self: *Self, addr: u16) void {
+        if (addr >= 0x2000) return;
+
         const a12 = addr & 0x1000 == 0x1000;
         if (a12 and !self.ppu_a12 and self.ppu_a12_low_counter > 12) {
             self.clock_irq();

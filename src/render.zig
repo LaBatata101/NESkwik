@@ -76,15 +76,11 @@ pub const Frame = struct {
 };
 
 pub const FPSManager = struct {
-    framecount: u32,
-    rateticks: f32,
-    baseticks: u32,
-    lastticks: u32,
-    rate: u32,
+    target_ticks_per_frame: u32,
+    last_frame_time: u32,
 
     const Self = @This();
-    const FPS_DEFAULT = 30;
-    const FPS_LOWER_LIMIT = 1;
+    const FPS_DEFAULT = 60;
 
     fn getTicks() u32 {
         const ticks: u32 = @intCast(c.SDL_GetTicks());
@@ -92,40 +88,33 @@ pub const FPSManager = struct {
     }
 
     pub fn init() Self {
-        const baseticks = Self.getTicks();
         return .{
-            .framecount = 0,
-            .rate = FPS_DEFAULT,
-            .rateticks = @divTrunc(1000.0, FPS_DEFAULT),
-            .baseticks = baseticks,
-            .lastticks = baseticks,
+            .target_ticks_per_frame = 1000 / FPS_DEFAULT,
+            .last_frame_time = Self.getTicks(),
         };
     }
 
     pub fn setFramerate(self: *Self, rate: u32) void {
-        if (rate < FPS_LOWER_LIMIT) {
+        if (rate < 1) {
             @panic("Framerate can't be lower than 1.");
         }
+        self.target_ticks_per_frame = 1000 / rate;
+    }
 
-        self.framecount = 0;
-        self.rate = rate;
-        self.rateticks = @divExact(1000.0, @as(f32, @floatFromInt(rate)));
+    /// Limits the frame rate by sleeping the remaining time in the frame slot.
+    pub fn cap(self: *Self) void {
+        const now = Self.getTicks();
+        const frame_duration = now -% self.last_frame_time;
+
+        if (frame_duration < self.target_ticks_per_frame) {
+            c.SDL_Delay(self.target_ticks_per_frame - frame_duration);
+        }
+
+        self.last_frame_time = Self.getTicks();
     }
 
     pub fn delay(self: *Self) u32 {
-        self.framecount += 1;
-
-        const current_ticks = Self.getTicks();
-        const time_passed = current_ticks - self.lastticks;
-        const target_ticks = self.baseticks + self.framecount * @as(u32, @intFromFloat(self.rateticks));
-
-        if (current_ticks <= target_ticks) {
-            c.SDL_Delay(target_ticks - current_ticks);
-        } else {
-            self.framecount = 0;
-            self.baseticks = Self.getTicks();
-        }
-
-        return time_passed;
+        self.cap();
+        return 0;
     }
 };

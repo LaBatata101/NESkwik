@@ -97,7 +97,7 @@ pub const Rom = struct {
         const prg_rom = bytes[prg_rom_start..(prg_rom_start + prg_rom_size)];
         const chr_rom = bytes[chr_rom_start..(chr_rom_start + chr_rom_size)];
 
-        std.log.info(
+        std.debug.print(
             \\{s}
             \\Mapper ID: {}
             \\Number of 16KB PRG-ROM banks: {}
@@ -105,6 +105,8 @@ pub const Rom = struct {
             \\PRG RAM size: {}
             \\Mirroring type: {s}
             \\Has battery-backed RAM: {s}
+            \\
+            \\
         , .{
             if (flag7.is_nes2()) "iNES 2.0" else "iNES 1.0",
             mapper_id,
