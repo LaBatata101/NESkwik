@@ -79,6 +79,20 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+    const clay_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    clay_mod.addIncludePath(b.path("third-party/clay"));
+
+    const clay_lib = b.addLibrary(.{
+        .name = "clay",
+        .linkage = .static,
+        .root_module = clay_mod,
+    });
+    clay_lib.addCSourceFile(.{ .file = b.path("third-party/clay/clay_impl.c") });
+    mod.linkLibrary(clay_lib);
     const exe = b.addExecutable(.{
         .name = "ness",
         .root_module = b.createModule(.{
@@ -105,6 +119,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    exe.linkLibrary(clay_lib);
 
     exe.use_llvm = true;
 
