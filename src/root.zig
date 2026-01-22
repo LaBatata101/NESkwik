@@ -2,11 +2,13 @@ const std = @import("std");
 
 const cpu = @import("cpu.zig");
 const rom = @import("rom.zig");
-pub const gui = @import("gui.zig");
+// pub const gui = @import("gui.zig");
 pub const debug = @import("debug.zig");
 pub const render = @import("render.zig");
 pub const opcodes = @import("opcodes.zig");
 pub const controller = @import("controller.zig");
+pub const ui = @import("ui/core/ui.zig");
+pub const gui = @import("ui/gui.zig");
 
 pub const PPU = @import("ppu.zig").PPU;
 pub const APU = @import("apu/apu.zig").APU;
@@ -24,6 +26,7 @@ pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_main.h");
     @cInclude("blip_buf.h");
+    @cInclude("SDL3_ttf/SDL_ttf.h");
 });
 
 pub const NES_WIDTH = 256;

@@ -1,0 +1,123 @@
+const std = @import("std");
+
+const c = @import("../root.zig").c;
+const UI = @import("core/ui.zig").UI;
+const clay = @import("core/clay.zig");
+const Rom = @import("../rom.zig").Rom;
+const System = @import("../system.zig").System;
+const NES_WIDTH = @import("../root.zig").NES_WIDTH;
+const NES_HEIGHT = @import("../root.zig").NES_HEIGHT;
+
+pub const UIState = struct {
+    alloc: std.mem.Allocator,
+    selected_rom_filepath: ?[]const u8 = null,
+    /// Whether to load the selected ROM.
+    should_load_rom: bool = false,
+    /// Wheter to skip drawing the home screen.
+    render_home_screen: bool = true,
+    run_emu: bool = false,
+
+    rom_bytes: []u8 = undefined,
+    rom: Rom = undefined,
+    system: System = undefined,
+
+    const Self = @This();
+
+    pub fn init(alloc: std.mem.Allocator) Self {
+        return .{ .alloc = alloc };
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.selected_rom_filepath) |filepath| {
+            self.alloc.free(filepath);
+        }
+        self.alloc.free(self.rom_bytes);
+
+        if (self.run_emu) { // TODO: add flag to check if a ROM was loaded
+            self.rom.deinit();
+            self.system.deinit();
+        }
+    }
+
+    pub fn loadRom(self: *Self, path: []const u8, bytes: []u8) !void {
+        self.rom = try Rom.init(self.alloc, path, bytes);
+        self.system = try System.init(self.alloc, &self.rom, .{});
+        self.system.reset();
+        self.run_emu = true;
+        self.render_home_screen = false;
+    }
+
+    pub fn setSelectedRom(self: *Self, filepath: []const u8) void {
+        self.selected_rom_filepath = self.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+        self.should_load_rom = true;
+    }
+
+    pub fn getSelectedRom(self: *Self) []const u8 {
+        self.should_load_rom = false;
+        return self.selected_rom_filepath.?;
+    }
+};
+
+const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
+    .{ .name = "NES ROMs", .pattern = "nes" },
+    .{ .name = "All files", .pattern = "*" },
+};
+
+pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
+    const root = ui.column(.{});
+    {
+        if (c.SDL_GetWindowFlags(ui.window) & c.SDL_WINDOW_FULLSCREEN == 0) {
+            const menubar = ui.menuBar(.{});
+            {
+                const sys_menu = ui.dropdownMenu(.{ .label = "System" });
+                if (ui.menuItem(.{ .label = "Open" }).clicked(ui.ctx)) {
+                    c.SDL_ShowOpenFileDialog(
+                        dialog_callback,
+                        clay.anytypeToAnyopaquePtr(ui_state),
+                        ui.window,
+                        &dialog_filter_list,
+                        dialog_filter_list.len,
+                        null,
+                        false,
+                    );
+                }
+
+                sys_menu.end();
+            }
+            menubar.end();
+        }
+
+        if (ui_state.render_home_screen) {
+            drawHomeScreen(ui, ui_state);
+        } else {
+            _ = ui.canvas(.{
+                .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
+                .pixels = ui_state.system.frame_buffer(),
+                .w = NES_WIDTH,
+                .h = NES_HEIGHT,
+            });
+        }
+    }
+    root.end();
+}
+
+fn drawHomeScreen(ui: *UI, ui_state: *UIState) void {
+    _ = ui_state; // autofix
+    _ = ui.spacer(.{ .direction = .top_to_bottom, .sizing = .grow });
+}
+
+fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
+    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
+
+    if (filelist == null) {
+        std.debug.print("An error ocurred while selecting the file: {s}\n", .{c.SDL_GetError()});
+        return;
+    }
+    if (filelist.* == null) { // A pointer to NULL, the user either didn't choose any file or canceled the dialog.
+        return;
+    }
+
+    const filepath = std.mem.span(filelist.*);
+    std.log.debug("User selected file: {s}", .{filepath});
+    ui_state.setSelectedRom(filepath);
+}
