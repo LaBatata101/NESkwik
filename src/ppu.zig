@@ -444,7 +444,7 @@ pub const PPU = struct {
         switch (self.cycle) {
             // Idle cycle. Just set the index for the frame buffer.
             0 => {
-                self.current_frame_buffer_index = @as(usize, self.scanline) * 256 * 3;
+                self.current_frame_buffer_index = @as(usize, self.scanline) * 256 * 4;
             },
             // The data for each tile is fetched during this phase.
             1...256 => self.render_cycle(),
@@ -491,8 +491,9 @@ pub const PPU = struct {
             self.frame_buffer.data[idx] = color.r;
             self.frame_buffer.data[idx + 1] = color.g;
             self.frame_buffer.data[idx + 2] = color.b;
+            self.frame_buffer.data[idx + 3] = 255;
 
-            self.current_frame_buffer_index += 3;
+            self.current_frame_buffer_index += 4;
         }
 
         self.shift_registers();

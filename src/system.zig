@@ -186,8 +186,8 @@ pub const System = struct {
         writer.interface.flush() catch |err| std.debug.panic("Flush failed: {any}\n", .{err});
     }
 
-    pub fn frame_buffer(self: *Self) *const u8 {
-        return @ptrCast(&self.ppu.frame_buffer.data);
+    pub fn frame_buffer(self: *Self) []const u8 {
+        return &self.ppu.frame_buffer.data;
     }
 
     pub fn controller_keydown(self: *Self, key_code: u32) void {

@@ -51,14 +51,14 @@ const Rect = struct {
 };
 
 pub const Frame = struct {
-    data: [WIDTH * HEIGHT * 3]u8,
+    data: [WIDTH * HEIGHT * 4]u8,
 
     const Self = @This();
     const WIDTH: usize = 256;
     const HEIGHT: usize = 240;
 
     pub fn init() Self {
-        return .{ .data = [_]u8{0} ** (WIDTH * HEIGHT * 3) };
+        return .{ .data = [_]u8{0} ** (WIDTH * HEIGHT * 4) };
     }
 
     pub fn set_pixel(self: *Self, x: usize, y: usize, rgb: Color) void {
@@ -67,6 +67,7 @@ pub const Frame = struct {
             self.data[base] = rgb.r;
             self.data[base + 1] = rgb.g;
             self.data[base + 2] = rgb.b;
+            self.data[base + 3] = 255;
         }
     }
 
