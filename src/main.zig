@@ -133,33 +133,25 @@ pub fn main() !void {
         }
 
         if (ui_state.run_emu) {
-            for (ui.ctx.frame.input_events.items) |event| {
-                switch (event.type) {
-                    c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                        c.SDLK_ESCAPE => ui_state.system.quit = true,
-                        c.SDLK_F9 => step_mode = !step_mode,
-                        c.SDLK_F10 => if (step_mode) ui_state.system.tick(),
-                        c.SDLK_F11 => if (step_mode) ui_state.system.run_frame(),
-                        c.SDLK_R => ui_state.system.reset(),
-                        c.SDLK_F => {
-                            const flags = c.SDL_GetWindowFlags(ui.window);
-                            if (flags & c.SDL_WINDOW_FULLSCREEN != 0) {
-                                sdlError(c.SDL_SetWindowFullscreen(ui.window, false));
-                            } else {
-                                sdlError(c.SDL_SetWindowFullscreen(ui.window, true));
-                            }
-                        },
-                        else => |key_code| ui_state.system.controller_keydown(key_code),
-                    },
-                    c.SDL_EVENT_KEY_UP => ui_state.system.controller_keyup(event.key.key),
-                    c.SDL_EVENT_MOUSE_MOTION => {
-                        last_mouse_activity_time = c.SDL_GetTicks();
-                        if (is_cursor_hidden) {
-                            sdlError(c.SDL_ShowCursor());
-                            is_cursor_hidden = false;
-                        }
-                    },
-                    else => {},
+            if (ui.getPressedKey()) |key| ui_state.system.controller_keydown(key);
+            if (ui.getReleasedKey()) |key| ui_state.system.controller_keyup(key);
+            if (ui.isKeyPressed(.ESCAPE)) ui_state.system.quit = true;
+            if (ui.isKeyPressed(.F9)) step_mode = !step_mode;
+            if (step_mode and ui.isKeyPressed(.F10)) ui_state.system.tick();
+            if (step_mode and ui.isKeyPressed(.F11)) ui_state.system.run_frame();
+            if (ui.isKeyPressed(.F)) {
+                const flags = c.SDL_GetWindowFlags(ui.window);
+                if (flags & c.SDL_WINDOW_FULLSCREEN != 0) {
+                    sdlError(c.SDL_SetWindowFullscreen(ui.window, false));
+                } else {
+                    sdlError(c.SDL_SetWindowFullscreen(ui.window, true));
+                }
+            }
+            if (ui.mouseMotion()) {
+                last_mouse_activity_time = c.SDL_GetTicks();
+                if (is_cursor_hidden) {
+                    sdlError(c.SDL_ShowCursor());
+                    is_cursor_hidden = false;
                 }
             }
 
@@ -185,45 +177,5 @@ pub fn main() !void {
         }
 
         ui.endFrame();
-    }
-}
-
-fn process_input(
-    window: ?*c.SDL_Window,
-    system: *System,
-    step_mode: *bool,
-    last_mouse_activity_time: *u64,
-    is_cursor_hidden: *bool,
-) void {
-    var event: c.SDL_Event = undefined;
-    while (c.SDL_PollEvent(&event)) {
-        switch (event.type) {
-            c.SDL_EVENT_QUIT => system.quit = true,
-            c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                c.SDLK_ESCAPE => system.quit = true,
-                c.SDLK_F9 => step_mode.* = !step_mode.*,
-                c.SDLK_F10 => system.tick(),
-                c.SDLK_F11 => system.run_frame(),
-                c.SDLK_R => system.reset(),
-                c.SDLK_F => {
-                    const flags = c.SDL_GetWindowFlags(window);
-                    if (flags & c.SDL_WINDOW_FULLSCREEN != 0) {
-                        sdlError(c.SDL_SetWindowFullscreen(window, false));
-                    } else {
-                        sdlError(c.SDL_SetWindowFullscreen(window, true));
-                    }
-                },
-                else => |key_code| system.controller_keydown(key_code),
-            },
-            c.SDL_EVENT_MOUSE_MOTION => {
-                last_mouse_activity_time.* = c.SDL_GetTicks();
-                if (is_cursor_hidden.*) {
-                    sdlError(c.SDL_ShowCursor());
-                    is_cursor_hidden.* = false;
-                }
-            },
-            c.SDL_EVENT_KEY_UP => system.controller_keyup(event.key.key),
-            else => {},
-        }
     }
 }

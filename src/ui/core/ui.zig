@@ -53,6 +53,8 @@ pub const UIContext = struct {
     ticks: u64,
     clay_ctx: *clay.Context,
 
+    input: InputContext,
+
     // Frame-ephemeral data (reset each frame)
     frame: FrameState,
     parent_stack: std.ArrayList(clay.ElementId),
@@ -63,7 +65,10 @@ pub const UIContext = struct {
     text_cache: std.AutoArrayHashMap(u32, TextCacheItem),
     canvas_cache: std.AutoArrayHashMap(u32, CanvasCacheItem),
 
-    draw_children: bool = false,
+    mouse_x: f32 = 0,
+    mouse_y: f32 = 0,
+    prev_mouse_x: f32 = 0,
+    prev_mouse_y: f32 = 0,
 
     frame_arena: std.heap.ArenaAllocator,
     persistent_arena: std.heap.ArenaAllocator,
@@ -88,8 +93,6 @@ pub const UIContext = struct {
         ctx.parent_stack = .empty;
         ctx.frame = .{
             .text_input = .empty,
-            .key_events = .empty,
-            .input_events = .empty,
             .scroll = .{},
         };
 
@@ -97,6 +100,8 @@ pub const UIContext = struct {
         ctx.widgets = WidgetStateMap.init(persistent_arena_alloc);
         ctx.text_cache = std.AutoArrayHashMap(u32, TextCacheItem).init(persistent_arena_alloc);
         ctx.canvas_cache = std.AutoArrayHashMap(u32, CanvasCacheItem).init(persistent_arena_alloc);
+
+        ctx.input = InputContext.init();
 
         return ctx;
     }
@@ -120,13 +125,11 @@ pub const UIContext = struct {
         allocator.destroy(self);
     }
 
-    pub fn resetFrameState(self: *Self) void {
+    pub fn reset(self: *Self) void {
         _ = self.frame_arena.reset(.retain_capacity);
 
         self.parent_stack = .empty;
         self.frame.text_input = .empty;
-        self.frame.key_events = .empty;
-        self.frame.input_events = .empty;
 
         self.frame.mouse_pressed = false;
         self.frame.mouse_released = false;
@@ -193,29 +196,30 @@ pub const UIContext = struct {
         }.callback);
     }
 
-    pub fn setDrawChildren(self: *Self, value: bool) void {
-        self.draw_children = value;
-    }
-
     fn allocWidget(self: *Self, T: type, value: T) *T {
         const w = self.frame_arena.allocator().create(T) catch
             std.debug.panic("Failed to allocate widget: {s}", .{@typeName(T)});
         w.* = value;
         return w;
     }
-};
 
-pub const Key = enum { none, backspace, enter, escape };
+    fn updateMousePos(self: *Self, motion: c.SDL_MouseMotionEvent) void {
+        self.prev_mouse_x = self.mouse_x;
+        self.prev_mouse_y = self.mouse_y;
+        self.mouse_x = motion.x;
+        self.mouse_y = motion.y;
 
-pub const KeyEvent = struct {
-    key: Key,
-    pressed: bool,
+        self.frame.mouse_delta.x += motion.xrel;
+        self.frame.mouse_delta.y += motion.yrel;
+    }
+
+    fn mouseMotion(self: *const Self) bool {
+        return self.mouse_x != self.prev_mouse_x and self.mouse_y != self.prev_mouse_y;
+    }
 };
 
 pub const FrameState = struct {
     text_input: std.ArrayList(u8),
-    key_events: std.ArrayList(KeyEvent),
-    input_events: std.ArrayList(c.SDL_Event),
     /// True only on the frame the button was clicked
     mouse_pressed: bool = false,
     /// True only on the frame the button was released
@@ -270,36 +274,386 @@ const DrawCall = struct {
     clip_rect: ?c.SDL_Rect,
 };
 
-// TODO: temp, remove later
-fn loadShader(
-    alloc: std.mem.Allocator,
-    device: ?*c.SDL_GPUDevice,
-    filename: [:0]const u8,
-    stage: c.SDL_GPUShaderStage,
-    num_samplers: u32,
-    num_uniform_buffers: u32,
-) !*c.SDL_GPUShader {
-    const file = try std.fs.cwd().openFile(filename, .{});
-    defer file.close();
+pub const Key = enum(u16) {
+    UNKNOWN = 0,
 
-    const size = try file.getEndPos();
-    const buffer = try alloc.alloc(u8, size);
-    defer alloc.free(buffer);
+    A = 4,
+    B = 5,
+    C = 6,
+    D = 7,
+    E = 8,
+    F = 9,
+    G = 10,
+    H = 11,
+    I = 12,
+    J = 13,
+    K = 14,
+    L = 15,
+    M = 16,
+    N = 17,
+    O = 18,
+    P = 19,
+    Q = 20,
+    R = 21,
+    S = 22,
+    T = 23,
+    U = 24,
+    V = 25,
+    W = 26,
+    X = 27,
+    Y = 28,
+    Z = 29,
 
-    _ = try file.readAll(buffer);
+    N_1 = 30,
+    N_2 = 31,
+    N_3 = 32,
+    N_4 = 33,
+    N_5 = 34,
+    N_6 = 35,
+    N_7 = 36,
+    N_8 = 37,
+    N_9 = 38,
+    N_0 = 39,
 
-    var create_info = c.SDL_GPUShaderCreateInfo{
-        .code_size = size,
-        .code = @ptrCast(buffer),
-        .entrypoint = "main",
-        .format = c.SDL_GPU_SHADERFORMAT_SPIRV, // Ensure you compile your shaders to SPIR-V
-        .stage = stage,
-        .num_samplers = num_samplers,
-        .num_uniform_buffers = num_uniform_buffers,
+    RETURN = 40,
+    ESCAPE = 41,
+    BACKSPACE = 42,
+    TAB = 43,
+    SPACE = 44,
+
+    MINUS = 45,
+    EQUALS = 46,
+    LEFTBRACKET = 47,
+    RIGHTBRACKET = 48,
+    BACKSLASH = 49,
+    NONUSHASH = 50,
+    SEMICOLON = 51,
+    APOSTROPHE = 52,
+    GRAVE = 53,
+    COMMA = 54,
+    PERIOD = 55,
+    SLASH = 56,
+
+    CAPSLOCK = 57,
+
+    F1 = 58,
+    F2 = 59,
+    F3 = 60,
+    F4 = 61,
+    F5 = 62,
+    F6 = 63,
+    F7 = 64,
+    F8 = 65,
+    F9 = 66,
+    F10 = 67,
+    F11 = 68,
+    F12 = 69,
+
+    PRINTSCREEN = 70,
+    SCROLLLOCK = 71,
+    PAUSE = 72,
+    INSERT = 73,
+    HOME = 74,
+    PAGEUP = 75,
+    DELETE = 76,
+    END = 77,
+    PAGEDOWN = 78,
+    RIGHT = 79,
+    LEFT = 80,
+    DOWN = 81,
+    UP = 82,
+
+    NUMLOCKCLEAR = 83,
+    KP_DIVIDE = 84,
+    KP_MULTIPLY = 85,
+    KP_MINUS = 86,
+    KP_PLUS = 87,
+    KP_ENTER = 88,
+    KP_1 = 89,
+    KP_2 = 90,
+    KP_3 = 91,
+    KP_4 = 92,
+    KP_5 = 93,
+    KP_6 = 94,
+    KP_7 = 95,
+    KP_8 = 96,
+    KP_9 = 97,
+    KP_0 = 98,
+    KP_PERIOD = 99,
+
+    NONUSBACKSLASH = 100,
+    APPLICATION = 101,
+    POWER = 102,
+    KP_EQUALS = 103,
+    F13 = 104,
+    F14 = 105,
+    F15 = 106,
+    F16 = 107,
+    F17 = 108,
+    F18 = 109,
+    F19 = 110,
+    F20 = 111,
+    F21 = 112,
+    F22 = 113,
+    F23 = 114,
+    F24 = 115,
+    EXECUTE = 116,
+    HELP = 117,
+    MENU = 118,
+    SELECT = 119,
+    STOP = 120,
+    AGAIN = 121,
+    UNDO = 122,
+    CUT = 123,
+    COPY = 124,
+    PASTE = 125,
+    FIND = 126,
+    MUTE = 127,
+    VOLUMEUP = 128,
+    VOLUMEDOWN = 129,
+    KP_COMMA = 133,
+    KP_EQUALSAS400 = 134,
+
+    INTERNATIONAL1 = 135,
+    INTERNATIONAL2 = 136,
+    INTERNATIONAL3 = 137,
+    INTERNATIONAL4 = 138,
+    INTERNATIONAL5 = 139,
+    INTERNATIONAL6 = 140,
+    INTERNATIONAL7 = 141,
+    INTERNATIONAL8 = 142,
+    INTERNATIONAL9 = 143,
+    LANG1 = 144,
+    LANG2 = 145,
+    LANG3 = 146,
+    LANG4 = 147,
+    LANG5 = 148,
+    LANG6 = 149,
+    LANG7 = 150,
+    LANG8 = 151,
+    LANG9 = 152,
+
+    ALTERASE = 153,
+    SYSREQ = 154,
+    CANCEL = 155,
+    CLEAR = 156,
+    PRIOR = 157,
+    RETURN2 = 158,
+    SEPARATOR = 159,
+    OUT = 160,
+    OPER = 161,
+    CLEARAGAIN = 162,
+    CRSEL = 163,
+    EXSEL = 164,
+
+    KP_00 = 176,
+    KP_000 = 177,
+    THOUSANDSSEPARATOR = 178,
+    DECIMALSEPARATOR = 179,
+    CURRENCYUNIT = 180,
+    CURRENCYSUBUNIT = 181,
+    KP_LEFTPAREN = 182,
+    KP_RIGHTPAREN = 183,
+    KP_LEFTBRACE = 184,
+    KP_RIGHTBRACE = 185,
+    KP_TAB = 186,
+    KP_BACKSPACE = 187,
+    KP_A = 188,
+    KP_B = 189,
+    KP_C = 190,
+    KP_D = 191,
+    KP_E = 192,
+    KP_F = 193,
+    KP_XOR = 194,
+    KP_POWER = 195,
+    KP_PERCENT = 196,
+    KP_LESS = 197,
+    KP_GREATER = 198,
+    KP_AMPERSAND = 199,
+    KP_DBLAMPERSAND = 200,
+    KP_VERTICALBAR = 201,
+    KP_DBLVERTICALBAR = 202,
+    KP_COLON = 203,
+    KP_HASH = 204,
+    KP_SPACE = 205,
+    KP_AT = 206,
+    KP_EXCLAM = 207,
+    KP_MEMSTORE = 208,
+    KP_MEMRECALL = 209,
+    KP_MEMCLEAR = 210,
+    KP_MEMADD = 211,
+    KP_MEMSUBTRACT = 212,
+    KP_MEMMULTIPLY = 213,
+    KP_MEMDIVIDE = 214,
+    KP_PLUSMINUS = 215,
+    KP_CLEAR = 216,
+    KP_CLEARENTRY = 217,
+    KP_BINARY = 218,
+    KP_OCTAL = 219,
+    KP_DECIMAL = 220,
+    KP_HEXADECIMAL = 221,
+
+    LCTRL = 224,
+    LSHIFT = 225,
+    LALT = 226,
+    LGUI = 227,
+    RCTRL = 228,
+    RSHIFT = 229,
+    RALT = 230,
+    RGUI = 231,
+
+    MODE = 257,
+
+    SLEEP = 258,
+    WAKE = 259,
+
+    CHANNEL_INCREMENT = 260,
+    CHANNEL_DECREMENT = 261,
+
+    MEDIA_PLAY = 262,
+    MEDIA_PAUSE = 263,
+    MEDIA_RECORD = 264,
+    MEDIA_FAST_FORWARD = 265,
+    MEDIA_REWIND = 266,
+    MEDIA_NEXT_TRACK = 267,
+    MEDIA_PREVIOUS_TRACK = 268,
+    MEDIA_STOP = 269,
+    MEDIA_EJECT = 270,
+    MEDIA_PLAY_PAUSE = 271,
+    MEDIA_SELECT = 272,
+
+    AC_NEW = 273,
+    AC_OPEN = 274,
+    AC_CLOSE = 275,
+    AC_EXIT = 276,
+    AC_SAVE = 277,
+    AC_PRINT = 278,
+    AC_PROPERTIES = 279,
+
+    AC_SEARCH = 280,
+    AC_HOME = 281,
+    AC_BACK = 282,
+    AC_FORWARD = 283,
+    AC_STOP = 284,
+    AC_REFRESH = 285,
+    AC_BOOKMARKS = 286,
+
+    SOFTLEFT = 287,
+    SOFTRIGHT = 288,
+    CALL = 289,
+    ENDCALL = 290,
+
+    RESERVED = 400,
+
+    _,
+
+    pub fn count() u16 {
+        return 512;
+    }
+};
+
+const KeyData = struct {
+    event: KeyEventType,
+    duration: f32,
+    duration_prev: f32,
+
+    const default_state: KeyData = .{
+        .event = .none,
+        .duration = -1.0,
+        .duration_prev = -1.0,
+    };
+};
+
+const KeyEventType = enum {
+    down,
+    released,
+    none,
+};
+
+pub const InputContext = struct {
+    keys: [Key.count()]KeyData,
+
+    key_repeat_delay: f32 = 0.250, // 250ms
+    key_repeat_rate: f32 = 0.050, // 50ms
+
+    const KeyEvent = struct {
+        event: KeyEventType,
+        scancode: c.SDL_Scancode,
     };
 
-    return c.SDL_CreateGPUShader(device, &create_info) orelse error.ShaderCreateFailed;
-}
+    pub fn init() InputContext {
+        var ctx = InputContext{
+            .keys = undefined,
+        };
+        @memset(&ctx.keys, KeyData.default_state);
+        return ctx;
+    }
+
+    pub fn addKeyEvent(self: *InputContext, event: InputContext.KeyEvent) void {
+        const idx = event.scancode;
+        if (idx >= 0 and idx < self.keys.len) {
+            self.keys[idx].event = event.event;
+        }
+    }
+
+    pub fn update(self: *InputContext, dt: f32) void {
+        for (&self.keys) |*key| {
+            key.duration_prev = key.duration;
+
+            if (key.event == .down) {
+                if (key.duration < 0.0) {
+                    key.duration = 0.0;
+                } else {
+                    key.duration += dt;
+                }
+            } else {
+                key.duration = -1.0;
+            }
+        }
+    }
+
+    pub fn isKeyPressed(self: *const InputContext, key: Key, repeat: bool) bool {
+        const key_data = self.keys[@intFromEnum(key)];
+
+        if (key_data.event == .released) return false;
+
+        const t = key_data.duration;
+        if (t == 0.0) return true;
+
+        if (repeat and t > self.key_repeat_delay) {
+            const t_prev = key_data.duration_prev;
+            const delay = self.key_repeat_delay;
+            const rate = self.key_repeat_rate;
+
+            const count_prev = if (t_prev > delay) @divFloor((t_prev - delay), rate) else -1.0;
+            const count_curr = if (t > delay) @divFloor((t - delay), rate) else -1.0;
+
+            if (count_curr > count_prev) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    pub fn getPressedKey(self: *const InputContext) ?Key {
+        for (self.keys, 0..) |key, i| { // TODO: find a way where we don't have to iterate all the keys
+            if (key.event == .down and key.duration == 0.0) {
+                return @enumFromInt(i);
+            }
+        }
+        return null;
+    }
+
+    pub fn getReleasedKey(self: *const InputContext) ?Key {
+        for (self.keys, 0..) |key, i| { // TODO: find a way where we don't have to iterate all the keys
+            if (key.event == .released and key.duration_prev >= 0.0) {
+                return @enumFromInt(i);
+            }
+        }
+        return null;
+    }
+};
 
 pub const DrawBatcher = struct {
     allocator: std.mem.Allocator,
@@ -772,8 +1126,6 @@ pub const UI = struct {
     width: i32,
     height: i32,
 
-    mouse_x: f32 = 0,
-    mouse_y: f32 = 0,
     last_frame_time: u64 = 0,
     is_scrolling: bool = false,
     batcher: *DrawBatcher,
@@ -845,20 +1197,8 @@ pub const UI = struct {
         return !self.running;
     }
 
-    // TODO: remove ?
-    pub fn entrypoint(
-        self: *Self,
-        comptime T: type,
-        value: *T,
-        func: *const fn (self: *T, ui: *Self, ctx: *UIContext) void,
-    ) void {
-        self.beginFrame();
-        func(value, self, self.ctx);
-        self.endFrame();
-    }
-
     pub fn beginFrame(self: *Self) void {
-        self.ctx.resetFrameState();
+        self.ctx.reset();
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
@@ -870,6 +1210,8 @@ pub const UI = struct {
         else
             @as(f32, @floatFromInt(self.ctx.ticks - self.last_frame_time)) / 1000.0; // Convert ms to seconds
 
+        self.ctx.input.update(delta_time);
+
         self.last_frame_time = self.ctx.ticks;
 
         const dimensions = clay.Dimensions{
@@ -879,8 +1221,8 @@ pub const UI = struct {
         clay.setLayoutDimensions(dimensions);
 
         const pointer_pos = clay.Vector2{
-            .x = self.mouse_x,
-            .y = self.mouse_y,
+            .x = self.ctx.mouse_x,
+            .y = self.ctx.mouse_y,
         };
         clay.setPointerState(pointer_pos, self.ctx.frame.mouse_down);
 
@@ -925,22 +1267,29 @@ pub const UI = struct {
         self.renderCommands(render_commands);
     }
 
-    pub fn handleEvent(self: *Self, event: *c.SDL_Event) void {
-        self.ctx.frame.input_events.append(self.ctx.frame_arena.allocator(), event.*) catch
-            @panic("Failed ot allocate mem!");
+    pub fn isKeyPressed(self: *const Self, key: Key) bool {
+        return self.ctx.input.isKeyPressed(key, false);
+    }
 
+    pub fn getPressedKey(self: *const Self) ?Key {
+        return self.ctx.input.getPressedKey();
+    }
+
+    pub fn getReleasedKey(self: *const Self) ?Key {
+        return self.ctx.input.getReleasedKey();
+    }
+
+    pub fn mouseMotion(self: *const Self) bool {
+        return self.ctx.mouseMotion();
+    }
+
+    fn handleEvent(self: *Self, event: *c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_QUIT => self.running = false,
             c.SDL_EVENT_WINDOW_RESIZED => {
                 sdlError(c.SDL_GetWindowSize(self.window, &self.width, &self.height));
             },
-            c.SDL_EVENT_MOUSE_MOTION => {
-                self.mouse_x = event.motion.x;
-                self.mouse_y = event.motion.y;
-
-                self.ctx.frame.mouse_delta.x += event.motion.xrel;
-                self.ctx.frame.mouse_delta.y += event.motion.yrel;
-            },
+            c.SDL_EVENT_MOUSE_MOTION => self.ctx.updateMousePos(event.motion),
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     self.ctx.frame.mouse_pressed = true;
@@ -958,23 +1307,8 @@ pub const UI = struct {
                 self.ctx.frame.scroll.velocity_x += event.wheel.x * scroll_multiplier;
                 self.ctx.frame.scroll.velocity_y += event.wheel.y * scroll_multiplier;
             },
-            c.SDL_EVENT_KEY_DOWN => {
-                const key_code = event.key.key;
-                const key_enum: Key = switch (key_code) {
-                    c.SDLK_BACKSPACE => .backspace,
-                    c.SDLK_RETURN => .enter,
-                    c.SDLK_ESCAPE => .escape,
-                    else => .none,
-                };
-
-                if (self.ctx.frame.focused_id != null and key_enum != .none) {
-                    self.ctx.frame.key_events.append(self.ctx.frame_arena.allocator(), .{
-                        .key = key_enum,
-                        .pressed = true,
-                    }) catch @panic("Failed to allocate memory!");
-                }
-            },
-            c.SDL_EVENT_KEY_UP => {},
+            c.SDL_EVENT_KEY_DOWN => self.ctx.input.addKeyEvent(.{ .event = .down, .scancode = event.key.scancode }),
+            c.SDL_EVENT_KEY_UP => self.ctx.input.addKeyEvent(.{ .event = .released, .scancode = event.key.scancode }),
             c.SDL_EVENT_TEXT_INPUT => {
                 const text: []const u8 = std.mem.span(event.text.text);
                 self.ctx.frame.text_input.appendSlice(self.ctx.frame_arena.allocator(), text) catch

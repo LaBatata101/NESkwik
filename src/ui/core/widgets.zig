@@ -249,8 +249,9 @@ pub const TextField = struct {
             if (ctx.frame.text_input.items.len > 0) {
                 state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), ctx.frame.text_input.items) catch @panic("panic");
             }
+
             for (ctx.frame.key_events.items) |event| {
-                if (event.key == .backspace and event.pressed and state.text_input.buffer.items.len > 0) {
+                if (ctx.input.isKeyPressed(.BACKSPACE, false) and event.pressed and state.text_input.buffer.items.len > 0) {
                     _ = state.text_input.buffer.pop();
                 }
             }
