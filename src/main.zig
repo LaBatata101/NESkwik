@@ -80,7 +80,6 @@ pub fn main() !void {
 
     while (!ui.shouldClose() and !ui_state.system.quit) {
         ui.beginFrame();
-        gui.drawGUI(ui, &ui_state);
 
         if (ui_state.should_load_rom) {
             const path = ui_state.getSelectedRom();
@@ -131,6 +130,8 @@ pub fn main() !void {
                 },
             };
         }
+
+        gui.drawGUI(ui, &ui_state);
 
         if (ui_state.run_emu) {
             if (ui.getPressedKey()) |key| ui_state.system.controller_keydown(key);
