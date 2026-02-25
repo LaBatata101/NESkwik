@@ -74,9 +74,6 @@ pub fn main() !void {
 
     var last_mouse_activity_time: u64 = c.SDL_GetTicks();
     var is_cursor_hidden: bool = false;
-    var last_frame = c.SDL_GetTicks();
-    var dt: u64 = @divTrunc(1000, 60);
-    var last_second = last_frame;
 
     while (!ui.shouldClose() and !ui_state.system.quit) {
         ui.beginFrame();
@@ -159,22 +156,14 @@ pub fn main() !void {
 
             ui_state.system.run_frame();
 
-            const now = c.SDL_GetTicks();
             if (c.SDL_GetWindowFlags(ui.window) & c.SDL_WINDOW_FULLSCREEN != 0) {
-                if (!is_cursor_hidden and (now - last_mouse_activity_time > CURSOR_HIDE_DELAY_MS)) {
+                if (!is_cursor_hidden and ui.ctx.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
                     sdlError(c.SDL_HideCursor());
                     is_cursor_hidden = true;
                 }
             } else if (is_cursor_hidden) { // Always show cursor if not in fullscreen
                 sdlError(c.SDL_ShowCursor());
                 is_cursor_hidden = false;
-                last_mouse_activity_time = now;
-            }
-
-            dt = now - last_frame;
-            last_frame = now;
-            while (now > last_second + 1000) {
-                last_second += 1000;
             }
         }
 

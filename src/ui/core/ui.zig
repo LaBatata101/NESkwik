@@ -196,6 +196,11 @@ pub const UIContext = struct {
         }.callback);
     }
 
+    /// Check if the time in milliseconds (`ms`) has passed since the `start`.
+    pub fn hasPassedSinceMS(_: *const Self, start: u64, ms: u64) bool {
+        return c.SDL_GetTicks() - start >= ms;
+    }
+
     fn allocWidget(self: *Self, T: type, value: T) *T {
         const w = self.frame_arena.allocator().create(T) catch
             std.debug.panic("Failed to allocate widget: {s}", .{@typeName(T)});
