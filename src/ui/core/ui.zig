@@ -141,15 +141,6 @@ pub const UIContext = struct {
         self.frame.hot_id = null;
     }
 
-    pub fn beginFrame(self: *Self) void {
-        clay.setCurrentContext(self.clay_ctx);
-        clay.beginLayout();
-    }
-
-    pub fn endFrame(_: *Self) []clay.RenderCommand {
-        return clay.endLayout();
-    }
-
     pub fn pushParent(self: *Self, id: clay.ElementId) void {
         self.parent_stack.append(self.frame_arena.allocator(), id) catch
             @panic("Failed to allocate memory");
@@ -1130,6 +1121,9 @@ pub const UI = struct {
     font: *c.TTF_Font,
     ctx: *UIContext,
 
+    win_title: []const u8,
+    last_title_update: u64 = 0,
+
     width: i32,
     height: i32,
 
@@ -1139,9 +1133,9 @@ pub const UI = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, title: [*:0]const u8, width: i32, height: i32) !*Self {
+    pub fn init(allocator: std.mem.Allocator, title: []const u8, width: i32, height: i32) !*Self {
         const window = c.SDL_CreateWindow(
-            title,
+            title.ptr,
             width,
             height,
             c.SDL_WINDOW_RESIZABLE,
@@ -1172,6 +1166,7 @@ pub const UI = struct {
             .batcher = batcher,
             .ctx = ui_ctx,
             .fps_manager = FPSManager.init(),
+            .win_title = title,
         };
 
         return gui;
@@ -1199,6 +1194,17 @@ pub const UI = struct {
 
     pub fn beginFrame(self: *Self) void {
         self.ctx.reset();
+
+        if (self.ctx.hasPassedSinceMS(self.last_title_update, 1000)) {
+            self.last_title_update = c.SDL_GetTicks();
+            const title = std.fmt.allocPrintSentinel(
+                self.ctx.frame_arena.allocator(),
+                "{s} - FPS: {}",
+                .{ self.win_title, self.fps_manager.getFPS() },
+                0,
+            ) catch "0";
+            sdlError(c.SDL_SetWindowTitle(self.window, title.ptr));
+        }
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
@@ -1245,11 +1251,12 @@ pub const UI = struct {
 
         clay.updateScrollContainers(false, scroll_delta, self.ctx.dt);
 
-        self.ctx.beginFrame();
+        clay.setCurrentContext(self.ctx.clay_ctx);
+        clay.beginLayout();
     }
 
     pub fn endFrame(self: *Self) void {
-        const render_commands = self.ctx.endFrame();
+        const render_commands = clay.endLayout();
         self.renderCommands(render_commands);
     }
 
