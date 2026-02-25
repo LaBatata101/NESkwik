@@ -1757,7 +1757,7 @@ pub const UI = struct {
     }
 
     pub fn textField(self: *Self, params: widgets.TextField.Params) *widgets.TextField {
-        return self.ctx.allocWidget(widgets.TextField, .start(params));
+        return self.ctx.allocWidget(widgets.TextField, .start(self.ctx, params));
     }
 
     pub fn margin(self: *Self, params: widgets.Margin.Params) *widgets.Margin {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const c = @import("../../root.zig").c;
 const clay = @import("clay.zig");
 pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
@@ -228,19 +229,20 @@ pub const TextField = struct {
             break :b element_id;
         } else clay.openElement();
 
-        const state = ctx.getOrCreateWidgetState(params._id.?, .{ .text_input = .{
-            .buffer = std.ArrayList(u8).startCapacity(ctx.persistent_arena.allocator(), 0) catch @panic("error alloc"),
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .text_input = .{
+            .buffer = .empty,
             .cursor_pos = 0,
         } });
 
         const is_hovered = clay.hovered();
-        const is_focused = if (ctx.frame.focused_id) |fid| fid == params._id.?.id else false;
+        const is_focused = if (ctx.frame.focused_id) |fid| fid == element_id.id else false;
 
         ui.setMouseCursorText(is_hovered);
 
+        var placeholder = params.placeholder;
         if (is_hovered and ctx.frame.mouse_pressed) {
-            ctx.frame.focused_id = params._id.?.id;
-            params._placeholder = "";
+            ctx.frame.focused_id = element_id.id;
+            placeholder = "";
         } else if (!is_hovered and ctx.frame.mouse_pressed and is_focused) {
             ctx.frame.focused_id = null;
         }
@@ -250,21 +252,19 @@ pub const TextField = struct {
                 state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), ctx.frame.text_input.items) catch @panic("panic");
             }
 
-            for (ctx.frame.key_events.items) |event| {
-                if (ctx.input.isKeyPressed(.BACKSPACE, false) and event.pressed and state.text_input.buffer.items.len > 0) {
-                    _ = state.text_input.buffer.pop();
-                }
+            if (ctx.input.isKeyPressed(.BACKSPACE, false) and state.text_input.buffer.items.len > 0) {
+                _ = state.text_input.buffer.pop();
             }
         }
 
         clay.configureOpenElement(.{
             .layout = .{
-                .sizing = .{ .w = params._width, .h = .fit },
+                .sizing = .{ .w = params.width, .h = .fit },
                 .padding = params.padding_val,
                 .child_alignment = .{ .y = .center },
             },
             .background_color = Colors.white.toClay(),
-            .corner_radius = .all(params._corner_radius),
+            .corner_radius = .all(params.corner_radius),
             .border = .{
                 .color = if (is_focused) Colors.blue.toClay() else Colors.lightGray.toClay(),
                 .width = .outside(if (is_focused) 2 else 1),
@@ -274,7 +274,7 @@ pub const TextField = struct {
         ctx.setHotId();
 
         if (!is_focused and state.text_input.buffer.items.len == 0) {
-            _ = Label.start(.{ .text = params.placeholder, .color = Colors.gray });
+            _ = Label.start(.{ .text = placeholder, .color = Colors.gray });
         } else {
             _ = Label.start(.{
                 .text = state.text_input.buffer.items,
@@ -284,7 +284,7 @@ pub const TextField = struct {
         }
 
         // Start end text cursor
-        const show_cursor = (ctx.ticks % 1000) < 500; // blink cursor every 500ms
+        const show_cursor = c.SDL_GetTicks() % c.SDL_MS_PER_SECOND < 500; // blink cursor every 500ms
         // When the text field is not focused, end the cursor transparent to avoid layout size change when focusing.
         const cursor_color = if (is_focused and show_cursor) Colors.black else Colors.black.withAlpha(0);
 
