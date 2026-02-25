@@ -2,7 +2,6 @@ const std = @import("std");
 
 const cpu = @import("cpu.zig");
 const rom = @import("rom.zig");
-// pub const gui = @import("gui.zig");
 pub const debug = @import("debug.zig");
 pub const render = @import("render.zig");
 pub const opcodes = @import("opcodes.zig");
@@ -20,11 +19,11 @@ pub const CPU = cpu.CPU;
 pub const Rom = rom.Rom;
 pub const SYSTEM_PALLETE = render.SYSTEM_PALETTE;
 
-pub const utils = @import("utils/sdl.zig");
+pub const sdlError = @import("utils/sdl.zig").sdlError;
+pub const mmap = @import("utils/mmap.zig");
 
 pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3/SDL_main.h");
     @cInclude("blip_buf.h");
     @cInclude("SDL3_ttf/SDL_ttf.h");
 });

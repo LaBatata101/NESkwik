@@ -10,7 +10,7 @@ const debug = ness.debug;
 const System = ness.System;
 const widgets = ness.ui.widgets;
 const FPSManager = ness.render.FPSManager;
-const sdlError = ness.utils.sdlError;
+const sdlError = ness.sdlError;
 
 const SCALE = 3;
 const CURSOR_HIDE_DELAY_MS = 3000;
@@ -79,19 +79,11 @@ pub fn main() !void {
         ui.beginFrame();
 
         if (ui_state.should_load_rom) {
-            const path = ui_state.getSelectedRom();
-            std.log.debug("Reading file: {s}", .{path});
-            const rom_abs_path = std.fs.cwd().realpathAlloc(allocator, path) catch |err|
-                switch (err) {
-                    error.FileNotFound => {
-                        std.debug.print("File not found!\n", .{});
-                        std.process.exit(1);
-                    },
-                    else => {
-                        std.debug.print("Another error ocurred: {any}\n", .{err});
-                        std.process.exit(1);
-                    },
-                };
+            const rom_path = ui_state.getSelectedRom();
+            std.log.debug("Reading file: {s}", .{rom_path});
+            const cwd = try std.process.getCwdAlloc(allocator);
+            defer allocator.free(cwd);
+            const rom_abs_path = try std.fs.path.resolve(allocator, &.{ cwd, rom_path });
             defer allocator.free(rom_abs_path);
 
             const file = std.fs.openFileAbsolute(rom_abs_path, .{}) catch |err| switch (err) {
@@ -108,7 +100,7 @@ pub fn main() !void {
             ui_state.rom_bytes = try allocator.alloc(u8, file_size);
             _ = try file.read(ui_state.rom_bytes);
 
-            ui_state.loadRom(path, ui_state.rom_bytes) catch |err| switch (err) {
+            ui_state.loadRom(rom_path, ui_state.rom_bytes) catch |err| switch (err) {
                 error.InvalidNesFormat => {
                     std.debug.print("Error: ROM format not supported!\n", .{});
                     std.process.exit(1);

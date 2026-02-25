@@ -1,4 +1,6 @@
 const std = @import("std");
+const mmap = @import("../root.zig").mmap.mmap;
+const munmap = @import("../root.zig").mmap.munmap;
 
 pub const Ram = struct {
     ptr: *anyopaque,
@@ -84,8 +86,7 @@ pub const BatteryBackedRam = struct {
         const dir = std.fs.path.dirname(path) orelse @panic("Path is root directory");
         const base = std.fs.path.stem(path);
 
-        // TODO: support windows
-        const save_path = try std.fmt.allocPrint(alloc, "{s}/{s}.sav", .{ dir, base });
+        const save_path = try std.fmt.allocPrint(alloc, "{s}{}{s}.sav", .{ dir, std.fs.path.sep, base });
         const file = try std.fs.createFileAbsolute(save_path, .{
             .read = true,
             .truncate = false,
@@ -96,15 +97,7 @@ pub const BatteryBackedRam = struct {
             try file.setEndPos(size);
         }
 
-        // TODO: support windows
-        const buffer = try std.posix.mmap(
-            null,
-            size,
-            std.posix.PROT.READ | std.posix.PROT.WRITE,
-            .{ .TYPE = .SHARED },
-            file.handle,
-            0,
-        );
+        const buffer = try mmap(&file, size);
 
         self.* = .{
             .alloc = alloc,
@@ -116,7 +109,7 @@ pub const BatteryBackedRam = struct {
     }
 
     fn deinit(self: *Self) void {
-        std.posix.munmap(@alignCast(self.buffer));
+        munmap(self.buffer);
         self.file.close();
         self.alloc.free(self.save_file_path);
         self.alloc.destroy(self);
