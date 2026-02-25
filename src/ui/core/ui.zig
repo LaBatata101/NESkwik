@@ -5,6 +5,7 @@ const c = @import("../../root.zig").c;
 pub const clay = @import("clay.zig");
 pub const widgets = @import("widgets.zig");
 pub const sdlError = @import("../../utils/sdl.zig").sdlError;
+const FPSManager = @import("../../render.zig").FPSManager;
 
 fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
     std.debug.print("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
@@ -50,7 +51,8 @@ const CanvasCacheItem = struct {
 };
 
 pub const UIContext = struct {
-    ticks: u64,
+    /// The time between the current and previous frame.
+    dt: f32,
     clay_ctx: *clay.Context,
 
     input: InputContext,
@@ -96,7 +98,7 @@ pub const UIContext = struct {
             .scroll = .{},
         };
 
-        ctx.ticks = c.SDL_GetTicks();
+        ctx.dt = 0;
         ctx.widgets = WidgetStateMap.init(persistent_arena_alloc);
         ctx.text_cache = std.AutoArrayHashMap(u32, TextCacheItem).init(persistent_arena_alloc);
         ctx.canvas_cache = std.AutoArrayHashMap(u32, CanvasCacheItem).init(persistent_arena_alloc);
@@ -1131,11 +1133,9 @@ pub const UI = struct {
     width: i32,
     height: i32,
 
-    last_frame_time: u64 = 0,
-    is_scrolling: bool = false,
     batcher: *DrawBatcher,
-    running: bool = true,
-    frame_time: u32 = 0,
+    quit: bool = false,
+    fps_manager: FPSManager,
 
     const Self = @This();
 
@@ -1171,6 +1171,7 @@ pub const UI = struct {
             .height = height,
             .batcher = batcher,
             .ctx = ui_ctx,
+            .fps_manager = FPSManager.init(),
         };
 
         return gui;
@@ -1187,19 +1188,13 @@ pub const UI = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn setTargetFps(self: *Self, fps: f32) void {
-        self.frame_time = @intFromFloat(1000.0 / fps);
+    pub fn setFramerate(self: *Self, fps: FPSManager.FramerateMode) void {
+        self.fps_manager.setFramerate(fps);
     }
 
     pub fn shouldClose(self: *Self) bool {
-        const current_tick = c.SDL_GetTicks();
-        const frame_time = current_tick - self.ctx.ticks;
-        if (frame_time < self.frame_time) {
-            c.SDL_Delay(@intCast(self.frame_time - frame_time));
-        }
-        self.ctx.ticks = current_tick;
-
-        return !self.running;
+        self.ctx.dt = @as(f32, @floatFromInt(self.fps_manager.delay())) / c.SDL_MS_PER_SECOND;
+        return self.quit;
     }
 
     pub fn beginFrame(self: *Self) void {
@@ -1210,14 +1205,7 @@ pub const UI = struct {
             self.handleEvent(&event);
         }
 
-        const delta_time: f32 = if (self.last_frame_time == 0)
-            0.016 // First frame default (60 FPS)
-        else
-            @as(f32, @floatFromInt(self.ctx.ticks - self.last_frame_time)) / 1000.0; // Convert ms to seconds
-
-        self.ctx.input.update(delta_time);
-
-        self.last_frame_time = self.ctx.ticks;
+        self.ctx.input.update(self.ctx.dt);
 
         const dimensions = clay.Dimensions{
             .w = @floatFromInt(self.width),
@@ -1236,21 +1224,18 @@ pub const UI = struct {
 
         // Apply velocity to scroll deltas for smooth animation
         if (@abs(self.ctx.frame.scroll.velocity_x) > scroll_threshold or @abs(self.ctx.frame.scroll.velocity_y) > scroll_threshold) {
-            self.ctx.frame.scroll.delta_x = self.ctx.frame.scroll.velocity_x * delta_time * 60.0;
-            self.ctx.frame.scroll.delta_y = self.ctx.frame.scroll.velocity_y * delta_time * 60.0;
+            self.ctx.frame.scroll.delta_x = self.ctx.frame.scroll.velocity_x * self.ctx.dt * 60.0;
+            self.ctx.frame.scroll.delta_y = self.ctx.frame.scroll.velocity_y * self.ctx.dt * 60.0;
 
-            const decay = @exp(-scroll_smoothing * delta_time);
+            const decay = @exp(-scroll_smoothing * self.ctx.dt);
             self.ctx.frame.scroll.velocity_x *= decay;
             self.ctx.frame.scroll.velocity_y *= decay;
-
-            self.is_scrolling = true;
         } else {
             // Stop scrolling when velocity is negligible
             self.ctx.frame.scroll.velocity_x = 0;
             self.ctx.frame.scroll.velocity_y = 0;
             self.ctx.frame.scroll.delta_x = 0;
             self.ctx.frame.scroll.delta_y = 0;
-            self.is_scrolling = false;
         }
 
         const scroll_delta = clay.Vector2{
@@ -1258,11 +1243,7 @@ pub const UI = struct {
             .y = self.ctx.frame.scroll.delta_y,
         };
 
-        clay.updateScrollContainers(false, scroll_delta, delta_time);
-        if (!self.is_scrolling) {
-            self.ctx.frame.scroll.delta_x = 0;
-            self.ctx.frame.scroll.delta_y = 0;
-        }
+        clay.updateScrollContainers(false, scroll_delta, self.ctx.dt);
 
         self.ctx.beginFrame();
     }
@@ -1290,7 +1271,7 @@ pub const UI = struct {
 
     fn handleEvent(self: *Self, event: *c.SDL_Event) void {
         switch (event.type) {
-            c.SDL_EVENT_QUIT => self.running = false,
+            c.SDL_EVENT_QUIT, c.SDL_EVENT_TERMINATING => self.quit = true,
             c.SDL_EVENT_WINDOW_RESIZED => {
                 sdlError(c.SDL_GetWindowSize(self.window, &self.width, &self.height));
             },

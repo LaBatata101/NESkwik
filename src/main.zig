@@ -70,7 +70,7 @@ pub fn main() !void {
         ui_state.render_home_screen = false;
     }
 
-    ui.setTargetFps(60);
+    ui.setFramerate(.{ .limited = 60 });
 
     var last_mouse_activity_time: u64 = c.SDL_GetTicks();
     var is_cursor_hidden: bool = false;

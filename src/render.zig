@@ -78,44 +78,61 @@ pub const Frame = struct {
 
 pub const FPSManager = struct {
     target_ticks_per_frame: u32,
-    last_frame_time: u32,
+    last_frame_end: u64,
+    dt: u64,
+    mode: FramerateMode,
 
     const Self = @This();
+    pub const FramerateMode = union(enum) {
+        limited: u32,
+        unlimited,
+    };
     const FPS_DEFAULT = 60;
 
-    fn getTicks() u32 {
-        const ticks: u32 = @intCast(c.SDL_GetTicks());
+    fn getTicks() u64 {
+        const ticks = c.SDL_GetTicks();
         return if (ticks == 0) 1 else ticks;
     }
 
     pub fn init() Self {
         return .{
-            .target_ticks_per_frame = 1000 / FPS_DEFAULT,
-            .last_frame_time = Self.getTicks(),
+            .target_ticks_per_frame = c.SDL_MS_PER_SECOND / FPS_DEFAULT,
+            .last_frame_end = Self.getTicks(),
+            .dt = 0,
+            .mode = .unlimited,
         };
     }
 
-    pub fn setFramerate(self: *Self, rate: u32) void {
-        if (rate < 1) {
-            @panic("Framerate can't be lower than 1.");
-        }
-        self.target_ticks_per_frame = 1000 / rate;
+    pub fn setFramerate(self: *Self, mode: FramerateMode) void {
+        self.mode = mode;
     }
 
     /// Limits the frame rate by sleeping the remaining time in the frame slot.
-    pub fn cap(self: *Self) void {
+    /// Returns the delta time since the last frame in milliseconds.
+    pub fn delay(self: *Self) u64 {
         const now = Self.getTicks();
-        const frame_duration = now -% self.last_frame_time;
+        const frame_duration = now -% self.last_frame_end;
 
-        if (frame_duration < self.target_ticks_per_frame) {
-            c.SDL_Delay(self.target_ticks_per_frame - frame_duration);
+        switch (self.mode) {
+            .limited => |rate| {
+                if (rate < 1) {
+                    @panic("Framerate can't be lower than 1.");
+                }
+
+                const target_ticks_per_frame = @divTrunc(@as(u32, @intCast(c.SDL_MS_PER_SECOND)), rate);
+                if (frame_duration < target_ticks_per_frame) {
+                    c.SDL_Delay(@intCast(self.target_ticks_per_frame - frame_duration));
+                }
+            },
+            .unlimited => {},
         }
 
-        self.last_frame_time = Self.getTicks();
+        self.last_frame_end = Self.getTicks();
+        self.dt = self.last_frame_end -% now + frame_duration;
+        return self.dt;
     }
 
-    pub fn delay(self: *Self) u32 {
-        self.cap();
-        return 0;
+    pub fn getFPS(self: *const Self) u64 {
+        return @divTrunc(c.SDL_MS_PER_SECOND, @max(self.dt, 1));
     }
 };
