@@ -71,13 +71,17 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
             {
                 const sys_menu = ui.dropdownMenu(.{ .label = "System" });
                 if (ui.menuItem(.{ .label = "Open" }).clicked(ui.ctx)) {
+                    const default_location = std.process.getCwdAlloc(ui.ctx.frame_arena.allocator()) catch
+                        @panic("Failed to allocate");
+                    defer ui.ctx.frame_arena.allocator().free(default_location);
+
                     c.SDL_ShowOpenFileDialog(
                         dialog_callback,
                         clay.anytypeToAnyopaquePtr(ui_state),
                         ui.window,
                         &dialog_filter_list,
                         dialog_filter_list.len,
-                        null,
+                        default_location.ptr,
                         false,
                     );
                 }
