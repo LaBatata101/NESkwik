@@ -145,8 +145,12 @@ pub const UIContext = struct {
         self.frame.hot_id = null;
     }
 
+    pub fn frameAlloc(self: *Self) std.mem.Allocator {
+        return self.frame_arena.allocator();
+    }
+
     pub fn pushParent(self: *Self, id: clay.ElementId) void {
-        self.parent_stack.append(self.frame_arena.allocator(), id) catch
+        self.parent_stack.append(self.frameAlloc(), id) catch
             @panic("Failed to allocate memory");
     }
 
@@ -199,7 +203,7 @@ pub const UIContext = struct {
     }
 
     fn allocWidget(self: *Self, T: type, value: T) *T {
-        const w = self.frame_arena.allocator().create(T) catch
+        const w = self.frameAlloc().create(T) catch
             std.debug.panic("Failed to allocate widget: {s}", .{@typeName(T)});
         w.* = value;
         return w;
@@ -1191,7 +1195,7 @@ pub const UI = struct {
         ) orelse return error.WindowCreationFailed;
 
         const vk_version = vulkan.detect_vulkan_version();
-        std.log.debug("Detected Vulkan version: {}.{}.{}\n", .{
+        std.log.debug("Detected Vulkan version: {}.{}.{}", .{
             c.VK_VERSION_MAJOR(vk_version),
             c.VK_VERSION_MINOR(vk_version),
             c.VK_VERSION_PATCH(vk_version),
@@ -1279,7 +1283,7 @@ pub const UI = struct {
         if (self.ctx.hasPassedSinceMS(self.last_title_update, 1000)) {
             self.last_title_update = c.SDL_GetTicks();
             const title = std.fmt.allocPrintSentinel(
-                self.ctx.frame_arena.allocator(),
+                self.ctx.frameAlloc(),
                 "{s} - FPS: {}",
                 .{ self.win_title, self.fps_manager.getFPS() },
                 0,
@@ -1385,7 +1389,7 @@ pub const UI = struct {
             c.SDL_EVENT_KEY_UP => self.ctx.input.addKeyEvent(.{ .event = .released, .scancode = event.key.scancode }),
             c.SDL_EVENT_TEXT_INPUT => {
                 const text: []const u8 = std.mem.span(event.text.text);
-                self.ctx.frame.text_input.appendSlice(self.ctx.frame_arena.allocator(), text) catch
+                self.ctx.frame.text_input.appendSlice(self.ctx.frameAlloc(), text) catch
                     @panic("Fafiled to allocate memory!");
             },
             else => {},
@@ -1620,6 +1624,38 @@ pub const UI = struct {
                 self.batcher.pushRect(dest, color, null);
                 self.batcher.flush();
             },
+            .shape => |shape_data| {
+                const rect = cmd.bounding_box;
+                const x = rect.x;
+                const y = rect.y;
+                const w = rect.width;
+                const h = rect.height;
+
+                const clay_color = shape_data.color.toClay();
+                const color = c.SDL_FColor{
+                    .r = clay_color[0] / 255.0,
+                    .g = clay_color[1] / 255.0,
+                    .b = clay_color[2] / 255.0,
+                    .a = clay_color[3] / 255.0,
+                };
+
+                self.batcher.setTexture(null);
+
+                // Assuming vertices are provided in multiples of 3 to form triangles
+                var i: usize = 0;
+                while (i + 2 < shape_data.vertices.len) : (i += 3) {
+                    const v1 = shape_data.vertices[i];
+                    const v2 = shape_data.vertices[i + 1];
+                    const v3 = shape_data.vertices[i + 2];
+
+                    // Map the 0.0-1.0 normalized coordinates to the actual bounding box
+                    const p1 = clay.Vector2{ .x = x + v1.x * w, .y = y + v1.y * h };
+                    const p2 = clay.Vector2{ .x = x + v2.x * w, .y = y + v2.y * h };
+                    const p3 = clay.Vector2{ .x = x + v3.x * w, .y = y + v3.y * h };
+
+                    self.batcher.pushTriangle(p1, p2, p3, color);
+                }
+            },
             .icon => |icon| {
                 const rect = cmd.bounding_box;
                 const x = rect.x;
@@ -1844,5 +1880,9 @@ pub const UI = struct {
 
     pub fn comboboxItem(self: *Self, params: widgets.ComboboxItem.Params) *widgets.ComboboxItem {
         return self.ctx.allocWidget(widgets.ComboboxItem, .start(self.ctx, params));
+    }
+
+    pub fn shape(self: *Self, params: widgets.Shape.Params) *widgets.Shape {
+        return self.ctx.allocWidget(widgets.Shape, .start(self.ctx, params));
     }
 };

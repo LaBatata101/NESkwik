@@ -61,6 +61,12 @@ pub const Colors = struct {
     pub const darkGray = Color{ .r = 80, .g = 80, .b = 80, .a = 255 };
 };
 
+pub const CustomData = union(enum) {
+    canvas: Canvas,
+    icon: IconData,
+    shape: ShapeData,
+};
+
 pub const LayoutDirection = enum {
     row,
     column,
@@ -394,7 +400,7 @@ pub const ScrollContainer = struct {
                         }
                     }
 
-                    const scrollbar_data = ctx.frame_arena.allocator().create(clay.ElementId) catch @panic("uuuuuu");
+                    const scrollbar_data = ctx.frameAlloc().create(clay.ElementId) catch @panic("uuuuuu");
                     scrollbar_data.* = scrollbar_id;
                     clay.openElementWithId(scrollbar_id);
                     clay.configureOpenElement(.{
@@ -442,11 +448,6 @@ pub const Spacer = struct {
     }
 };
 
-pub const CustomData = union(enum) {
-    canvas: Canvas,
-    icon: IconData,
-};
-
 pub const Canvas = struct {
     id: clay.ElementId,
     params: Params,
@@ -470,7 +471,7 @@ pub const Canvas = struct {
             break :b element_id;
         } else clay.openElement();
 
-        const alloc = ctx.frame_arena.allocator();
+        const alloc = ctx.frameAlloc();
         const custom_data = alloc.create(CustomData) catch @panic("Alloc failed");
         custom_data.* = .{ .canvas = .{ .id = element_id, .params = params } };
 
@@ -763,7 +764,7 @@ pub const Combobox = struct {
             _ = Spacer.start(.{ .sizing = .grow });
 
             const icon_type: IconType = if (state.combobox.is_open) .arrow_up else .arrow_down;
-            const icon_data_ptr = ctx.frame_arena.allocator().create(CustomData) catch @panic("Alloc failed");
+            const icon_data_ptr = ctx.frameAlloc().create(CustomData) catch @panic("Alloc failed");
             icon_data_ptr.* = .{ .icon = .{
                 .type = icon_type,
                 .color = Colors.darkGray,
@@ -876,5 +877,40 @@ const ComboboxItem = struct {
             parent.combobox.is_open = false;
         }
         return .{};
+    }
+};
+
+pub const ShapeData = struct {
+    /// Must have values between 0.0-1.0
+    vertices: []const clay.Vector2,
+    color: Color,
+};
+
+pub const Shape = struct {
+    params: Params,
+
+    pub const Params = struct {
+        sizing: clay.Sizing = .{ .w = .grow, .h = .grow },
+        vertices: []const clay.Vector2,
+        color: Color = Colors.black,
+    };
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        _ = clay.openElement();
+
+        const custom_data = ctx.frameAlloc().create(CustomData) catch @panic("Alloc failed");
+        custom_data.* = .{ .shape = .{
+            .vertices = params.vertices,
+            .color = params.color,
+        } };
+
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = params.sizing },
+            .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(custom_data) },
+        });
+        clay.closeElement();
+
+        return .{ .params = params };
     }
 };
