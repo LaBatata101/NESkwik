@@ -64,7 +64,16 @@ pub fn build(b: *std.Build) void {
     const spirv_cross_lib = spirv_cross_dep.artifact("spirv-cross-c");
     mod.linkLibrary(spirv_cross_lib);
 
-    mod.linkSystemLibrary("vulkan", .{});
+    const vk_headers = b.dependency("vulkan_headers", .{});
+    mod.addIncludePath(vk_headers.path("include"));
+
+    if (target.result.os.tag == .windows) {
+        mod.addLibraryPath(.{ .cwd_relative = "third-party/vulkan-windows/lib/" });
+
+        mod.linkSystemLibrary("vulkan-1", .{});
+    } else {
+        mod.linkSystemLibrary("vulkan", .{});
+    }
 
     mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("fonts/PixeloidSans.ttf") });
 

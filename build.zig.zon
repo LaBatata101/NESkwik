@@ -20,6 +20,10 @@
             .url = "git+https://github.com/LaBatata101/glslang-zig.git#a988e785389ea0793edd8577c31265d2331a14f0",
             .hash = "glslang-1.4.309-eMn68EfFCQCgFuy69YWlg9uFFt1L0ItlefOsrk-BIMQe",
         },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.338.tar.gz",
+            .hash = "N-V-__8AAMZuLQIcPe--JSv0kn_Ga8tsjgbkaojW0OHW2Rfd",
+        },
     },
     .paths = .{
         "build.zig",
