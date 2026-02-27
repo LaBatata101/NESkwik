@@ -9,6 +9,8 @@ const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
 const shaders = @import("shaders.zig");
 
+const PIXELOID_FONT = @embedFile("pixeloid_font");
+
 fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
     std.debug.print("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
 }
@@ -1220,7 +1222,8 @@ pub const UI = struct {
 
         const gpu_device = sdlError(c.SDL_CreateGPUDeviceWithProperties(props));
 
-        const font = c.TTF_OpenFont("./fonts/PixeloidSans.ttf", 16) orelse {
+        const font_bytes = c.SDL_IOFromConstMem(PIXELOID_FONT, PIXELOID_FONT.len);
+        const font = c.TTF_OpenFontIO(font_bytes, true, 16) orelse {
             std.debug.print("Could not load font: {s}\n", .{c.SDL_GetError()});
             return error.FontLoadFailed;
         };

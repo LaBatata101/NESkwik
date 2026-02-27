@@ -66,6 +66,8 @@ pub fn build(b: *std.Build) void {
 
     mod.linkSystemLibrary("vulkan", .{});
 
+    mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("fonts/PixeloidSans.ttf") });
+
     const exe = b.addExecutable(.{
         .name = "ness",
         .use_llvm = true,
