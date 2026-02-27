@@ -29,7 +29,6 @@ pub const System = struct {
     // Keymap for controller 2.
     keymap2: std.AutoHashMap(Keys, ControllerButton),
 
-    quit: bool,
     settings: Settings,
 
     trace_file: ?std.fs.File,
@@ -67,7 +66,6 @@ pub const System = struct {
             .cpu = cpu,
             .ppu = ppu,
             .apu = apu,
-            .quit = false,
             .settings = settings,
             .keymap1 = keymap1,
             .keymap2 = keymap2,
@@ -168,7 +166,6 @@ pub const System = struct {
     pub fn reset(self: *Self) void {
         self.cpu.reset();
         self.bus.reset();
-        self.quit = false;
     }
 
     pub fn is_frame_complete(self: *Self) bool {

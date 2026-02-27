@@ -125,7 +125,7 @@ pub fn main() !void {
         if (ui_state.run_emu) {
             if (ui.getPressedKey()) |key| ui_state.system.controller_keydown(key);
             if (ui.getReleasedKey()) |key| ui_state.system.controller_keyup(key);
-            if (ui.isKeyPressed(.ESCAPE)) ui_state.system.quit = true;
+            if (ui.isKeyPressed(.ESCAPE)) std.process.exit(0);
             if (ui.isKeyPressed(.F9)) step_mode = !step_mode;
             if (ui.isKeyPressed(.R)) ui_state.system.reset();
             if (step_mode and ui.isKeyPressed(.F10)) ui_state.system.tick();
