@@ -17,7 +17,7 @@ pub const UIState = struct {
     render_home_screen: bool = true,
     run_emu: bool = false,
 
-    rom_bytes: []u8 = undefined,
+    rom_bytes: ?[]u8 = null,
     rom: Rom = undefined,
     system: System = undefined,
 
@@ -31,7 +31,9 @@ pub const UIState = struct {
         if (self.selected_rom_filepath) |filepath| {
             self.alloc.free(filepath);
         }
-        self.alloc.free(self.rom_bytes);
+        if (self.rom_bytes) |rom_bytes| {
+            self.alloc.free(rom_bytes);
+        }
 
         if (self.run_emu) { // TODO: add flag to check if a ROM was loaded
             self.rom.deinit();

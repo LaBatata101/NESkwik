@@ -50,8 +50,25 @@ pub fn build(b: *std.Build) void {
     const sdl_ttf_lib = sdl_ttf_dep.artifact("SDL3_ttf");
     mod.linkLibrary(sdl_ttf_lib);
 
+    const glslang_dep = b.dependency("glslang", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const glslang_lib = glslang_dep.artifact("glslang");
+    mod.linkLibrary(glslang_lib);
+
+    const spirv_cross_dep = b.dependency("spirv_cross", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const spirv_cross_lib = spirv_cross_dep.artifact("spirv-cross-c");
+    mod.linkLibrary(spirv_cross_lib);
+
+    mod.linkSystemLibrary("vulkan", .{});
+
     const exe = b.addExecutable(.{
         .name = "ness",
+        .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -64,8 +81,9 @@ pub fn build(b: *std.Build) void {
     });
     exe.linkLibrary(clay_lib);
     exe.linkLibrary(sdl_ttf_lib);
+    exe.linkLibrary(glslang_lib);
+    exe.linkLibrary(spirv_cross_lib);
 
-    exe.use_llvm = true;
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");

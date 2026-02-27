@@ -21,11 +21,16 @@ pub const SYSTEM_PALLETE = render.SYSTEM_PALETTE;
 
 pub const sdlError = @import("utils/sdl.zig").sdlError;
 pub const mmap = @import("utils/mmap.zig");
+pub const ThreadPool = @import("utils/pool.zig");
+pub const vulkan = @import("utils/vulkan.zig");
 
 pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("blip_buf.h");
     @cInclude("SDL3_ttf/SDL_ttf.h");
+    @cInclude("glslang/Include/glslang_c_interface.h");
+    @cInclude("glslang/Public/resource_limits_c.h");
+    @cInclude("vulkan/vulkan.h");
 });
 
 pub const NES_WIDTH = 256;

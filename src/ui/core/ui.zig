@@ -2,10 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const c = @import("../../root.zig").c;
-pub const clay = @import("clay.zig");
+const clay = @import("clay.zig");
 pub const widgets = @import("widgets.zig");
-pub const sdlError = @import("../../utils/sdl.zig").sdlError;
+const sdlError = @import("../../utils/sdl.zig").sdlError;
+const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
+const shaders = @import("shaders.zig");
 
 fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
     std.debug.print("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
@@ -653,7 +655,7 @@ pub const InputContext = struct {
     }
 };
 
-pub const DrawBatcher = struct {
+pub const Renderer = struct {
     allocator: std.mem.Allocator,
     device: ?*c.SDL_GPUDevice,
     pipeline: ?*c.SDL_GPUGraphicsPipeline,
@@ -676,7 +678,25 @@ pub const DrawBatcher = struct {
 
     const Self = @This();
 
-    fn init(allocator: std.mem.Allocator, device: ?*c.SDL_GPUDevice, window: ?*c.SDL_Window) !*Self {
+    fn createSDLShaderFromSpirv(
+        device: ?*c.SDL_GPUDevice,
+        spirv: []const u8,
+        stage: c.SDL_GPUShaderStage,
+        num_samplers: u32,
+        num_uniform_buffers: u32,
+    ) !*c.SDL_GPUShader {
+        return c.SDL_CreateGPUShader(device, &.{
+            .code_size = spirv.len,
+            .code = @ptrCast(spirv),
+            .entrypoint = "main",
+            .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
+            .stage = stage,
+            .num_samplers = num_samplers,
+            .num_uniform_buffers = num_uniform_buffers,
+        }) orelse error.ShaderCreateFailed;
+    }
+
+    fn init(allocator: std.mem.Allocator, device: ?*c.SDL_GPUDevice, window: ?*c.SDL_Window, vk_version: c_uint) !*Self {
         var self = try allocator.create(Self);
         self.allocator = allocator;
         self.device = device;
@@ -685,8 +705,31 @@ pub const DrawBatcher = struct {
 
         sdlError(c.SDL_ClaimWindowForGPUDevice(device, window));
 
-        const vert = try loadShader(allocator, device, "shaders/vertex.spv", c.SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-        const frag = try loadShader(allocator, device, "shaders/frag.spv", c.SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+        var shader_compiler = try shaders.ShaderCompiler.init(allocator);
+        defer shader_compiler.deinit();
+
+        try shader_compiler.addShader(shaders.VERT, .Vertex);
+        try shader_compiler.addShader(shaders.FRAG, .Fragment);
+
+        const result = try shader_compiler.compile(vk_version);
+        defer {
+            for (result) |spirv| {
+                allocator.free(spirv.bytes);
+            }
+            allocator.free(result);
+        }
+
+        var vert_spirv: []const u8 = undefined;
+        var frag_spirv: []const u8 = undefined;
+        for (result) |spirv| {
+            switch (spirv.stage) {
+                .Vertex => vert_spirv = spirv.bytes,
+                .Fragment => frag_spirv = spirv.bytes,
+            }
+        }
+
+        const vert = try createSDLShaderFromSpirv(device, vert_spirv, c.SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+        const frag = try createSDLShaderFromSpirv(device, frag_spirv, c.SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
         defer {
             c.SDL_ReleaseGPUShader(device, vert);
             c.SDL_ReleaseGPUShader(device, frag);
@@ -1127,13 +1170,17 @@ pub const UI = struct {
     width: i32,
     height: i32,
 
-    batcher: *DrawBatcher,
+    batcher: *Renderer,
     quit: bool = false,
     fps_manager: FPSManager,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, title: []const u8, width: i32, height: i32) !*Self {
+        if (c.glslang_initialize_process() != 1) {
+            return error.GLSlangFailedToInitialize;
+        }
+
         const window = c.SDL_CreateWindow(
             title.ptr,
             width,
@@ -1141,7 +1188,37 @@ pub const UI = struct {
             c.SDL_WINDOW_RESIZABLE,
         ) orelse return error.WindowCreationFailed;
 
-        const gpu_device = sdlError(c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV, builtin.mode == .Debug, null));
+        const vk_version = vulkan.detect_vulkan_version();
+        std.log.debug("Detected Vulkan version: {}.{}.{}\n", .{
+            c.VK_VERSION_MAJOR(vk_version),
+            c.VK_VERSION_MINOR(vk_version),
+            c.VK_VERSION_PATCH(vk_version),
+        });
+
+        var vkOptions: c.SDL_GPUVulkanOptions = .{
+            .vulkan_api_version = c.VK_MAKE_API_VERSION(
+                c.VK_API_VERSION_VARIANT(vk_version),
+                c.VK_VERSION_MAJOR(vk_version),
+                c.VK_VERSION_MINOR(vk_version),
+                c.VK_VERSION_PATCH(vk_version),
+            ),
+        };
+        const props = c.SDL_CreateProperties();
+        defer c.SDL_DestroyProperties(props);
+
+        sdlError(c.SDL_SetPointerProperty(
+            props,
+            c.SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER,
+            @ptrCast(&vkOptions),
+        ));
+        sdlError(c.SDL_SetBooleanProperty(props, c.SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true));
+        sdlError(c.SDL_SetBooleanProperty(
+            props,
+            c.SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN,
+            builtin.mode == .Debug,
+        ));
+
+        const gpu_device = sdlError(c.SDL_CreateGPUDeviceWithProperties(props));
 
         const font = c.TTF_OpenFont("./fonts/PixeloidSans.ttf", 16) orelse {
             std.debug.print("Could not load font: {s}\n", .{c.SDL_GetError()});
@@ -1154,7 +1231,7 @@ pub const UI = struct {
 
         clay.setMeasureTextFunction(*c.TTF_Font, font, measureText);
 
-        const batcher = try DrawBatcher.init(allocator, gpu_device, window);
+        const batcher = try Renderer.init(allocator, gpu_device, window, vk_version);
         const gui = try allocator.create(UI);
         gui.* = .{
             .allocator = allocator,
@@ -1176,6 +1253,7 @@ pub const UI = struct {
         self.batcher.deinit();
         self.ctx.deinit(self.allocator, self.gpu_device);
 
+        c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);
         c.TTF_CloseFont(self.font);
         c.SDL_DestroyWindow(self.window);

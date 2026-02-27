@@ -75,7 +75,7 @@ pub fn main() !void {
     var last_mouse_activity_time: u64 = c.SDL_GetTicks();
     var is_cursor_hidden: bool = false;
 
-    while (!ui.shouldClose() and !ui_state.system.quit) {
+    while (!ui.shouldClose()) {
         ui.beginFrame();
 
         if (ui_state.should_load_rom) {
@@ -98,9 +98,9 @@ pub fn main() !void {
             try file.seekTo(0);
 
             ui_state.rom_bytes = try allocator.alloc(u8, file_size);
-            _ = try file.read(ui_state.rom_bytes);
+            _ = try file.read(ui_state.rom_bytes.?);
 
-            ui_state.loadRom(rom_path, ui_state.rom_bytes) catch |err| switch (err) {
+            ui_state.loadRom(rom_path, ui_state.rom_bytes.?) catch |err| switch (err) {
                 error.InvalidNesFormat => {
                     std.debug.print("Error: ROM format not supported!\n", .{});
                     std.process.exit(1);

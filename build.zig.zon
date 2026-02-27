@@ -12,6 +12,14 @@
             .url = "git+https://github.com/LaBatata101/SDL_ttf.git#00f7f97c3bbaa9988f563a285ee570f331c2050c",
             .hash = "sdl_ttf-3.2.0-GgzNnUsjBwCvS4XkgkMtFQOZD96DJ2jl5fSJNGzuitAM",
         },
+        .spirv_cross = .{
+            .url = "git+https://github.com/LaBatata101/SPIRV-Cross_zig.git#ad0bb016f3ddc68f666e7e2a955889b171d8f2a9",
+            .hash = "spirv_cross-0.0.0-B6t46LYaAABm291XHgbnkHVM6Q4y7vepSozio5t0MsHO",
+        },
+        .glslang = .{
+            .url = "git+https://github.com/LaBatata101/glslang-zig.git#a988e785389ea0793edd8577c31265d2331a14f0",
+            .hash = "glslang-1.4.309-eMn68EfFCQCgFuy69YWlg9uFFt1L0ItlefOsrk-BIMQe",
+        },
     },
     .paths = .{
         "build.zig",
