@@ -1631,6 +1631,14 @@ pub const UI = struct {
                 const w = rect.width;
                 const h = rect.height;
 
+                // Center of the bounding box
+                const cx = x + (w / 2.0);
+                const cy = y + (h / 2.0);
+
+                const rads: f32 = std.math.degreesToRadians(shape_data.rotation);
+                const cos_theta = std.math.cos(rads);
+                const sin_theta = std.math.sin(rads);
+
                 const clay_color = shape_data.color.toClay();
                 const color = c.SDL_FColor{
                     .r = clay_color[0] / 255.0,
@@ -1641,53 +1649,42 @@ pub const UI = struct {
 
                 self.batcher.setTexture(null);
 
-                // Assuming vertices are provided in multiples of 3 to form triangles
-                var i: usize = 0;
-                while (i + 2 < shape_data.vertices.len) : (i += 3) {
-                    const v1 = shape_data.vertices[i];
-                    const v2 = shape_data.vertices[i + 1];
-                    const v3 = shape_data.vertices[i + 2];
+                // We need at least 3 vertices to draw a visible shape
+                if (shape_data.vertices.len >= 3) {
+                    const transform = struct {
+                        fn apply(
+                            v: clay.Vector2,
+                            bx: f32,
+                            by: f32,
+                            bw: f32,
+                            bh: f32,
+                            bcx: f32,
+                            bcy: f32,
+                            cos_a: f32,
+                            sin_a: f32,
+                        ) clay.Vector2 {
+                            // Map normalized coordinates (0.0-1.0) to actual bounding box
+                            const px = bx + v.x * bw;
+                            const py = by + v.y * bh;
 
-                    // Map the 0.0-1.0 normalized coordinates to the actual bounding box
-                    const p1 = clay.Vector2{ .x = x + v1.x * w, .y = y + v1.y * h };
-                    const p2 = clay.Vector2{ .x = x + v2.x * w, .y = y + v2.y * h };
-                    const p3 = clay.Vector2{ .x = x + v3.x * w, .y = y + v3.y * h };
+                            // Apply rotation around the center (bcx, bcy)
+                            return .{
+                                .x = cos_a * (px - bcx) - sin_a * (py - bcy) + bcx,
+                                .y = sin_a * (px - bcx) + cos_a * (py - bcy) + bcy,
+                            };
+                        }
+                    }.apply;
 
-                    self.batcher.pushTriangle(p1, p2, p3, color);
-                }
-            },
-            .icon => |icon| {
-                const rect = cmd.bounding_box;
-                const x = rect.x;
-                const y = rect.y;
-                const w = rect.width;
-                const h = rect.height;
+                    // Map and rotate the anchor vertex (index 0)
+                    const p0 = transform(shape_data.vertices[0], x, y, w, h, cx, cy, cos_theta, sin_theta);
 
-                const clay_color = icon.color.toClay();
-                const color = c.SDL_FColor{
-                    .r = clay_color[0] / 255.0,
-                    .g = clay_color[1] / 255.0,
-                    .b = clay_color[2] / 255.0,
-                    .a = clay_color[3] / 255.0,
-                };
+                    var i: usize = 1;
+                    while (i + 1 < shape_data.vertices.len) : (i += 1) {
+                        const p1 = transform(shape_data.vertices[i], x, y, w, h, cx, cy, cos_theta, sin_theta);
+                        const p2 = transform(shape_data.vertices[i + 1], x, y, w, h, cx, cy, cos_theta, sin_theta);
 
-                self.batcher.setTexture(null);
-
-                switch (icon.type) {
-                    .arrow_down => {
-                        // Draw triangle pointing down
-                        const p1 = clay.Vector2{ .x = x, .y = y + h * 0.25 };
-                        const p2 = clay.Vector2{ .x = x + w, .y = y + h * 0.25 };
-                        const p3 = clay.Vector2{ .x = x + w / 2.0, .y = y + h * 0.75 };
-                        self.batcher.pushTriangle(p1, p2, p3, color);
-                    },
-                    .arrow_up => {
-                        // Draw triangle pointing up
-                        const p1 = clay.Vector2{ .x = x, .y = y + h * 0.75 };
-                        const p2 = clay.Vector2{ .x = x + w, .y = y + h * 0.75 };
-                        const p3 = clay.Vector2{ .x = x + w / 2.0, .y = y + h * 0.25 };
-                        self.batcher.pushTriangle(p3, p2, p1, color);
-                    },
+                        self.batcher.pushTriangle(p0, p1, p2, color);
+                    }
                 }
             },
         }

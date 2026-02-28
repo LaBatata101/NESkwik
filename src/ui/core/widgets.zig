@@ -63,7 +63,6 @@ pub const Colors = struct {
 
 pub const CustomData = union(enum) {
     canvas: Canvas,
-    icon: IconData,
     shape: ShapeData,
 };
 
@@ -701,16 +700,6 @@ pub const Margin = struct {
     }
 };
 
-pub const IconType = enum {
-    arrow_up,
-    arrow_down,
-};
-
-pub const IconData = struct {
-    type: IconType,
-    color: Color,
-};
-
 pub const Combobox = struct {
     id: clay.ElementId,
     ctx: *UIContext,
@@ -763,21 +752,18 @@ pub const Combobox = struct {
             _ = Label.start(.{ .text = state.combobox.selected_option, .font_size = 14 });
             _ = Spacer.start(.{ .sizing = .grow });
 
-            const icon_type: IconType = if (state.combobox.is_open) .arrow_up else .arrow_down;
-            const icon_data_ptr = ctx.frameAlloc().create(CustomData) catch @panic("Alloc failed");
-            icon_data_ptr.* = .{ .icon = .{
-                .type = icon_type,
+            // Draw the arrow icon
+            _ = Shape.start(ctx, .{
+                .sizing = .{ .w = .fixed(10), .h = .fixed(10) },
+                .vertices = &[_]clay.Vector2{
+                    .{ .x = 0.0, .y = 0.75 },
+                    .{ .x = 1.0, .y = 0.75 },
+                    .{ .x = 0.5, .y = 0.25 },
+                },
+                .rotation = if (state.combobox.is_open) 0 else 180,
                 .color = Colors.darkGray,
-            } };
+            });
 
-            {
-                _ = clay.openElement();
-                clay.configureOpenElement(.{
-                    .layout = .{ .sizing = .{ .w = .fixed(10), .h = .fixed(10) } },
-                    .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(icon_data_ptr) },
-                });
-                clay.closeElement();
-            } // End ending icon
             clay.closeElement();
         } // End ending closed combobox
 
@@ -883,6 +869,7 @@ const ComboboxItem = struct {
 pub const ShapeData = struct {
     /// Must have values between 0.0-1.0
     vertices: []const clay.Vector2,
+    rotation: f32,
     color: Color,
 };
 
@@ -892,6 +879,7 @@ pub const Shape = struct {
     pub const Params = struct {
         sizing: clay.Sizing = .{ .w = .grow, .h = .grow },
         vertices: []const clay.Vector2,
+        rotation: f32 = 0,
         color: Color = Colors.black,
     };
     const Self = @This();
@@ -902,6 +890,7 @@ pub const Shape = struct {
         const custom_data = ctx.frameAlloc().create(CustomData) catch @panic("Alloc failed");
         custom_data.* = .{ .shape = .{
             .vertices = params.vertices,
+            .rotation = params.rotation,
             .color = params.color,
         } };
 
