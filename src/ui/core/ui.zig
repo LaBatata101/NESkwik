@@ -1238,6 +1238,11 @@ pub const UI = struct {
 
         clay.setMeasureTextFunction(*c.TTF_Font, font, measureText);
 
+        if (std.process.getEnvVarOwned(allocator, "UI_DEBUG")) |value| {
+            clay.setDebugModeEnabled(std.mem.eql(u8, value, "1"));
+            allocator.free(value);
+        } else |_| {}
+
         const batcher = try Renderer.init(allocator, gpu_device, window, vk_version);
         const gui = try allocator.create(UI);
         gui.* = .{
