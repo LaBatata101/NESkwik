@@ -903,3 +903,33 @@ pub const Shape = struct {
         return .{ .params = params };
     }
 };
+
+pub const Separator = struct {
+    params: Params,
+
+    pub const Direction = enum {
+        horizontal,
+        vertical,
+    };
+    pub const Params = struct {
+        direction: Direction = .horizontal,
+        thickness: f32 = 1.0,
+        color: Color = Colors.black,
+    };
+    const Self = @This();
+
+    pub fn start(params: Params) Self {
+        _ = clay.openElement();
+        const w: clay.SizingAxis = if (params.direction == .horizontal) .grow else .fixed(params.thickness);
+        const h: clay.SizingAxis = if (params.direction == .horizontal) .fixed(params.thickness) else .grow;
+
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .w = w, .h = h },
+            },
+            .background_color = params.color.toClay(),
+        });
+        clay.closeElement();
+        return .{ .params = params };
+    }
+};

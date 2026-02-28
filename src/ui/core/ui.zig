@@ -1887,4 +1887,8 @@ pub const UI = struct {
     pub fn shape(self: *Self, params: widgets.Shape.Params) *widgets.Shape {
         return self.ctx.allocWidget(widgets.Shape, .start(self.ctx, params));
     }
+
+    pub fn separator(self: *Self, params: widgets.Separator.Params) *widgets.Separator {
+        return self.ctx.allocWidget(widgets.Separator, .start(params));
+    }
 };
