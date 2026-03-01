@@ -36,7 +36,7 @@ pub fn main() !void {
     init_sdl_systems();
     defer deinit_sdl_systems();
 
-    var ui = try UI.init(allocator, "NESS", 1280, 720);
+    var ui = try UI.init(allocator, "NESkwik", 1280, 720);
     defer ui.deinit();
     var ui_state = gui.UIState.init(allocator);
     defer ui_state.deinit();
