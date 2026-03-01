@@ -8,7 +8,7 @@ pub fn trace(writer: *std.io.Writer, cpu: *CPU) !void {
     try writer.print("{s}\n", .{try format_trace(cpu)});
 }
 
-pub fn format_opcode(cpu: *const CPU, code: u8, pc: u16, buffer: *[23]u8) ![]u8 {
+pub fn format_opcode(cpu: *const CPU, code: u8, pc: u16, buffer: []u8) ![]u8 {
     const opcode = opcodes.OP_CODES[code];
     const mnemonic = switch (code) {
         // zig fmt: off
@@ -105,7 +105,7 @@ fn format_trace(cpu: *CPU) ![73]u8 {
     return buffer;
 }
 
-pub fn format_addressing_mode(cpu: *const CPU, opcode: OpCode, arg_addr: u16, buffer: *[27]u8) ![]u8 {
+pub fn format_addressing_mode(cpu: *const CPU, opcode: OpCode, arg_addr: u16, buffer: []u8) ![]u8 {
     switch (opcode.addressing_mode()) {
         .Immediate => {
             return try std.fmt.bufPrint(buffer, " #${X:02}", .{cpu.bus.mem_peek(arg_addr)});

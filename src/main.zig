@@ -67,7 +67,7 @@ pub fn main() !void {
         } else {
             ui_state.setSelectedRom(arg0);
         }
-        ui_state.render_home_screen = false;
+        ui_state.render_home_ui = false;
     }
 
     ui.setFramerate(.{ .limited = 60 });
@@ -122,7 +122,7 @@ pub fn main() !void {
 
         gui.drawGUI(ui, &ui_state);
 
-        if (ui_state.run_emu) {
+        if (ui_state.emulation_running) {
             if (ui.getPressedKey()) |key| ui_state.system.controller_keydown(key);
             if (ui.getReleasedKey()) |key| ui_state.system.controller_keyup(key);
             if (ui.isKeyPressed(.ESCAPE)) std.process.exit(0);
@@ -146,7 +146,7 @@ pub fn main() !void {
                 }
             }
 
-            ui_state.system.run_frame();
+            if (!step_mode) ui_state.system.run_frame();
 
             if (c.SDL_GetWindowFlags(ui.window) & c.SDL_WINDOW_FULLSCREEN != 0) {
                 if (!is_cursor_hidden and ui.ctx.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {

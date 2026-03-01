@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const debug = @import("debug.zig");
 const c = @import("../root.zig").c;
 const UI = @import("core/ui.zig").UI;
 const clay = @import("core/clay.zig");
@@ -14,8 +15,9 @@ pub const UIState = struct {
     /// Whether to load the selected ROM.
     should_load_rom: bool = false,
     /// Wheter to skip drawing the home screen.
-    render_home_screen: bool = true,
-    run_emu: bool = false,
+    render_home_ui: bool = true,
+    render_debug_ui: bool = false,
+    emulation_running: bool = false,
 
     rom_bytes: ?[]u8 = null,
     rom: Rom = undefined,
@@ -35,7 +37,7 @@ pub const UIState = struct {
             self.alloc.free(rom_bytes);
         }
 
-        if (self.run_emu) { // TODO: add flag to check if a ROM was loaded
+        if (self.emulation_running) { // TODO: add flag to check if a ROM was loaded
             self.rom.deinit();
             self.system.deinit();
         }
@@ -45,8 +47,8 @@ pub const UIState = struct {
         self.rom = try Rom.init(self.alloc, path, bytes);
         self.system = try System.init(self.alloc, &self.rom, .{});
         self.system.reset();
-        self.run_emu = true;
-        self.render_home_screen = false;
+        self.emulation_running = true;
+        self.render_home_ui = false;
     }
 
     pub fn setSelectedRom(self: *Self, filepath: []const u8) void {
@@ -73,9 +75,9 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
             {
                 const sys_menu = ui.dropdownMenu(.{ .label = "System" });
                 if (ui.menuItem(.{ .label = "Open" }).clicked(ui.ctx)) {
-                    const default_location = std.process.getCwdAlloc(ui.ctx.frame_arena.allocator()) catch
+                    const default_location = std.process.getCwdAlloc(ui.ctx.frameAlloc()) catch
                         @panic("Failed to allocate");
-                    defer ui.ctx.frame_arena.allocator().free(default_location);
+                    defer ui.ctx.frameAlloc().free(default_location);
 
                     c.SDL_ShowOpenFileDialog(
                         dialog_callback,
@@ -89,12 +91,20 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 }
 
                 sys_menu.end();
+
+                const emulation_menu = ui.dropdownMenu(.{ .label = "Emulation" });
+                if (ui.menuItem(.{ .label = "Debug" }).clicked(ui.ctx) and ui_state.emulation_running) {
+                    ui_state.render_debug_ui = !ui_state.render_debug_ui;
+                }
+                emulation_menu.end();
             }
             menubar.end();
         }
 
-        if (ui_state.render_home_screen) {
-            drawHomeScreen(ui, ui_state);
+        if (ui_state.render_home_ui) {
+            drawHomeUI(ui, ui_state);
+        } else if (ui_state.render_debug_ui) {
+            debug.drawUI(ui, ui_state);
         } else {
             _ = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
@@ -107,7 +117,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
     root.end();
 }
 
-fn drawHomeScreen(ui: *UI, ui_state: *UIState) void {
+fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
     _ = ui_state; // autofix
     _ = ui.spacer(.{ .sizing = .grow });
 }

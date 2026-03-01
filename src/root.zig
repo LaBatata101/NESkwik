@@ -2,7 +2,6 @@ const std = @import("std");
 
 const cpu = @import("cpu.zig");
 const rom = @import("rom.zig");
-pub const debug = @import("debug.zig");
 pub const render = @import("render.zig");
 pub const opcodes = @import("opcodes.zig");
 pub const controller = @import("controller.zig");

@@ -184,7 +184,7 @@ pub const System = struct {
         writer.interface.flush() catch |err| std.debug.panic("Flush failed: {any}\n", .{err});
     }
 
-    pub fn frame_buffer(self: *Self) []const u8 {
+    pub fn frame_buffer(self: *const Self) []const u8 {
         return &self.ppu.frame_buffer.data;
     }
 
