@@ -1,69 +1,9 @@
 const std = @import("std");
 const c = @import("../../root.zig").c;
 const clay = @import("clay.zig");
+const Color = @import("color.zig").Color;
 pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
-
-pub const Color = struct {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-
-    pub fn rgb(r: u8, g: u8, b: u8) Color {
-        return .{ .r = r, .g = g, .b = b, .a = 255 };
-    }
-
-    pub fn toClay(self: Color) clay.Color {
-        return .{
-            @floatFromInt(self.r),
-            @floatFromInt(self.g),
-            @floatFromInt(self.b),
-            @floatFromInt(self.a),
-        };
-    }
-
-    /// Darken a color by a percentage (0.0 to 1.0)
-    pub fn darken(self: Color, amount: f32) Color {
-        return .{
-            .r = @intFromFloat(@as(f32, @floatFromInt(self.r)) * (1.0 - amount)),
-            .g = @intFromFloat(@as(f32, @floatFromInt(self.g)) * (1.0 - amount)),
-            .b = @intFromFloat(@as(f32, @floatFromInt(self.b)) * (1.0 - amount)),
-            .a = self.a,
-        };
-    }
-
-    /// Lighten a color by a percentage (0.0 to 1.0)
-    pub fn lighten(self: Color, amount: f32) Color {
-        return .{
-            .r = @intFromFloat(@min(255, @as(f32, @floatFromInt(self.r)) + (255 - @as(f32, @floatFromInt(self.r))) * amount)),
-            .g = @intFromFloat(@min(255, @as(f32, @floatFromInt(self.g)) + (255 - @as(f32, @floatFromInt(self.g))) * amount)),
-            .b = @intFromFloat(@min(255, @as(f32, @floatFromInt(self.b)) + (255 - @as(f32, @floatFromInt(self.b))) * amount)),
-            .a = self.a,
-        };
-    }
-
-    /// Create a semi-transparent version of this color
-    pub fn withAlpha(self: Color, alpha: u8) Color {
-        return .{
-            .r = self.r,
-            .g = self.g,
-            .b = self.b,
-            .a = alpha,
-        };
-    }
-};
-
-pub const Colors = struct {
-    pub const white = Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    pub const black = Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    pub const red = Color{ .r = 220, .g = 60, .b = 60, .a = 255 };
-    pub const green = Color{ .r = 60, .g = 220, .b = 60, .a = 255 };
-    pub const blue = Color{ .r = 60, .g = 120, .b = 220, .a = 255 };
-    pub const gray = Color{ .r = 150, .g = 150, .b = 150, .a = 255 };
-    pub const lightGray = Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
-    pub const darkGray = Color{ .r = 80, .g = 80, .b = 80, .a = 255 };
-};
 
 pub const CustomData = union(enum) {
     canvas: Canvas,
@@ -131,7 +71,7 @@ pub const Label = struct {
 
     pub const Params = struct {
         text: []const u8,
-        color: Color = Colors.black,
+        color: Color = Color.black,
         font_size: u16 = 16,
         line_height: ?u16 = null,
         wrap_mode: clay.TextElementConfigWrapMode = .words,
@@ -164,9 +104,9 @@ pub const Button = struct {
         id: ?[]const u8 = null,
         text: []const u8,
         on_click: ?*const fn () void = null,
-        bg_color: Color = Colors.blue,
+        bg_color: Color = Color.blue,
         hover_color: ?Color = null,
-        text_color: Color = Colors.white,
+        text_color: Color = Color.white,
         font_size: u16 = 16,
         padding: clay.Padding = .{},
         corner_radius: f32 = 8,
@@ -272,10 +212,10 @@ pub const TextField = struct {
                 .padding = params.padding_val,
                 .child_alignment = .{ .y = .center },
             },
-            .background_color = Colors.white.toClay(),
+            .background_color = Color.white.toClay(),
             .corner_radius = .all(params.corner_radius),
             .border = .{
-                .color = if (is_focused) Colors.blue.toClay() else Colors.lightGray.toClay(),
+                .color = if (is_focused) Color.blue.toClay() else Color.lightGray.toClay(),
                 .width = .outside(if (is_focused) 2 else 1),
             },
         });
@@ -283,11 +223,11 @@ pub const TextField = struct {
         ctx.setHotId();
 
         if (!is_focused and state.text_input.buffer.items.len == 0) {
-            _ = Label.start(.{ .text = placeholder, .color = Colors.gray });
+            _ = Label.start(.{ .text = placeholder, .color = Color.gray });
         } else {
             _ = Label.start(.{
                 .text = state.text_input.buffer.items,
-                .color = Colors.black,
+                .color = Color.black,
                 .wrap_mode = .none,
             });
         }
@@ -295,7 +235,7 @@ pub const TextField = struct {
         // Start end text cursor
         const show_cursor = c.SDL_GetTicks() % c.SDL_MS_PER_SECOND < 500; // blink cursor every 500ms
         // When the text field is not focused, end the cursor transparent to avoid layout size change when focusing.
-        const cursor_color = if (is_focused and show_cursor) Colors.black else Colors.black.withAlpha(0);
+        const cursor_color = if (is_focused and show_cursor) Color.black else Color.black.withAlpha(0);
 
         _ = clay.openElement();
         clay.configureOpenElement(.{
@@ -490,8 +430,8 @@ pub const MenuBar = struct {
     params: Params,
 
     pub const Params = struct {
-        bg_color: Color = Colors.white,
-        border_color: Color = Colors.lightGray,
+        bg_color: Color = Color.white,
+        border_color: Color = Color.lightGray,
     };
     const Self = @This();
 
@@ -542,7 +482,7 @@ pub const DropdownMenu = struct {
         const state = ctx.getOrCreateWidgetState(element_id, .{ .dropdown_menu = .{ .is_open = false } });
 
         const is_hovered = clay.hovered();
-        const bg = if (state.dropdown_menu.is_open or is_hovered) Colors.lightGray else Colors.white;
+        const bg = if (state.dropdown_menu.is_open or is_hovered) Color.lightGray else Color.white;
 
         const menu_list_id = clay.ElementId.localIDI("dropdown_list", element_id.id);
         const is_list_hovered = if (state.dropdown_menu.is_open) clay.pointerOver(menu_list_id) else false;
@@ -579,9 +519,9 @@ pub const DropdownMenu = struct {
                     .padding = .all(4),
                     .child_gap = 2,
                 },
-                .background_color = Colors.white.toClay(),
+                .background_color = Color.white.toClay(),
                 .corner_radius = .all(4),
-                .border = .{ .width = .outside(1), .color = Colors.gray.toClay() },
+                .border = .{ .width = .outside(1), .color = Color.gray.toClay() },
                 .floating = .{
                     .attach_to = .to_element_with_id,
                     .parentId = element_id.id, // Attach to the button we just drew
@@ -642,17 +582,17 @@ pub const MenuItem = struct {
                 .child_alignment = .{ .y = .center },
                 .direction = .left_to_right,
             },
-            .background_color = if (is_hovered) Colors.blue.toClay() else Colors.white.toClay(),
+            .background_color = if (is_hovered) Color.blue.toClay() else Color.white.toClay(),
             .corner_radius = .all(4),
         });
 
-        const text_col = if (is_hovered) Colors.white else Colors.black;
+        const text_col = if (is_hovered) Color.white else Color.black;
 
         _ = Label.start(.{ .text = params.label, .font_size = 14, .color = text_col });
 
         if (params.shortcut) |s| {
             _ = Spacer.start(.{ .sizing = .grow });
-            _ = Label.start(.{ .text = s, .font_size = 14, .color = if (is_hovered) Colors.lightGray else Colors.gray });
+            _ = Label.start(.{ .text = s, .font_size = 14, .color = if (is_hovered) Color.lightGray else Color.gray });
         }
 
         clay.closeElement();
@@ -744,7 +684,7 @@ pub const Combobox = struct {
                     .direction = .left_to_right,
                     .child_alignment = .center,
                 },
-                .background_color = Colors.white.toClay(),
+                .background_color = Color.white.toClay(),
                 // .corner_radius = .all(4),
                 .border = .{ .width = .outside(2) },
             });
@@ -761,7 +701,7 @@ pub const Combobox = struct {
                     .{ .x = 0.5, .y = 0.25 },
                 },
                 .rotation = if (state.combobox.is_open) 0 else 180,
-                .color = Colors.darkGray,
+                .color = Color.darkGray,
             });
 
             clay.closeElement();
@@ -791,9 +731,9 @@ pub const Combobox = struct {
                     .padding = .all(4),
                     .child_gap = 2,
                 },
-                .background_color = Colors.white.toClay(),
+                .background_color = Color.white.toClay(),
                 .corner_radius = .all(4),
-                .border = .{ .width = .outside(1), .color = Colors.gray.toClay() },
+                .border = .{ .width = .outside(1), .color = Color.gray.toClay() },
                 .floating = .{
                     .attach_to = .to_element_with_id,
                     .parentId = element_id.id, // Attach to the button we just drew
@@ -846,11 +786,11 @@ const ComboboxItem = struct {
                 .child_alignment = .{ .y = .center },
                 .direction = .left_to_right,
             },
-            .background_color = if (is_hovered) Colors.blue.toClay() else Colors.white.toClay(),
+            .background_color = if (is_hovered) Color.blue.toClay() else Color.white.toClay(),
             .corner_radius = .all(4),
         });
 
-        const text_col = if (is_hovered) Colors.white else Colors.black;
+        const text_col = if (is_hovered) Color.white else Color.black;
 
         _ = Label.start(.{ .text = params.label, .font_size = 14, .color = text_col });
 
@@ -880,7 +820,7 @@ pub const Shape = struct {
         sizing: clay.Sizing = .{ .w = .grow, .h = .grow },
         vertices: []const clay.Vector2,
         rotation: f32 = 0,
-        color: Color = Colors.black,
+        color: Color = Color.black,
     };
     const Self = @This();
 
@@ -926,7 +866,7 @@ pub const Separator = struct {
     pub const Params = struct {
         direction: Direction = .horizontal,
         thickness: f32 = 1.0,
-        color: Color = Colors.black,
+        color: Color = Color.black,
     };
     const Self = @This();
 

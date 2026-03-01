@@ -2,7 +2,7 @@ const std = @import("std");
 
 const c = @import("root.zig").c;
 
-pub const Color = @import("ui/core/widgets.zig").Color;
+pub const Color = @import("ui/core/color.zig").Color;
 const Mirroring = @import("rom.zig").Mirroring;
 const PPU = @import("ppu.zig").PPU;
 
