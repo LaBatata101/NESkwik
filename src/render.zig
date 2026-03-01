@@ -76,6 +76,18 @@ pub const Frame = struct {
     }
 };
 
+pub const PatternTableFrame = struct {
+    data: [128 * 128 * 4]u8 = [_]u8{0} ** (128 * 128 * 4),
+
+    pub fn set_pixel(self: *@This(), x: usize, y: usize, rgb: Color) void {
+        const base = y * 4 * 128 + x * 4;
+        self.data[base] = rgb.r;
+        self.data[base + 1] = rgb.g;
+        self.data[base + 2] = rgb.b;
+        self.data[base + 3] = 255;
+    }
+};
+
 pub const FPSManager = struct {
     target_ticks_per_frame: u32,
     last_frame_end: u64,

@@ -4,6 +4,7 @@ const Mirroring = @import("rom.zig").Mirroring;
 const render = @import("render.zig");
 const Rom = @import("rom.zig").Rom;
 const Frame = render.Frame;
+const PatternTableFrame = render.PatternTableFrame;
 
 /// Aprox. amount of CPU cycles equivalent to 1 second.
 const CPU_ONE_SEC_CYLES: u64 = 1_790_000;
@@ -1279,8 +1280,8 @@ pub const PPU = struct {
         return status;
     }
 
-    pub fn get_pattern_table(self: *Self, i: u8, palette: u8) Frame {
-        var frame = Frame.init();
+    pub fn get_pattern_table(self: *Self, i: u8, palette: u8) PatternTableFrame {
+        var frame = PatternTableFrame{};
         for (0..16) |tile_y| {
             for (0..16) |tile_x| {
                 const offset: u16 = @intCast(tile_y * 256 + tile_x * 16);
@@ -1289,7 +1290,7 @@ pub const PPU = struct {
                     var tile_msb = self.ppu_read(@intCast(@as(u16, i) * 0x1000 + offset + row + 0x0008));
 
                     for (0..8) |col| {
-                        const pixel = (tile_lsb & 1) + (tile_msb & 1);
+                        const pixel = (tile_lsb & 1) | ((tile_msb & 1) << 1);
                         tile_lsb >>= 1;
                         tile_msb >>= 1;
 
