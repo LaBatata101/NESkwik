@@ -1,3 +1,4 @@
+const c = @import("../../root.zig").c;
 const clay = @import("clay.zig");
 
 pub const Color = struct {
@@ -25,6 +26,15 @@ pub const Color = struct {
             @floatFromInt(self.g),
             @floatFromInt(self.b),
             @floatFromInt(self.a),
+        };
+    }
+
+    pub fn toSDL(self: Color) c.SDL_FColor {
+        return .{
+            .r = @as(f32, @floatFromInt(self.r)) / 255.0,
+            .g = @as(f32, @floatFromInt(self.g)) / 255.0,
+            .b = @as(f32, @floatFromInt(self.b)) / 255.0,
+            .a = @as(f32, @floatFromInt(self.a)) / 255.0,
         };
     }
 

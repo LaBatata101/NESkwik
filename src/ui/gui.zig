@@ -111,6 +111,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 .pixels = ui_state.system.frame_buffer(),
                 .w = NES_WIDTH,
                 .h = NES_HEIGHT,
+                .aspect_ratio = .@"4_3",
             });
         }
     }

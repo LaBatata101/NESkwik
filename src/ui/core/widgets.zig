@@ -4,6 +4,7 @@ const clay = @import("clay.zig");
 const Color = @import("color.zig").Color;
 pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
+const utils = @import("utils.zig");
 
 pub const CustomData = union(enum) {
     canvas: Canvas,
@@ -400,6 +401,7 @@ pub const Canvas = struct {
         h: u32 = 0,
         fg_color: ?Color = null,
         bg_color: ?Color = null,
+        aspect_ratio: ?utils.AspectRatio = null,
     };
     const Self = @This();
 

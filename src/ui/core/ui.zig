@@ -8,6 +8,7 @@ const sdlError = @import("../../utils/sdl.zig").sdlError;
 const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
 const shaders = @import("shaders.zig");
+const utils = @import("utils.zig");
 
 const PIXELOID_FONT = @embedFile("pixeloid_font");
 
@@ -1602,27 +1603,41 @@ pub const UI = struct {
                 _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, tb);
 
-                const dest = c.SDL_FRect{
+                const dest: c.SDL_FRect = if (canvas_.params.aspect_ratio) |aspect_ratio| blk: {
+                    const viewport = utils.calculateViewport(
+                        cmd.bounding_box.x,
+                        cmd.bounding_box.y,
+                        cmd.bounding_box.width,
+                        cmd.bounding_box.height,
+                        aspect_ratio,
+                    );
+                    break :blk .{
+                        .x = viewport.x,
+                        .y = viewport.y,
+                        .w = viewport.w,
+                        .h = viewport.h,
+                    };
+                } else .{
                     .x = cmd.bounding_box.x,
                     .y = cmd.bounding_box.y,
                     .w = cmd.bounding_box.width,
                     .h = cmd.bounding_box.height,
                 };
 
-                if (canvas_.params.bg_color) |bg_color| {
-                    const bg_fcolor = c.SDL_FColor{
-                        .r = @as(f32, @floatFromInt(bg_color.r)) / 255.0,
-                        .g = @as(f32, @floatFromInt(bg_color.g)) / 255.0,
-                        .b = @as(f32, @floatFromInt(bg_color.b)) / 255.0,
-                        .a = @as(f32, @floatFromInt(bg_color.a)) / 255.0,
-                    };
-                    self.batcher.setTexture(null);
-                    self.batcher.pushRect(dest, bg_fcolor, null);
-                }
+                const bg_color_sdl: c.SDL_FColor = if (canvas_.params.bg_color) |bg|
+                    bg.toSDL()
+                else
+                    .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+                self.batcher.setTexture(null);
+                self.batcher.pushRect(.{
+                    .x = cmd.bounding_box.x,
+                    .y = cmd.bounding_box.y,
+                    .w = cmd.bounding_box.width,
+                    .h = cmd.bounding_box.height,
+                }, bg_color_sdl, null);
 
                 const color: c.SDL_FColor = if (canvas_.params.fg_color) |fg_color| blk: {
-                    const color = fg_color.toClay();
-                    break :blk .{ .r = color[0] / 255.0, .g = color[1] / 255.0, .b = color[2] / 255.0, .a = color[3] / 255.0 };
+                    break :blk fg_color.toSDL();
                 } else .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
 
                 self.batcher.setTexture(texture);
@@ -1644,13 +1659,7 @@ pub const UI = struct {
                 const cos_theta = std.math.cos(rads);
                 const sin_theta = std.math.sin(rads);
 
-                const clay_color = shape_data.color.toClay();
-                const color = c.SDL_FColor{
-                    .r = clay_color[0] / 255.0,
-                    .g = clay_color[1] / 255.0,
-                    .b = clay_color[2] / 255.0,
-                    .a = clay_color[3] / 255.0,
-                };
+                const color = shape_data.color.toSDL();
 
                 self.batcher.setTexture(null);
 
