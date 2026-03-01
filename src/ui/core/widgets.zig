@@ -10,6 +10,10 @@ pub const Color = struct {
     b: u8,
     a: u8,
 
+    pub fn rgb(r: u8, g: u8, b: u8) Color {
+        return .{ .r = r, .g = g, .b = b, .a = 255 };
+    }
+
     pub fn toClay(self: Color) clay.Color {
         return .{
             @floatFromInt(self.r),
