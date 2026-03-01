@@ -36,7 +36,7 @@ pub const Frame = struct {
     }
 
     pub fn set_pixel(self: *Self, x: usize, y: usize, rgb: Color) void {
-        const base = y * 3 * WIDTH + x * 3;
+        const base = y * 4 * WIDTH + x * 4;
         if (base + 2 < self.data.len) {
             self.data[base] = rgb.r;
             self.data[base + 1] = rgb.g;
