@@ -432,16 +432,12 @@ pub const Spacer = struct {
 
     pub const Params = struct {
         sizing: clay.Sizing,
-        direction: clay.LayoutDirection = .left_to_right,
     };
     const Self = @This();
 
     pub fn start(params: Params) @This() {
         _ = clay.openElement();
-        clay.configureOpenElement(.{ .layout = .{
-            .sizing = params.sizing,
-            .direction = params.direction,
-        } });
+        clay.configureOpenElement(.{ .layout = .{ .sizing = params.sizing } });
         clay.closeElement();
         return .{ .params = params };
     }

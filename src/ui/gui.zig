@@ -109,7 +109,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
 
 fn drawHomeScreen(ui: *UI, ui_state: *UIState) void {
     _ = ui_state; // autofix
-    _ = ui.spacer(.{ .direction = .top_to_bottom, .sizing = .grow });
+    _ = ui.spacer(.{ .sizing = .grow });
 }
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
