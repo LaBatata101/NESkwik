@@ -880,6 +880,18 @@ pub const Shape = struct {
     };
     const Self = @This();
 
+    pub const TRIANGLE = [_]clay.Vector2{
+        .{ .x = 0.0, .y = 0.75 },
+        .{ .x = 1.0, .y = 0.75 },
+        .{ .x = 0.5, .y = 0.25 },
+    };
+    pub const SQUARE = [_]clay.Vector2{
+        .{ .x = 0.0, .y = 0.0 },
+        .{ .x = 1.0, .y = 0.0 },
+        .{ .x = 1.0, .y = 1.0 },
+        .{ .x = 0.0, .y = 1.0 },
+    };
+
     pub fn start(ctx: *UIContext, params: Params) Self {
         _ = clay.openElement();
 
