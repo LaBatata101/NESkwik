@@ -615,12 +615,13 @@ pub const MenuItem = struct {
     }
 };
 
-pub const Margin = struct {
+pub const Padding = struct {
     params: Params,
 
     pub const Params = struct {
-        margin: clay.Padding = .{},
+        pad: clay.Padding = .{},
         sizing: clay.Sizing = .{ .h = .fit, .w = .grow },
+        direction: clay.LayoutDirection = .top_to_bottom,
     };
     const Self = @This();
 
@@ -628,7 +629,8 @@ pub const Margin = struct {
         _ = clay.openElement();
         clay.configureOpenElement(.{
             .layout = .{
-                .padding = params.margin,
+                .direction = params.direction,
+                .padding = params.pad,
                 .sizing = params.sizing,
             },
         });

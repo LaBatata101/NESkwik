@@ -1872,8 +1872,8 @@ pub const UI = struct {
         return self.ctx.allocWidget(widgets.TextField, .start(self.ctx, params));
     }
 
-    pub fn margin(self: *Self, params: widgets.Margin.Params) *widgets.Margin {
-        return self.ctx.allocWidget(widgets.Margin, .start(params));
+    pub fn padding(self: *Self, params: widgets.Padding.Params) *widgets.Padding {
+        return self.ctx.allocWidget(widgets.Padding, .start(params));
     }
 
     pub fn combobox(self: *Self, params: widgets.Combobox.Params) *widgets.Combobox {
