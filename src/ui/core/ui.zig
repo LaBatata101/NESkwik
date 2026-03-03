@@ -810,6 +810,14 @@ pub const Renderer = struct {
                 .num_levels = 1,
                 .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
             })),
+            .vertex_buffer = c.SDL_CreateGPUBuffer(
+                device,
+                &.{ .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX, .size = 4 },
+            ),
+            .index_buffer = c.SDL_CreateGPUBuffer(
+                device,
+                &.{ .usage = c.SDL_GPU_BUFFERUSAGE_INDEX, .size = 4 },
+            ),
         };
 
         const cmd_buf = c.SDL_AcquireGPUCommandBuffer(device);
