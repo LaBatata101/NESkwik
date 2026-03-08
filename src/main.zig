@@ -131,11 +131,10 @@ pub fn main() !void {
             if (step_mode and ui.isKeyPressed(.F10)) ui_state.system.tick();
             if (step_mode and ui.isKeyPressed(.F11)) ui_state.system.run_frame();
             if (ui.isKeyPressed(.F)) {
-                const flags = c.SDL_GetWindowFlags(ui.window);
-                if (flags & c.SDL_WINDOW_FULLSCREEN != 0) {
-                    sdlError(c.SDL_SetWindowFullscreen(ui.window, false));
+                if (ui.isWindowFullscreen()) {
+                    ui.setWindowFullscreen(false);
                 } else {
-                    sdlError(c.SDL_SetWindowFullscreen(ui.window, true));
+                    ui.setWindowFullscreen(true);
                 }
             }
             if (ui.mouseMotion()) {
@@ -148,8 +147,8 @@ pub fn main() !void {
 
             if (!step_mode) ui_state.system.run_frame();
 
-            if (c.SDL_GetWindowFlags(ui.window) & c.SDL_WINDOW_FULLSCREEN != 0) {
-                if (!is_cursor_hidden and ui.ctx.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
+            if (ui.isWindowFullscreen()) {
+                if (!is_cursor_hidden and ui.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
                     sdlError(c.SDL_HideCursor());
                     is_cursor_hidden = true;
                 }

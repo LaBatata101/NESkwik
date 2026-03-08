@@ -70,19 +70,19 @@ const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
 pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
     const root = ui.column(.{});
     {
-        if (c.SDL_GetWindowFlags(ui.window) & c.SDL_WINDOW_FULLSCREEN == 0) {
+        if (!ui.isWindowFullscreen()) {
             const menubar = ui.menuBar(.{});
             {
                 const sys_menu = ui.dropdownMenu(.{ .label = "System" });
-                if (ui.menuItem(.{ .label = "Open" }).clicked(ui.ctx)) {
-                    const default_location = std.process.getCwdAlloc(ui.ctx.frameAlloc()) catch
+                if (ui.menuItem(.{ .label = "Open" }).clicked(ui.main_window.ctx)) {
+                    const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
                         @panic("Failed to allocate");
-                    defer ui.ctx.frameAlloc().free(default_location);
+                    defer ui.main_window.ctx.frameAlloc().free(default_location);
 
                     c.SDL_ShowOpenFileDialog(
                         dialog_callback,
                         clay.anytypeToAnyopaquePtr(ui_state),
-                        ui.window,
+                        ui.main_window.ptr,
                         &dialog_filter_list,
                         dialog_filter_list.len,
                         default_location.ptr,
@@ -93,7 +93,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 sys_menu.end();
 
                 const emulation_menu = ui.dropdownMenu(.{ .label = "Emulation" });
-                if (ui.menuItem(.{ .label = "Debug" }).clicked(ui.ctx) and ui_state.emulation_running) {
+                if (ui.menuItem(.{ .label = "Debug" }).clicked(ui.main_window.ctx) and ui_state.emulation_running) {
                     ui_state.render_debug_ui = !ui_state.render_debug_ui;
                 }
                 emulation_menu.end();

@@ -134,11 +134,11 @@ fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
             const code = ui_state.rom.prg_rom[(system.cpu.pc + op_size) % ui_state.rom.prg_rom.len];
             const opcode = opcodes.OP_CODES[code];
 
-            const buf = ui.ctx.frameAlloc().alloc(u8, 23) catch @panic("alloc");
-            const addr_buf = ui.ctx.frameAlloc().alloc(u8, 27) catch @panic("alloc");
+            const buf = ui.current_window.ctx.frameAlloc().alloc(u8, 23) catch @panic("alloc");
+            const addr_buf = ui.current_window.ctx.frameAlloc().alloc(u8, 27) catch @panic("alloc");
 
             const addr_str = std.fmt.allocPrint(
-                ui.ctx.frameAlloc(),
+                ui.current_window.ctx.frameAlloc(),
                 "${X:04}",
                 .{system.cpu.pc + op_size},
             ) catch @panic("fmt");
@@ -234,31 +234,31 @@ fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
             drawRegisterBadge(
                 ui,
                 "A",
-                std.fmt.allocPrint(ui.ctx.frameAlloc(), "${X:02}", .{cpu.register_a}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.register_a}) catch @panic("fmt"),
                 theme.accent_blue,
             );
             drawRegisterBadge(
                 ui,
                 "X",
-                std.fmt.allocPrint(ui.ctx.frameAlloc(), "${X:02}", .{cpu.register_x}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.register_x}) catch @panic("fmt"),
                 theme.accent_purple,
             );
             drawRegisterBadge(
                 ui,
                 "Y",
-                std.fmt.allocPrint(ui.ctx.frameAlloc(), "${X:02}", .{cpu.register_y}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.register_y}) catch @panic("fmt"),
                 theme.accent_green,
             );
             drawRegisterBadge(
                 ui,
                 "PC",
-                std.fmt.allocPrint(ui.ctx.frameAlloc(), "${X:04}", .{cpu.pc}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:04}", .{cpu.pc}) catch @panic("fmt"),
                 theme.accent_amber,
             );
             drawRegisterBadge(
                 ui,
                 "SP",
-                std.fmt.allocPrint(ui.ctx.frameAlloc(), "${X:02}", .{cpu.sp}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.sp}) catch @panic("fmt"),
                 theme.accent_red,
             );
         }
@@ -346,19 +346,19 @@ fn drawPPUPanel(ui: *UI, ui_state: *UIState) void {
     });
     {
         drawStatBadge(ui, "SCANLINE", std.fmt.allocPrint(
-            ui.ctx.frameAlloc(),
+            ui.current_window.ctx.frameAlloc(),
             "{}",
             .{ppu.scanline},
         ) catch @panic("fmt"), theme.accent_purple);
 
         drawStatBadge(ui, "CYCLE", std.fmt.allocPrint(
-            ui.ctx.frameAlloc(),
+            ui.current_window.ctx.frameAlloc(),
             "{}",
             .{ppu.cycle},
         ) catch @panic("fmt"), theme.accent_blue);
 
         drawStatBadge(ui, "GLOBAL", std.fmt.allocPrint(
-            ui.ctx.frameAlloc(),
+            ui.current_window.ctx.frameAlloc(),
             "{}",
             .{ppu.global_cycle},
         ) catch @panic("fmt"), theme.accent_green);
@@ -416,7 +416,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
             .child_alignment = .{ .y = .top },
         });
         {
-            const pt1 = ui.ctx.frameAlloc().create(PatternTableFrame) catch @panic("alloc");
+            const pt1 = ui.current_window.ctx.frameAlloc().create(PatternTableFrame) catch @panic("alloc");
             pt1.* = system.ppu.get_pattern_table(0, 0);
 
             const pt1_wrapper = ui.column(.{
@@ -442,7 +442,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
             }
             pt1_wrapper.end();
 
-            const pt2 = ui.ctx.frameAlloc().create(PatternTableFrame) catch @panic("alloc");
+            const pt2 = ui.current_window.ctx.frameAlloc().create(PatternTableFrame) catch @panic("alloc");
             pt2.* = system.ppu.get_pattern_table(1, 0);
 
             const pt2_wrapper = ui.column(.{
@@ -538,7 +538,7 @@ fn drawPaletteGroup(
                     // Sub-palette index label
                     _ = ui.label(.{
                         .text = std.fmt.allocPrint(
-                            ui.ctx.frameAlloc(),
+                            ui.current_window.ctx.frameAlloc(),
                             "{d}",
                             .{palette_num},
                         ) catch @panic("fmt"),

@@ -132,6 +132,38 @@ pub const UIContext = struct {
         allocator.destroy(self);
     }
 
+    pub fn update(self: *Self) void {
+        self.input.update(self.dt);
+
+        const scroll_smoothing: f32 = 5.0; // Higher = faster decay (try 5.0-15.0)
+        const scroll_threshold: f32 = 0.1; // Stop animating below this velocity
+        // Apply velocity to scroll deltas for smooth animation
+        if (@abs(self.frame.scroll.velocity_x) > scroll_threshold or @abs(self.frame.scroll.velocity_y) > scroll_threshold) {
+            self.frame.scroll.delta_x = self.frame.scroll.velocity_x * self.dt * 60.0;
+            self.frame.scroll.delta_y = self.frame.scroll.velocity_y * self.dt * 60.0;
+
+            const decay = @exp(-scroll_smoothing * self.dt);
+            self.frame.scroll.velocity_x *= decay;
+            self.frame.scroll.velocity_y *= decay;
+        } else {
+            // Stop scrolling when velocity is negligible
+            self.frame.scroll.velocity_x = 0;
+            self.frame.scroll.velocity_y = 0;
+            self.frame.scroll.delta_x = 0;
+            self.frame.scroll.delta_y = 0;
+        }
+
+        clay.setCurrentContext(self.clay_ctx);
+        clay.setPointerState(
+            .{ .x = self.mouse_x, .y = self.mouse_y },
+            self.frame.mouse_down,
+        );
+        clay.updateScrollContainers(false, .{
+            .x = self.frame.scroll.delta_x,
+            .y = self.frame.scroll.delta_y,
+        }, self.dt);
+    }
+
     pub fn reset(self: *Self) void {
         _ = self.frame_arena.reset(.retain_capacity);
 
@@ -1148,7 +1180,7 @@ pub const Renderer = struct {
         self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 3;
     }
 
-    fn createGPUBuffers(self: *Self, vertex_count: u32, index_count: u32) void {
+    fn resizeGPUBuffers(self: *Self, vertex_count: u32, index_count: u32) void {
         const vertex_size_needed = vertex_count * @sizeOf(c.SDL_Vertex);
         const index_size_needed = index_count * @sizeOf(u32);
 
@@ -1172,36 +1204,65 @@ pub const Renderer = struct {
     }
 };
 
-pub const UI = struct {
-    allocator: std.mem.Allocator,
-    window: *c.SDL_Window,
-    gpu_device: ?*c.SDL_GPUDevice,
-    font: *c.TTF_Font,
+pub const Window = struct {
     ctx: *UIContext,
-
-    win_title: []const u8,
-    last_title_update: u64 = 0,
-
+    ptr: ?*c.SDL_Window,
+    renderer: *Renderer,
     width: i32,
     height: i32,
+    title: []const u8,
 
-    batcher: *Renderer,
+    fn deinit(self: *@This(), alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
+        c.SDL_DestroyWindow(self.ptr);
+        self.ctx.deinit(alloc, device);
+        self.renderer.deinit();
+        alloc.destroy(self);
+    }
+
+    fn update(self: *Window) void {
+        self.ctx.update();
+        clay.setLayoutDimensions(.{ .w = @floatFromInt(self.width), .h = @floatFromInt(self.height) });
+    }
+
+    pub fn id(self: *const Window) c.SDL_WindowID {
+        return c.SDL_GetWindowID(self.ptr);
+    }
+};
+
+const SecondaryWindow = struct {
+    inner: *Window,
+    /// Opaque pointer forwarded to draw_fn as user data.
+    user_data: ?*anyopaque = null,
+    draw_fn: ?*const fn (*UI, user_data: ?*anyopaque) void = null,
+
+    fn deinit(self: *const @This(), alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
+        self.inner.deinit(alloc, device);
+    }
+};
+
+pub const UI = struct {
+    allocator: std.mem.Allocator,
+    /// The main windows created by the program.
+    main_window: *Window,
+    /// Secondary windows created by the program, e.g. dialogs.
+    secondary_windows: std.ArrayList(SecondaryWindow),
+    /// The current window in focus.
+    current_window: *Window,
+    gpu_device: ?*c.SDL_GPUDevice,
+    font: *c.TTF_Font,
+
+    last_title_update: u64 = 0,
+
     quit: bool = false,
     fps_manager: FPSManager,
 
     const Self = @This();
+    const CLAY_ERROR_HANDLER = clay.ErrorHandler{ .error_handler_function = handleClayError };
 
     pub fn init(allocator: std.mem.Allocator, title: []const u8, width: i32, height: i32) !*Self {
         if (c.glslang_initialize_process() != 1) {
             return error.GLSlangFailedToInitialize;
         }
-
-        const window = c.SDL_CreateWindow(
-            title.ptr,
-            width,
-            height,
-            c.SDL_WINDOW_RESIZABLE,
-        ) orelse return error.WindowCreationFailed;
 
         const vk_version = vulkan.detect_vulkan_version();
         std.log.debug("Detected Vulkan version: {}.{}.{}", .{
@@ -1218,6 +1279,9 @@ pub const UI = struct {
                 c.VK_VERSION_PATCH(vk_version),
             ),
         };
+
+        sdlError(c.SDL_SetHint(c.SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0"));
+
         const props = c.SDL_CreateProperties();
         defer c.SDL_DestroyProperties(props);
 
@@ -1241,9 +1305,11 @@ pub const UI = struct {
             return error.FontLoadFailed;
         };
 
-        const error_handler = clay.ErrorHandler{ .error_handler_function = handleClayError };
-        const dimensions = clay.Dimensions{ .w = @floatFromInt(width), .h = @floatFromInt(height) };
-        const ui_ctx = try UIContext.init(allocator, dimensions, error_handler);
+        const ui_ctx = try UIContext.init(
+            allocator,
+            .{ .w = @floatFromInt(width), .h = @floatFromInt(height) },
+            CLAY_ERROR_HANDLER,
+        );
 
         clay.setMeasureTextFunction(*c.TTF_Font, font, measureText);
 
@@ -1252,32 +1318,46 @@ pub const UI = struct {
             allocator.free(value);
         } else |_| {}
 
-        const batcher = try Renderer.init(allocator, gpu_device, window, vk_version);
+        const main_window = try allocator.create(Window);
+        main_window.* = .{
+            .ptr = sdlError(c.SDL_CreateWindow(
+                title.ptr,
+                width,
+                height,
+                c.SDL_WINDOW_RESIZABLE,
+            )),
+            .height = height,
+            .width = width,
+            .title = title,
+            .ctx = ui_ctx,
+            .renderer = try Renderer.init(allocator, gpu_device, main_window.ptr, vk_version),
+        };
+
         const gui = try allocator.create(UI);
         gui.* = .{
             .allocator = allocator,
-            .window = window,
+            .main_window = main_window,
+            .secondary_windows = .empty,
+            .current_window = main_window,
             .gpu_device = gpu_device,
             .font = font,
-            .width = width,
-            .height = height,
-            .batcher = batcher,
-            .ctx = ui_ctx,
             .fps_manager = FPSManager.init(),
-            .win_title = title,
         };
 
         return gui;
     }
 
     pub fn deinit(self: *Self) void {
-        self.batcher.deinit();
-        self.ctx.deinit(self.allocator, self.gpu_device);
+        self.main_window.deinit(self.allocator, self.gpu_device);
+
+        for (self.secondary_windows.items) |window| {
+            window.deinit(self.allocator, self.gpu_device);
+        }
+        self.secondary_windows.deinit(self.allocator);
 
         c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);
         c.TTF_CloseFont(self.font);
-        c.SDL_DestroyWindow(self.window);
 
         self.allocator.destroy(self);
     }
@@ -1287,22 +1367,77 @@ pub const UI = struct {
     }
 
     pub fn shouldClose(self: *Self) bool {
-        self.ctx.dt = @as(f32, @floatFromInt(self.fps_manager.delay())) / c.SDL_MS_PER_SECOND;
+        self.current_window.ctx.dt = @as(f32, @floatFromInt(self.fps_manager.delay())) / c.SDL_MS_PER_SECOND;
         return self.quit;
     }
 
-    pub fn beginFrame(self: *Self) void {
-        self.ctx.reset();
+    pub fn hasPassedSinceMS(self: *const Self, start: u64, ms: u64) bool {
+        return self.current_window.ctx.hasPassedSinceMS(start, ms);
+    }
 
-        if (self.ctx.hasPassedSinceMS(self.last_title_update, 1000)) {
+    pub fn isWindowFullscreen(self: *const Self) bool {
+        return c.SDL_GetWindowFlags(self.current_window.ptr) & c.SDL_WINDOW_FULLSCREEN != 0;
+    }
+
+    pub fn setWindowFullscreen(self: *const Self, value: bool) void {
+        sdlError(c.SDL_SetWindowFullscreen(self.current_window.ptr, value));
+    }
+
+    pub fn createWindow(
+        self: *Self,
+        title: []const u8,
+        width: i32,
+        height: i32,
+        params: struct {
+            draw_fn_data: ?*anyopaque = null,
+            draw_fn: ?*const fn (*UI, user_data: ?*anyopaque) void = null,
+        },
+    ) void {
+        const previous_clay_ctx = clay.getCurrentContext();
+
+        const window = self.allocator.create(Window) catch @panic("OOM");
+        window.* = .{
+            .ptr = sdlError(c.SDL_CreateWindow(title.ptr, width, height, c.SDL_WINDOW_RESIZABLE)),
+            .width = width,
+            .height = height,
+            .title = title,
+            .ctx = UIContext.init(
+                self.allocator,
+                .{ .w = @floatFromInt(width), .h = @floatFromInt(height) },
+                CLAY_ERROR_HANDLER,
+            ) catch @panic("OOM"),
+            .renderer = Renderer.init(self.allocator, self.gpu_device, window.ptr, vulkan.detect_vulkan_version()) catch @panic("OOM"),
+        };
+
+        sdlError(c.SDL_SetWindowParent(window.ptr, self.main_window.ptr));
+        sdlError(c.SDL_SetWindowModal(window.ptr, true));
+
+        clay.setMeasureTextFunction(*c.TTF_Font, self.font, measureText);
+
+        self.secondary_windows.append(self.allocator, .{
+            .inner = window,
+            .user_data = params.draw_fn_data,
+            .draw_fn = params.draw_fn,
+        }) catch @panic("OOM");
+
+        clay.setCurrentContext(previous_clay_ctx);
+    }
+
+    pub fn beginFrame(self: *Self) void {
+        self.main_window.ctx.reset();
+        for (self.secondary_windows.items) |window| {
+            window.inner.ctx.reset();
+        }
+
+        if (self.main_window.ctx.hasPassedSinceMS(self.last_title_update, 1000)) {
             self.last_title_update = c.SDL_GetTicks();
             const title = std.fmt.allocPrintSentinel(
-                self.ctx.frameAlloc(),
+                self.main_window.ctx.frameAlloc(),
                 "{s} - FPS: {}",
-                .{ self.win_title, self.fps_manager.getFPS() },
+                .{ self.main_window.title, self.fps_manager.getFPS() },
                 0,
             ) catch "0";
-            sdlError(c.SDL_SetWindowTitle(self.window, title.ptr));
+            sdlError(c.SDL_SetWindowTitle(self.main_window.ptr, title.ptr));
         }
 
         var event: c.SDL_Event = undefined;
@@ -1310,120 +1445,139 @@ pub const UI = struct {
             self.handleEvent(&event);
         }
 
-        self.ctx.input.update(self.ctx.dt);
+        self.main_window.update();
 
-        const dimensions = clay.Dimensions{
-            .w = @floatFromInt(self.width),
-            .h = @floatFromInt(self.height),
-        };
-        clay.setLayoutDimensions(dimensions);
-
-        const pointer_pos = clay.Vector2{
-            .x = self.ctx.mouse_x,
-            .y = self.ctx.mouse_y,
-        };
-        clay.setPointerState(pointer_pos, self.ctx.frame.mouse_down);
-
-        const scroll_smoothing: f32 = 5.0; // Higher = faster decay (try 5.0-15.0)
-        const scroll_threshold: f32 = 0.1; // Stop animating below this velocity
-
-        // Apply velocity to scroll deltas for smooth animation
-        if (@abs(self.ctx.frame.scroll.velocity_x) > scroll_threshold or @abs(self.ctx.frame.scroll.velocity_y) > scroll_threshold) {
-            self.ctx.frame.scroll.delta_x = self.ctx.frame.scroll.velocity_x * self.ctx.dt * 60.0;
-            self.ctx.frame.scroll.delta_y = self.ctx.frame.scroll.velocity_y * self.ctx.dt * 60.0;
-
-            const decay = @exp(-scroll_smoothing * self.ctx.dt);
-            self.ctx.frame.scroll.velocity_x *= decay;
-            self.ctx.frame.scroll.velocity_y *= decay;
-        } else {
-            // Stop scrolling when velocity is negligible
-            self.ctx.frame.scroll.velocity_x = 0;
-            self.ctx.frame.scroll.velocity_y = 0;
-            self.ctx.frame.scroll.delta_x = 0;
-            self.ctx.frame.scroll.delta_y = 0;
-        }
-
-        const scroll_delta = clay.Vector2{
-            .x = self.ctx.frame.scroll.delta_x,
-            .y = self.ctx.frame.scroll.delta_y,
-        };
-
-        clay.updateScrollContainers(false, scroll_delta, self.ctx.dt);
-
-        clay.setCurrentContext(self.ctx.clay_ctx);
         clay.beginLayout();
     }
 
     pub fn endFrame(self: *Self) void {
         const render_commands = clay.endLayout();
-        self.renderCommands(render_commands);
+        self.renderCommands(self.main_window, render_commands);
+
+        // Render secondary windows
+        for (self.secondary_windows.items) |window| {
+            window.inner.update();
+
+            clay.beginLayout();
+
+            if (window.draw_fn) |draw_fn| {
+                draw_fn(self, window.user_data);
+            }
+
+            self.renderCommands(window.inner, clay.endLayout());
+        }
+
+        clay.setCurrentContext(self.main_window.ctx.clay_ctx);
     }
 
     pub fn isKeyPressed(self: *const Self, key: Key) bool {
-        return self.ctx.input.isKeyPressed(key, false);
+        return self.current_window.ctx.input.isKeyPressed(key, false);
     }
 
     pub fn getPressedKey(self: *const Self) ?Key {
-        return self.ctx.input.getPressedKey();
+        return self.current_window.ctx.input.getPressedKey();
     }
 
     pub fn getReleasedKey(self: *const Self) ?Key {
-        return self.ctx.input.getReleasedKey();
+        return self.current_window.ctx.input.getReleasedKey();
     }
 
     pub fn mouseMotion(self: *const Self) bool {
-        return self.ctx.mouseMotion();
+        return self.current_window.ctx.mouseMotion();
     }
 
     fn handleEvent(self: *Self, event: *c.SDL_Event) void {
         switch (event.type) {
-            c.SDL_EVENT_QUIT, c.SDL_EVENT_TERMINATING => self.quit = true,
-            c.SDL_EVENT_WINDOW_RESIZED => {
-                sdlError(c.SDL_GetWindowSize(self.window, &self.width, &self.height));
+            c.SDL_EVENT_QUIT, c.SDL_EVENT_TERMINATING => {
+                self.quit = true;
+                return;
             },
-            c.SDL_EVENT_MOUSE_MOTION => self.ctx.updateMousePos(event.motion),
+            c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                const focused_win = event.window.windowID;
+                if (focused_win == self.main_window.id()) {
+                    self.current_window = self.main_window;
+                } else {
+                    for (self.secondary_windows.items) |window| {
+                        if (window.inner.id() == focused_win) {
+                            self.current_window = window.inner;
+                        }
+                    }
+                }
+
+                return;
+            },
+            else => {},
+        }
+
+        // Only process the events of the focused window
+        if (event.window.windowID == self.current_window.id()) {
+            self.handleWindowEvent(event);
+        }
+    }
+
+    fn handleWindowEvent(self: *Self, event: *c.SDL_Event) void {
+        switch (event.type) {
+            c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                if (self.current_window.id() == self.main_window.id()) {
+                    self.quit = true;
+                } else {
+                    const window = self.secondary_windows.pop() orelse unreachable;
+                    sdlError(c.SDL_HideWindow(window.inner.ptr));
+                    window.deinit(self.allocator, self.gpu_device);
+
+                    self.current_window = self.main_window;
+                }
+            },
+            c.SDL_EVENT_WINDOW_RESIZED => {
+                sdlError(c.SDL_GetWindowSize(
+                    self.current_window.ptr,
+                    &self.current_window.width,
+                    &self.current_window.height,
+                ));
+            },
+            c.SDL_EVENT_MOUSE_MOTION => self.current_window.ctx.updateMousePos(event.motion),
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
-                    self.ctx.frame.mouse_pressed = true;
-                    self.ctx.frame.mouse_down = true;
+                    self.current_window.ctx.frame.mouse_pressed = true;
+                    self.current_window.ctx.frame.mouse_down = true;
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_UP => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
-                    self.ctx.frame.mouse_released = true;
-                    self.ctx.frame.mouse_down = false;
+                    self.current_window.ctx.frame.mouse_released = true;
+                    self.current_window.ctx.frame.mouse_down = false;
                 }
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
                 const scroll_multiplier = 2.0;
-                self.ctx.frame.scroll.velocity_x += event.wheel.x * scroll_multiplier;
-                self.ctx.frame.scroll.velocity_y += event.wheel.y * scroll_multiplier;
+                self.current_window.ctx.frame.scroll.velocity_x += event.wheel.x * scroll_multiplier;
+                self.current_window.ctx.frame.scroll.velocity_y += event.wheel.y * scroll_multiplier;
             },
-            c.SDL_EVENT_KEY_DOWN => self.ctx.input.addKeyEvent(.{ .event = .down, .scancode = event.key.scancode }),
-            c.SDL_EVENT_KEY_UP => self.ctx.input.addKeyEvent(.{ .event = .released, .scancode = event.key.scancode }),
+            c.SDL_EVENT_KEY_DOWN => self.current_window.ctx.input.addKeyEvent(.{ .event = .down, .scancode = event.key.scancode }),
+            c.SDL_EVENT_KEY_UP => self.current_window.ctx.input.addKeyEvent(.{ .event = .released, .scancode = event.key.scancode }),
             c.SDL_EVENT_TEXT_INPUT => {
                 const text: []const u8 = std.mem.span(event.text.text);
-                self.ctx.frame.text_input.appendSlice(self.ctx.frameAlloc(), text) catch
+                self.current_window.ctx.frame.text_input.appendSlice(self.current_window.ctx.frameAlloc(), text) catch
                     @panic("Fafiled to allocate memory!");
             },
             else => {},
         }
 
-        if (self.ctx.frame.focused_id != null) {
-            sdlError(c.SDL_StartTextInput(self.window));
+        if (self.current_window.ctx.frame.focused_id != null) {
+            sdlError(c.SDL_StartTextInput(self.current_window.ptr));
         } else {
-            sdlError(c.SDL_StopTextInput(self.window));
+            sdlError(c.SDL_StopTextInput(self.current_window.ptr));
         }
     }
 
-    fn renderCommands(self: *Self, commands: []clay.RenderCommand) void {
-        self.batcher.reset();
+    fn renderCommands(self: *Self, window: *Window, commands: []clay.RenderCommand) void {
+        window.renderer.reset();
 
         for (commands) |cmd| {
             switch (cmd.command_type) {
-                clay.RenderCommandType.rectangle => self.renderRectangle(&cmd),
-                clay.RenderCommandType.text => self.renderText(&cmd),
-                clay.RenderCommandType.border => self.renderBorder(&cmd),
+                clay.RenderCommandType.rectangle => self.renderRectangle(&cmd, window),
+                clay.RenderCommandType.text => self.renderText(&cmd, window),
+                clay.RenderCommandType.border => self.renderBorder(&cmd, window),
                 clay.RenderCommandType.scissor_start => {
                     const clip_rect = c.SDL_Rect{
                         .x = @intFromFloat(cmd.bounding_box.x),
@@ -1431,10 +1585,10 @@ pub const UI = struct {
                         .w = @intFromFloat(cmd.bounding_box.width),
                         .h = @intFromFloat(cmd.bounding_box.height),
                     };
-                    self.batcher.setClipRect(clip_rect);
+                    window.renderer.setClipRect(clip_rect);
                 },
-                clay.RenderCommandType.scissor_end => self.batcher.setClipRect(null),
-                clay.RenderCommandType.custom => self.renderCustom(&cmd),
+                clay.RenderCommandType.scissor_end => window.renderer.setClipRect(null),
+                clay.RenderCommandType.custom => self.renderCustom(&cmd, window),
                 else => {
                     std.log.warn("Render command not impl: {any}", .{cmd.command_type});
                 },
@@ -1446,18 +1600,18 @@ pub const UI = struct {
         var win_h: u32 = 0;
         sdlError(c.SDL_WaitAndAcquireGPUSwapchainTexture(
             cmd,
-            self.window,
+            window.ptr,
             &swapchain_tex,
             &win_w,
             &win_h,
         ));
         if (swapchain_tex == null) return;
 
-        const vertices_len: u32 = @intCast(self.batcher.vertices.items.len);
-        const indices_len: u32 = @intCast(self.batcher.indices.items.len);
+        const vertices_len: u32 = @intCast(window.renderer.vertices.items.len);
+        const indices_len: u32 = @intCast(window.renderer.indices.items.len);
         const vertices_size = vertices_len * @sizeOf(c.SDL_Vertex);
         const indices_size = indices_len * @sizeOf(u32);
-        self.batcher.createGPUBuffers(vertices_len, indices_len);
+        window.renderer.resizeGPUBuffers(vertices_len, indices_len);
 
         if (vertices_size > 0) {
             const total_size = vertices_size + indices_size;
@@ -1471,8 +1625,8 @@ pub const UI = struct {
                 transfer_buffer,
                 false,
             ))));
-            @memcpy(ptr[0..vertices_size], std.mem.sliceAsBytes(self.batcher.vertices.items));
-            @memcpy(ptr[vertices_size..total_size], std.mem.sliceAsBytes(self.batcher.indices.items));
+            @memcpy(ptr[0..vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
+            @memcpy(ptr[vertices_size..total_size], std.mem.sliceAsBytes(window.renderer.indices.items));
             c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buffer);
 
             const copy_pass = c.SDL_BeginGPUCopyPass(cmd);
@@ -1480,14 +1634,14 @@ pub const UI = struct {
             c.SDL_UploadToGPUBuffer(
                 copy_pass,
                 &.{ .transfer_buffer = transfer_buffer, .offset = 0 },
-                &.{ .buffer = self.batcher.vertex_buffer.?, .offset = 0, .size = vertices_size },
+                &.{ .buffer = window.renderer.vertex_buffer.?, .offset = 0, .size = vertices_size },
                 false,
             );
 
             c.SDL_UploadToGPUBuffer(
                 copy_pass,
                 &.{ .transfer_buffer = transfer_buffer, .offset = vertices_size },
-                &.{ .buffer = self.batcher.index_buffer.?, .offset = 0, .size = indices_size },
+                &.{ .buffer = window.renderer.index_buffer.?, .offset = 0, .size = indices_size },
                 false,
             );
             c.SDL_EndGPUCopyPass(copy_pass);
@@ -1502,35 +1656,35 @@ pub const UI = struct {
         };
 
         const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
-        c.SDL_BindGPUGraphicsPipeline(render_pass, self.batcher.pipeline);
+        c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
 
         const MVP = [16]f32{
-            2.0 / @as(f32, @floatFromInt(self.width)), 0,                                           0, 0,
-            0,                                         -2.0 / @as(f32, @floatFromInt(self.height)), 0, 0,
-            0,                                         0,                                           1, 0,
-            -1,                                        1,                                           0, 1,
+            2.0 / @as(f32, @floatFromInt(window.width)), 0,                                             0, 0,
+            0,                                           -2.0 / @as(f32, @floatFromInt(window.height)), 0, 0,
+            0,                                           0,                                             1, 0,
+            -1,                                          1,                                             0, 1,
         };
         c.SDL_PushGPUVertexUniformData(cmd, 0, &MVP, @sizeOf(@TypeOf(MVP)));
 
         c.SDL_BindGPUVertexBuffers(
             render_pass,
             0,
-            &.{ .buffer = self.batcher.vertex_buffer, .offset = 0 },
+            &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 },
             1,
         );
         c.SDL_BindGPUIndexBuffer(
             render_pass,
-            &.{ .buffer = self.batcher.index_buffer, .offset = 0 },
+            &.{ .buffer = window.renderer.index_buffer, .offset = 0 },
             c.SDL_GPU_INDEXELEMENTSIZE_32BIT,
         );
 
-        for (self.batcher.draw_calls.items) |call| {
+        for (window.renderer.draw_calls.items) |call| {
             if (call.index_count == 0) continue;
 
             c.SDL_BindGPUFragmentSamplers(
                 render_pass,
                 0,
-                &.{ .texture = call.texture, .sampler = self.batcher.sampler },
+                &.{ .texture = call.texture, .sampler = window.renderer.sampler },
                 1,
             );
 
@@ -1547,14 +1701,14 @@ pub const UI = struct {
         sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
     }
 
-    fn renderCustom(self: *Self, cmd: *const clay.RenderCommand) void {
+    fn renderCustom(self: *Self, cmd: *const clay.RenderCommand, window: *Window) void {
         const data = clay.anyopaquePtrToType(*widgets.CustomData, cmd.render_data.custom.custom_data.?);
         switch (data.*) {
             .canvas => |canvas_| {
                 var texture: ?*c.SDL_GPUTexture = undefined;
                 var should_create = true;
 
-                if (self.ctx.canvas_cache.getPtr(cmd.id)) |item| {
+                if (window.ctx.canvas_cache.getPtr(cmd.id)) |item| {
                     if (item.width != canvas_.params.w or item.height != canvas_.params.h) {
                         c.SDL_ReleaseGPUTexture(self.gpu_device, item.texture);
                     } else {
@@ -1574,7 +1728,7 @@ pub const UI = struct {
                         .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
                     }));
 
-                    self.ctx.canvas_cache.put(cmd.id, .{
+                    window.ctx.canvas_cache.put(cmd.id, .{
                         .texture = texture,
                         .width = canvas_.params.w,
                         .height = canvas_.params.h,
@@ -1636,8 +1790,8 @@ pub const UI = struct {
                     bg.toSDL()
                 else
                     .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
-                self.batcher.setTexture(null);
-                self.batcher.pushRect(.{
+                window.renderer.setTexture(null);
+                window.renderer.pushRect(.{
                     .x = cmd.bounding_box.x,
                     .y = cmd.bounding_box.y,
                     .w = cmd.bounding_box.width,
@@ -1648,9 +1802,9 @@ pub const UI = struct {
                     break :blk fg_color.toSDL();
                 } else .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
 
-                self.batcher.setTexture(texture);
-                self.batcher.pushRect(dest, color, null);
-                self.batcher.flush();
+                window.renderer.setTexture(texture);
+                window.renderer.pushRect(dest, color, null);
+                window.renderer.flush();
             },
             .shape => |shape_data| {
                 const rect = cmd.bounding_box;
@@ -1669,7 +1823,7 @@ pub const UI = struct {
 
                 const color = shape_data.color.toSDL();
 
-                self.batcher.setTexture(null);
+                window.renderer.setTexture(null);
 
                 // We need at least 3 vertices to draw a visible shape
                 if (shape_data.vertices.len >= 3) {
@@ -1705,14 +1859,14 @@ pub const UI = struct {
                         const p1 = transform(shape_data.vertices[i], x, y, w, h, cx, cy, cos_theta, sin_theta);
                         const p2 = transform(shape_data.vertices[i + 1], x, y, w, h, cx, cy, cos_theta, sin_theta);
 
-                        self.batcher.pushTriangle(p0, p1, p2, color);
+                        window.renderer.pushTriangle(p0, p1, p2, color);
                     }
                 }
             },
         }
     }
 
-    fn renderRectangle(self: *Self, cmd: *const clay.RenderCommand) void {
+    fn renderRectangle(_: *const Self, cmd: *const clay.RenderCommand, window: *Window) void {
         const config = cmd.render_data.rectangle;
         const color = c.SDL_FColor{
             .r = config.background_color[0] / 255.0,
@@ -1728,21 +1882,21 @@ pub const UI = struct {
             .h = cmd.bounding_box.height,
         };
 
-        self.batcher.setTexture(null);
+        window.renderer.setTexture(null);
 
         if (radius.top_left > 0.0 or radius.top_right > 0.0 or radius.bottom_left > 0.0 or radius.bottom_right > 0.0) {
-            self.batcher.pushRoundedRect(rect, color, radius);
+            window.renderer.pushRoundedRect(rect, color, radius);
         } else {
-            self.batcher.pushRect(rect, color, null);
+            window.renderer.pushRect(rect, color, null);
         }
     }
 
-    fn renderBorder(self: *Self, cmd: *const clay.RenderCommand) void {
-        self.batcher.setTexture(null);
-        self.batcher.pushRoundedBorder(cmd.bounding_box, cmd.render_data.border);
+    fn renderBorder(_: *const Self, cmd: *const clay.RenderCommand, window: *Window) void {
+        window.renderer.setTexture(null);
+        window.renderer.pushRoundedBorder(cmd.bounding_box, cmd.render_data.border);
     }
 
-    fn renderText(self: *Self, cmd: *const clay.RenderCommand) void {
+    fn renderText(self: *Self, cmd: *const clay.RenderCommand, window: *Window) void {
         const text_data = cmd.render_data.text;
         const color = text_data.text_color;
         const text_slice = text_data.string_contents;
@@ -1763,7 +1917,7 @@ pub const UI = struct {
         });
         const key = hasher.final();
         const font_item = blk: {
-            if (self.ctx.text_cache.get(key)) |item| {
+            if (window.ctx.text_cache.get(key)) |item| {
                 break :blk item;
             } else {
                 const sdl_color = c.SDL_Color{
@@ -1822,7 +1976,7 @@ pub const UI = struct {
                     .height = @floatFromInt(surface.*.h),
                 };
 
-                self.ctx.text_cache.put(key, item) catch @panic("Failed to allocate memory!");
+                window.ctx.text_cache.put(key, item) catch @panic("Failed to allocate memory!");
                 break :blk item;
             }
         };
@@ -1833,8 +1987,8 @@ pub const UI = struct {
             .w = font_item.width,
             .h = font_item.height,
         };
-        self.batcher.setTexture(font_item.texture);
-        self.batcher.pushRect(
+        window.renderer.setTexture(font_item.texture);
+        window.renderer.pushRect(
             dest,
             .{ .r = color[0] / 255.0, .g = color[1] / 255.0, .b = color[2] / 255.0, .a = color[3] / 255.0 },
             null,
@@ -1842,70 +1996,70 @@ pub const UI = struct {
     }
 
     pub fn scrollArea(self: *Self, params: widgets.ScrollContainer.Params) *widgets.ScrollContainer {
-        return self.ctx.allocWidget(widgets.ScrollContainer, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.ScrollContainer, .start(self.current_window.ctx, params));
     }
 
     pub fn row(self: *Self, params: widgets.Container.Params) *widgets.Container {
         var p = params;
         p.direction = .row;
-        return self.ctx.allocWidget(widgets.Container, .start(p));
+        return self.current_window.ctx.allocWidget(widgets.Container, .start(p));
     }
 
     pub fn column(self: *Self, params: widgets.Container.Params) *widgets.Container {
         var p = params;
         p.direction = .column;
-        return self.ctx.allocWidget(widgets.Container, .start(p));
+        return self.current_window.ctx.allocWidget(widgets.Container, .start(p));
     }
 
     pub fn label(self: *Self, params: widgets.Label.Params) *widgets.Label {
-        return self.ctx.allocWidget(widgets.Label, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Label, .start(params));
     }
 
     pub fn button(self: *Self, params: widgets.Button.Params) *widgets.Button {
-        return self.ctx.allocWidget(widgets.Button, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Button, .start(params));
     }
 
     pub fn spacer(self: *Self, params: widgets.Spacer.Params) *widgets.Spacer {
-        return self.ctx.allocWidget(widgets.Spacer, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Spacer, .start(params));
     }
 
     pub fn canvas(self: *Self, params: widgets.Canvas.Params) *widgets.Canvas {
-        return self.ctx.allocWidget(widgets.Canvas, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.Canvas, .start(self.current_window.ctx, params));
     }
 
     pub fn menuBar(self: *Self, params: widgets.MenuBar.Params) *widgets.MenuBar {
-        return self.ctx.allocWidget(widgets.MenuBar, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.MenuBar, .start(self.current_window.ctx, params));
     }
 
     pub fn dropdownMenu(self: *Self, params: widgets.DropdownMenu.Params) *widgets.DropdownMenu {
-        return self.ctx.allocWidget(widgets.DropdownMenu, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.DropdownMenu, .start(self.current_window.ctx, params));
     }
 
     pub fn menuItem(self: *Self, params: widgets.MenuItem.Params) *widgets.MenuItem {
-        return self.ctx.allocWidget(widgets.MenuItem, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.MenuItem, .start(self.current_window.ctx, params));
     }
 
     pub fn textField(self: *Self, params: widgets.TextField.Params) *widgets.TextField {
-        return self.ctx.allocWidget(widgets.TextField, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.TextField, .start(self.current_window.ctx, params));
     }
 
     pub fn padding(self: *Self, params: widgets.Padding.Params) *widgets.Padding {
-        return self.ctx.allocWidget(widgets.Padding, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Padding, .start(params));
     }
 
     pub fn combobox(self: *Self, params: widgets.Combobox.Params) *widgets.Combobox {
-        return self.ctx.allocWidget(widgets.Combobox, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.Combobox, .start(self.current_window.ctx, params));
     }
 
     pub fn comboboxItem(self: *Self, params: widgets.ComboboxItem.Params) *widgets.ComboboxItem {
-        return self.ctx.allocWidget(widgets.ComboboxItem, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.ComboboxItem, .start(self.current_window.ctx, params));
     }
 
     pub fn shape(self: *Self, params: widgets.Shape.Params) *widgets.Shape {
-        return self.ctx.allocWidget(widgets.Shape, .start(self.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.Shape, .start(self.current_window.ctx, params));
     }
 
     pub fn separator(self: *Self, params: widgets.Separator.Params) *widgets.Separator {
-        return self.ctx.allocWidget(widgets.Separator, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Separator, .start(params));
     }
 };
