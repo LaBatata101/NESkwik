@@ -109,14 +109,22 @@ pub const Button = struct {
         hover_color: ?Color = null,
         text_color: Color = Color.white,
         font_size: u16 = 16,
-        padding: clay.Padding = .{},
+        padding: clay.Padding = .all(8),
         corner_radius: f32 = 8,
         border_width: u16 = 0,
         elevation: u8 = 2,
+        border: ?clay.BorderElementConfig = null,
+        sizing: clay.Sizing = .fit,
+        tooltip: ?struct {
+            text: []const u8,
+            text_size: u16 = 14,
+            color: Color = Color.white,
+            wrap_mode: clay.TextElementConfigWrapMode = .words,
+        } = null,
     };
     const Self = @This();
 
-    pub fn start(params: Params) Self {
+    pub fn start(params: Params, ctx: *UIContext) Self {
         const element_id = if (params.id) |id| b: {
             const element_id = clay.ElementId.ID(id);
             clay.openElementWithId(element_id);
@@ -128,10 +136,12 @@ pub const Button = struct {
         const button_color = if (is_hovered) hover_col else params.bg_color;
 
         clay.configureOpenElement(.{
-            .layout = .{ .sizing = .fit, .padding = params.padding, .child_alignment = .center },
+            .layout = .{ .sizing = params.sizing, .padding = params.padding, .child_alignment = .center },
             .background_color = button_color.toClay(),
             .corner_radius = .all(params.corner_radius),
-            .border = if (params.border_width > 0 or params.elevation > 0) .{
+            .border = if (params.border) |border|
+                border
+            else if (params.border_width > 0 or params.elevation > 0) .{
                 .color = button_color.darken(0.3).toClay(),
                 .width = .{
                     .bottom = if (is_hovered) params.elevation / 2 else params.elevation,
@@ -149,6 +159,80 @@ pub const Button = struct {
             .color = params.text_color,
         });
         clay.closeElement();
+
+        if (params.tooltip) |tooltip| {
+            if (is_hovered) {
+                const state = ctx.getOrCreateWidgetState(element_id, .{ .tooltip = .{
+                    .hover_start_ms = c.SDL_GetTicks(),
+                } });
+                // Draw tooltip if 500ms has passed
+                if (ctx.hasPassedSinceMS(state.tooltip.hover_start_ms, 500)) {
+                    const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
+
+                    const button_data = clay.getElementData(element_id);
+                    const layout_dims = ctx.clay_ctx.layoutDimensions;
+
+                    var attach_parent: clay.FloatingAttachPointType = .left_bottom;
+                    var attach_element: clay.FloatingAttachPointType = .left_top;
+                    var offset_y: f32 = 4;
+
+                    if (button_data.found) {
+                        const is_right_half = button_data.bounding_box.x > (layout_dims.w / 2.0);
+                        const is_bottom_half = button_data.bounding_box.y > (layout_dims.h / 2.0);
+
+                        if (is_right_half and is_bottom_half) {
+                            attach_parent = .right_top;
+                            attach_element = .right_bottom;
+                            offset_y = -4; // Reverses the offset to avoid overlapping the button.
+                        } else if (is_right_half) {
+                            attach_parent = .right_bottom;
+                            attach_element = .right_top;
+                        } else if (is_bottom_half) {
+                            attach_parent = .left_top;
+                            attach_element = .left_bottom;
+                            offset_y = -4;
+                        }
+                    }
+
+                    const max_tooltip_width = @min(250.0, layout_dims.w - 32.0);
+
+                    clay.openElementWithId(tooltip_id);
+                    clay.configureOpenElement(.{
+                        .layout = .{
+                            .sizing = .{
+                                .w = clay.SizingAxis.fitMinMax(.{ .max = max_tooltip_width }),
+                                .h = .fit,
+                            },
+                            .padding = .{ .left = 8, .right = 8, .top = 5, .bottom = 5 },
+                            .child_alignment = .center,
+                        },
+                        .background_color = Color.rgb(30, 30, 30).toClay(),
+                        .corner_radius = .all(8),
+                        .border = .{
+                            .color = Color.rgb(80, 80, 80).toClay(),
+                            .width = .outside(1),
+                        },
+                        .floating = .{
+                            .attach_to = .to_element_with_id,
+                            .parentId = element_id.id,
+                            .attach_points = .{ .element = attach_element, .parent = attach_parent },
+                            .offset = .{ .x = 0, .y = 4 },
+                            .z_index = 200,
+                            .pointer_capture_mode = .passthrough,
+                        },
+                    });
+
+                    _ = Label.start(.{
+                        .text = tooltip.text,
+                        .font_size = tooltip.text_size,
+                        .color = tooltip.color,
+                        .wrap_mode = tooltip.wrap_mode,
+                    });
+
+                    clay.closeElement();
+                }
+            }
+        }
 
         return .{ .id = element_id, .params = params };
     }

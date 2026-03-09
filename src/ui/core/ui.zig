@@ -288,6 +288,7 @@ pub const WidgetState = union(enum) {
     scroll: ScrollState,
     dropdown_menu: DropdownMenuState,
     combobox: ComboboxState,
+    tooltip: TooltipState,
 
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
@@ -303,6 +304,9 @@ pub const WidgetState = union(enum) {
     pub const ComboboxState = struct {
         is_open: bool,
         selected_option: []const u8,
+    };
+    pub const TooltipState = struct {
+        hover_start_ms: u64,
     };
 };
 
@@ -2016,7 +2020,7 @@ pub const UI = struct {
     }
 
     pub fn button(self: *Self, params: widgets.Button.Params) *widgets.Button {
-        return self.current_window.ctx.allocWidget(widgets.Button, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Button, .start(params, self.current_window.ctx));
     }
 
     pub fn spacer(self: *Self, params: widgets.Spacer.Params) *widgets.Spacer {
