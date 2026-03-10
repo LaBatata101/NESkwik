@@ -4,8 +4,8 @@ pub const AspectRatio = enum {
 
     fn value(self: @This()) f32 {
         return switch (self) {
-            .@"4_3" => 4 / 3,
-            .@"16_9" => 16 / 9,
+            .@"4_3" => @as(f32, @floatFromInt(4)) / 3,
+            .@"16_9" => @as(f32, @floatFromInt(16)) / 9,
         };
     }
 };
