@@ -495,7 +495,7 @@ pub const Canvas = struct {
         h: u32 = 0,
         fg_color: ?Color = null,
         bg_color: ?Color = null,
-        aspect_ratio: ?utils.AspectRatio = null,
+        aspect_ratio: utils.AspectRatio = .none,
     };
     const Self = @This();
 
@@ -738,212 +738,238 @@ pub const Padding = struct {
     }
 };
 
-pub const Combobox = struct {
-    id: clay.ElementId,
-    ctx: *UIContext,
-    params: Params,
+pub fn Combobox(comptime Option: type) type {
+    comptime {
+        if (@typeInfo(Option) != .@"enum") {
+            @compileError("Combobox options_type must be an enum");
+        }
+        if (!std.meta.hasFn(Option, "label")) {
+            @compileError("Combobox options_type must define `pub fn label(self: @This()) []const u8`");
+        }
+    }
 
-    pub const Params = struct {
-        id: ?[]const u8 = null,
-        options: []const []const u8 = &.{},
-        border_color: Color = .black,
-        border_color_on_open: Color = .black,
-        border_color_on_hover: Color = .black,
-        border_width: clay.BorderWidth = .outside(1),
-        bg_color: Color = .white,
-        bg_color_on_hover: Color = .white,
-        child_alignment: clay.ChildAlignment = .{ .y = .center },
-        sizing: clay.Sizing = .{ .h = .fit, .w = .fixed(120) },
-        text_color: Color = .black,
-        float_panel: struct {
+    return struct {
+        id: clay.ElementId,
+        ctx: *UIContext,
+        params: Params,
+
+        pub const Params = struct {
+            id: ?[]const u8 = null,
+            options: []const Option = &.{},
+            selected: ?Option = null,
+            border_color: Color = .black,
+            border_color_on_open: Color = .black,
+            border_color_on_hover: Color = .black,
+            border_width: clay.BorderWidth = .outside(1),
             bg_color: Color = .white,
-            border_color: Color = .gray,
-        } = .{},
-        item: struct {
-            bg_color: Color = .white,
-            bg_color_on_hover: Color = .blue,
+            bg_color_on_hover: Color = .white,
+            child_alignment: clay.ChildAlignment = .{ .y = .center },
+            sizing: clay.Sizing = .{ .h = .fit, .w = .fixed(120) },
             text_color: Color = .black,
-            text_color_on_hover: Color = .white,
-        } = .{},
-    };
-    const Self = @This();
+            float_panel: struct {
+                bg_color: Color = .white,
+                border_color: Color = .gray,
+            } = .{},
+            item: struct {
+                bg_color: Color = .white,
+                bg_color_on_hover: Color = .blue,
+                text_color: Color = .black,
+                text_color_on_hover: Color = .white,
+            } = .{},
+        };
+        const Self = @This();
 
-    pub fn start(ctx: *UIContext, params: Params) Self {
-        const element_id = if (params.id) |id| b: {
-            const element_id = clay.ElementId.ID(id);
-            clay.openElementWithId(element_id);
-            break :b element_id;
-        } else clay.openElement();
+        fn optionKey(option: Option) u32 {
+            return @intFromEnum(option);
+        }
 
-        std.debug.assert(params.options.len > 0);
+        fn findOptionByKey(options: []const Option, key: u32) Option {
+            for (options) |option| {
+                if (optionKey(option) == key) return option;
+            }
+            return options[0];
+        }
 
-        ctx.pushParent(element_id);
-        const state = ctx.getOrCreateWidgetState(element_id, .{ .combobox = .{
-            .is_open = false,
-            .selected_option = params.options[0],
-        } });
+        pub fn start(ctx: *UIContext, params: Params) Self {
+            const element_id = if (params.id) |id| b: {
+                const element_id = clay.ElementId.ID(id);
+                clay.openElementWithId(element_id);
+                break :b element_id;
+            } else clay.openElement();
 
-        const menu_list_id = clay.ElementId.localIDI("combobox_list", element_id.id);
-        const scroll_id = clay.ElementId.localIDI("scroll_area", element_id.id);
-        const scrollbar_id = clay.ElementId.localIDI("scrollbar", scroll_id.id);
+            std.debug.assert(params.options.len > 0);
 
-        const is_hovered = clay.hovered();
-        const is_list_hovered = if (state.combobox.is_open)
-            clay.pointerOver(menu_list_id) or clay.pointerOver(scrollbar_id)
-        else
-            false;
+            ctx.pushParent(element_id);
+            const state = ctx.getOrCreateWidgetState(element_id, .{ .combobox = .{
+                .is_open = false,
+                .selected_key = optionKey(params.selected orelse params.options[0]),
+            } });
 
-        {
-            const trigger_bg = if (is_hovered or state.combobox.is_open) params.bg_color_on_hover else params.bg_color;
-            const trigger_border = if (state.combobox.is_open)
-                params.border_color_on_open
-            else if (is_hovered)
-                params.border_color_on_hover
+            const menu_list_id = clay.ElementId.localIDI("combobox_list", element_id.id);
+            const scroll_id = clay.ElementId.localIDI("scroll_area", element_id.id);
+            const scrollbar_id = clay.ElementId.localIDI("scrollbar", scroll_id.id);
+
+            const is_hovered = clay.hovered();
+            const is_list_hovered = if (state.combobox.is_open)
+                clay.pointerOver(menu_list_id) or clay.pointerOver(scrollbar_id)
             else
-                params.border_color;
-            clay.configureOpenElement(.{
-                .layout = .{
-                    .padding = .{ .left = 10, .right = 8, .top = 6, .bottom = 6 },
-                    .sizing = params.sizing,
-                    .direction = .left_to_right,
-                    .child_alignment = params.child_alignment,
-                    .child_gap = 4,
-                },
-                .background_color = trigger_bg.toClay(),
-                .corner_radius = .all(4),
-                .border = .{ .width = params.border_width, .color = trigger_border.toClay() },
-            });
+                false;
 
-            _ = Label.start(.{ .text = state.combobox.selected_option, .font_size = 14, .color = params.text_color });
-            _ = Spacer.start(.{ .sizing = .grow });
-
-            // Draw the arrow icon
-            _ = Shape.start(ctx, .{
-                .sizing = .{ .w = .fixed(10), .h = .fixed(10) },
-                .vertices = &[_]clay.Vector2{
-                    .{ .x = 0.0, .y = 0.75 },
-                    .{ .x = 1.0, .y = 0.75 },
-                    .{ .x = 0.5, .y = 0.25 },
-                },
-                .rotation = if (state.combobox.is_open) 0 else 180,
-                .color = Color.darkGray,
-            });
-
-            clay.closeElement();
-        } // End ending closed combobox
-
-        if (is_hovered and ctx.frame.mouse_pressed) {
-            ctx.frame.active_id = element_id.id;
-            state.combobox.is_open = !state.combobox.is_open;
-        }
-        // if the menu is open and a mouse click happened outside of it
-        else if (state.combobox.is_open and ctx.frame.mouse_pressed) {
-            // if the mouse click didn't happened in the menu item list
-            if (!is_list_hovered) {
-                state.combobox.is_open = false;
-                if (ctx.frame.active_id == element_id.id) {
-                    ctx.frame.active_id = null;
-                }
-            }
-        }
-
-        if (state.combobox.is_open) {
-            const combobox_data = clay.getElementData(element_id);
-            const layout_dims = ctx.clay_ctx.layoutDimensions;
-
-            const max_height_cap: f32 = 200.0;
-            const gap: f32 = 3.0;
-            const margin: f32 = 4.0;
-
-            var max_menu_height: f32 = max_height_cap;
-            var attach_parent: clay.FloatingAttachPointType = .left_bottom;
-            var attach_element: clay.FloatingAttachPointType = .left_top;
-            var offset_y: f32 = gap;
-
-            if (combobox_data.found) {
-                const bb = combobox_data.bounding_box;
-                const is_right_half = bb.x > (layout_dims.w / 2.0);
-                const space_below = layout_dims.h - (bb.y + bb.height) - gap - margin;
-                const space_above = bb.y - gap - margin;
-
-                // Open above only when space below is limited AND there's more room above.
-                // Otherwise always prefer opening below.
-                const open_above = space_above > space_below and space_below < max_height_cap;
-
-                if (!open_above) {
-                    max_menu_height = @min(space_below, max_height_cap);
-                    attach_parent = if (is_right_half) .right_bottom else .left_bottom;
-                    attach_element = if (is_right_half) .right_top else .left_top;
-                    offset_y = gap;
-                } else {
-                    max_menu_height = @min(space_above, max_height_cap);
-                    attach_parent = if (is_right_half) .right_top else .left_top;
-                    attach_element = if (is_right_half) .right_bottom else .left_bottom;
-                    offset_y = -gap;
-                }
-            }
-
-            const panel_padding_v: f32 = 4.0;
-            const scroll_max_h = max_menu_height - panel_padding_v * 2;
-
-            clay.openElementWithId(menu_list_id);
-            clay.configureOpenElement(.{
-                .layout = .{
-                    .sizing = .{
-                        .w = .fixed(combobox_data.bounding_box.width),
-                        .h = .fitMinMax(.{ .min = 0, .max = max_menu_height }),
+            {
+                const trigger_bg = if (is_hovered or state.combobox.is_open)
+                    params.bg_color_on_hover
+                else
+                    params.bg_color;
+                const trigger_border = if (state.combobox.is_open)
+                    params.border_color_on_open
+                else if (is_hovered)
+                    params.border_color_on_hover
+                else
+                    params.border_color;
+                clay.configureOpenElement(.{
+                    .layout = .{
+                        .padding = .{ .left = 10, .right = 8, .top = 6, .bottom = 6 },
+                        .sizing = params.sizing,
+                        .direction = .left_to_right,
+                        .child_alignment = params.child_alignment,
+                        .child_gap = 4,
                     },
-                    .direction = .top_to_bottom,
-                    .padding = .all(@intFromFloat(panel_padding_v)),
-                    .child_gap = 2,
-                },
-                .background_color = params.float_panel.bg_color.toClay(),
-                .corner_radius = .all(4),
-                .border = .{ .width = .outside(1), .color = params.float_panel.border_color.toClay() },
-                .floating = .{
-                    .attach_to = .to_element_with_id,
-                    .parentId = element_id.id,
-                    .attach_points = .{ .element = attach_element, .parent = attach_parent },
-                    .offset = .{ .x = 0, .y = offset_y },
-                    .z_index = 1,
-                },
-            });
-
-            const scroll = ScrollContainer.start(ctx, .{
-                .element_id = scroll_id,
-                .scrollbar_id = scrollbar_id,
-                .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = 0, .max = scroll_max_h }) },
-                .gap = 2,
-            });
-            for (params.options) |option| {
-                _ = ComboboxItem.start(ctx, .{
-                    .label = option,
-                    .bg_color = params.item.bg_color,
-                    .bg_color_on_hover = params.item.bg_color_on_hover,
-                    .text_color = params.item.text_color,
-                    .text_color_on_hover = params.item.text_color_on_hover,
+                    .background_color = trigger_bg.toClay(),
+                    .corner_radius = .all(4),
+                    .border = .{ .width = params.border_width, .color = trigger_border.toClay() },
                 });
-            }
-            scroll.end();
 
+                _ = Label.start(.{
+                    .text = findOptionByKey(params.options, state.combobox.selected_key).label(),
+                    .font_size = 14,
+                    .color = params.text_color,
+                });
+                _ = Spacer.start(.{ .sizing = .grow });
+
+                _ = Shape.start(ctx, .{
+                    .sizing = .{ .w = .fixed(10), .h = .fixed(10) },
+                    .vertices = &[_]clay.Vector2{
+                        .{ .x = 0.0, .y = 0.75 },
+                        .{ .x = 1.0, .y = 0.75 },
+                        .{ .x = 0.5, .y = 0.25 },
+                    },
+                    .rotation = if (state.combobox.is_open) 0 else 180,
+                    .color = Color.darkGray,
+                });
+
+                clay.closeElement();
+            }
+
+            if (is_hovered and ctx.frame.mouse_pressed) {
+                ctx.frame.active_id = element_id.id;
+                state.combobox.is_open = !state.combobox.is_open;
+            } else if (state.combobox.is_open and ctx.frame.mouse_pressed) {
+                if (!is_list_hovered) {
+                    state.combobox.is_open = false;
+                    if (ctx.frame.active_id == element_id.id) {
+                        ctx.frame.active_id = null;
+                    }
+                }
+            }
+
+            if (state.combobox.is_open) {
+                const combobox_data = clay.getElementData(element_id);
+                const layout_dims = ctx.clay_ctx.layoutDimensions;
+
+                const max_height_cap: f32 = 200.0;
+                const gap: f32 = 3.0;
+                const margin: f32 = 4.0;
+
+                var max_menu_height: f32 = max_height_cap;
+                var attach_parent: clay.FloatingAttachPointType = .left_bottom;
+                var attach_element: clay.FloatingAttachPointType = .left_top;
+                var offset_y: f32 = gap;
+
+                if (combobox_data.found) {
+                    const bb = combobox_data.bounding_box;
+                    const is_right_half = bb.x > (layout_dims.w / 2.0);
+                    const space_below = layout_dims.h - (bb.y + bb.height) - gap - margin;
+                    const space_above = bb.y - gap - margin;
+
+                    const open_above = space_above > space_below and space_below < max_height_cap;
+
+                    if (!open_above) {
+                        max_menu_height = @min(space_below, max_height_cap);
+                        attach_parent = if (is_right_half) .right_bottom else .left_bottom;
+                        attach_element = if (is_right_half) .right_top else .left_top;
+                        offset_y = gap;
+                    } else {
+                        max_menu_height = @min(space_above, max_height_cap);
+                        attach_parent = if (is_right_half) .right_top else .left_top;
+                        attach_element = if (is_right_half) .right_bottom else .left_bottom;
+                        offset_y = -gap;
+                    }
+                }
+
+                const panel_padding_v: f32 = 4.0;
+                const scroll_max_h = max_menu_height - panel_padding_v * 2;
+
+                clay.openElementWithId(menu_list_id);
+                clay.configureOpenElement(.{
+                    .layout = .{
+                        .sizing = .{
+                            .w = .fixed(combobox_data.bounding_box.width),
+                            .h = .fitMinMax(.{ .min = 0, .max = max_menu_height }),
+                        },
+                        .direction = .top_to_bottom,
+                        .padding = .all(@intFromFloat(panel_padding_v)),
+                        .child_gap = 2,
+                    },
+                    .background_color = params.float_panel.bg_color.toClay(),
+                    .corner_radius = .all(4),
+                    .border = .{ .width = .outside(1), .color = params.float_panel.border_color.toClay() },
+                    .floating = .{
+                        .attach_to = .to_element_with_id,
+                        .parentId = element_id.id,
+                        .attach_points = .{ .element = attach_element, .parent = attach_parent },
+                        .offset = .{ .x = 0, .y = offset_y },
+                        .z_index = 1,
+                    },
+                });
+
+                const scroll = ScrollContainer.start(ctx, .{
+                    .element_id = scroll_id,
+                    .scrollbar_id = scrollbar_id,
+                    .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = 0, .max = scroll_max_h }) },
+                    .gap = 2,
+                });
+                for (params.options) |option| {
+                    _ = ComboboxItem.start(ctx, .{
+                        .key = optionKey(option),
+                        .label = option.label(),
+                        .bg_color = params.item.bg_color,
+                        .bg_color_on_hover = params.item.bg_color_on_hover,
+                        .text_color = params.item.text_color,
+                        .text_color_on_hover = params.item.text_color_on_hover,
+                    });
+                }
+                scroll.end();
+
+                clay.closeElement();
+            }
+
+            return .{ .id = element_id, .ctx = ctx, .params = params };
+        }
+
+        pub fn end(self: *const Self) void {
+            self.ctx.popParent();
             clay.closeElement();
         }
 
-        return .{ .id = element_id, .ctx = ctx, .params = params };
-    }
-
-    pub fn end(self: *const Self) void {
-        self.ctx.popParent();
-        clay.closeElement();
-    }
-
-    pub fn selected(self: *const Self) []const u8 {
-        return self.ctx.getWidgetStateById(self.id).?.combobox.selected_option;
-    }
-};
+        pub fn selected(self: *const Self) Option {
+            return findOptionByKey(self.params.options, self.ctx.getWidgetStateById(self.id).?.combobox.selected_key);
+        }
+    };
+}
 
 const ComboboxItem = struct {
     pub const Params = struct {
+        key: u32,
         label: []const u8,
         padding: clay.Padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
         bg_color: Color = Color.white,
@@ -984,7 +1010,7 @@ const ComboboxItem = struct {
         if (is_hovered and ctx.frame.mouse_pressed) {
             const combobox_id = ctx.getGrandParent().?;
             const parent = ctx.getWidgetStateById(combobox_id).?;
-            parent.combobox.selected_option = params.label;
+            parent.combobox.selected_key = params.key;
             parent.combobox.is_open = false;
         }
         return .{};

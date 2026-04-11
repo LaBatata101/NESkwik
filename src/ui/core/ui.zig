@@ -304,7 +304,7 @@ pub const WidgetState = union(enum) {
     };
     pub const ComboboxState = struct {
         is_open: bool,
-        selected_option: []const u8,
+        selected_key: u32,
     };
     pub const TooltipState = struct {
         hover_start_ms: u64,
