@@ -297,6 +297,7 @@ pub const WidgetState = union(enum) {
     pub const ScrollState = struct {
         offset: clay.Vector2,
         velocity: clay.Vector2,
+        scrollbar_visible: bool = false,
     };
     pub const DropdownMenuState = struct {
         is_open: bool,
