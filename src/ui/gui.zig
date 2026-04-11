@@ -5,7 +5,11 @@ const c = @import("../root.zig").c;
 const UI = @import("core/ui.zig").UI;
 const clay = @import("core/clay.zig");
 const Rom = @import("../rom.zig").Rom;
+const utils = @import("core/utils.zig");
+const theme = @import("common.zig").theme;
+const Color = @import("core/color.zig").Color;
 const System = @import("../system.zig").System;
+const Shape = @import("core/widgets.zig").Shape;
 const NES_WIDTH = @import("../root.zig").NES_WIDTH;
 const NES_HEIGHT = @import("../root.zig").NES_HEIGHT;
 
@@ -23,7 +27,12 @@ pub const UIState = struct {
     rom: Rom = undefined,
     system: System = undefined,
 
+    settings: EmulatorSettings = .{},
+
     const Self = @This();
+    const EmulatorSettings = struct {
+        aspect_ratio: utils.AspectRatio = .@"4_3",
+    };
 
     pub fn init(alloc: std.mem.Allocator) Self {
         return .{ .alloc = alloc };
@@ -89,12 +98,20 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                         false,
                     );
                 }
-
                 sys_menu.end();
 
                 const emulation_menu = ui.dropdownMenu(.{ .label = "Emulation" });
                 if (ui.menuItem(.{ .label = "Debug" }).clicked(ui.main_window.ctx) and ui_state.emulation_running) {
                     ui_state.render_debug_ui = !ui_state.render_debug_ui;
+                }
+
+                if (ui.menuItem(.{ .label = "Settings" }).clicked(ui.main_window.ctx)) {
+                    ui.createWindow(
+                        "Settings",
+                        360,
+                        120,
+                        .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(ui_state) },
+                    );
                 }
                 emulation_menu.end();
             }
@@ -111,7 +128,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 .pixels = ui_state.system.frame_buffer(),
                 .w = NES_WIDTH,
                 .h = NES_HEIGHT,
-                .aspect_ratio = .@"4_3",
+                .aspect_ratio = ui_state.settings.aspect_ratio,
             });
         }
     }
@@ -121,6 +138,122 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
 fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
     _ = ui_state; // autofix
     _ = ui.spacer(.{ .sizing = .grow });
+}
+
+fn drawSettingsWindowUI(ui: *UI, user_data: ?*anyopaque) void {
+    const ui_state: *UIState = @ptrCast(@alignCast(user_data));
+    const root = ui.column(.{
+        .sizing = .grow,
+        .bg_color = theme.bg_base,
+        .gap = theme.PANEL_GAP,
+        .child_alignment = .{ .x = .left, .y = .top },
+    });
+    {
+        drawVideoSection(ui, ui_state);
+    }
+    root.end();
+}
+
+fn drawSectionHeader(ui: *UI, title: []const u8, accent: Color) void {
+    const header = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .bg_color = theme.bg_section,
+        .padding = theme.HEADER_PAD,
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+        .border_width = 1,
+        .border_color = theme.border_dim,
+    });
+    {
+        _ = ui.shape(.{
+            .vertices = &Shape.SQUARE,
+            .sizing = .{ .w = .fixed(3), .h = .fixed(14) },
+            .color = accent,
+        });
+        _ = ui.label(.{
+            .text = title,
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_secondary,
+        });
+    }
+    header.end();
+}
+
+fn drawVideoSection(ui: *UI, ui_state: *UIState) void {
+    const col = ui.column(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .bg_color = theme.bg_panel,
+        .gap = theme.PANEL_GAP,
+        .child_alignment = .{ .y = .top },
+    });
+    {
+        drawSectionHeader(ui, "VIDEO", theme.accent_blue);
+
+        const body = ui.column(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .bg_color = theme.bg_panel,
+            .padding = theme.SECTION_PAD,
+            .gap = 14,
+        });
+        {
+            drawAspectRatioRow(ui, ui_state);
+        }
+        body.end();
+    }
+    col.end();
+}
+
+fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 12,
+    });
+    {
+        const label_col = ui.column(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .gap = 3,
+            .child_alignment = .{ .x = .left },
+        });
+        {
+            _ = ui.label(.{
+                .text = "ASPECT RATIO",
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_primary,
+            });
+            _ = ui.label(.{
+                .text = "Controls how the NES frame is scaled to fill the window.",
+                .font_size = 14,
+                .color = theme.text_secondary,
+            });
+        }
+        label_col.end();
+
+        const aspect_ratio_opts = ui.combobox(utils.AspectRatio, .{
+            .id = "aspect_ratio_combo",
+            .selected = ui_state.settings.aspect_ratio,
+            .options = &.{ .none, .@"4_3", .@"16_9" },
+            .bg_color = theme.bg_section,
+            .bg_color_on_hover = theme.bg_hover,
+            .border_color = theme.border_dim,
+            .border_color_on_open = theme.border_open,
+            .border_color_on_hover = theme.border,
+            .text_color = theme.text_primary,
+            .float_panel = .{
+                .bg_color = theme.bg_section,
+                .border_color = theme.border_open,
+            },
+            .item = .{
+                .bg_color_on_hover = theme.bg_hover,
+                .bg_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                .text_color = theme.text_secondary,
+                .text_color_on_hover = theme.text_accent,
+            },
+        });
+
+        ui_state.settings.aspect_ratio = aspect_ratio_opts.selected();
+    }
+    row.end();
 }
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {

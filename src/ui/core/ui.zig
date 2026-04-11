@@ -1380,6 +1380,10 @@ pub const UI = struct {
         return self.current_window.ctx.hasPassedSinceMS(start, ms);
     }
 
+    pub fn isHovering(_: *const Self, id: []const u8) bool {
+        return clay.pointerOver(clay.ElementId.ID(id));
+    }
+
     pub fn isWindowFullscreen(self: *const Self) bool {
         return c.SDL_GetWindowFlags(self.current_window.ptr) & c.SDL_WINDOW_FULLSCREEN != 0;
     }
@@ -1402,7 +1406,7 @@ pub const UI = struct {
 
         const window = self.allocator.create(Window) catch @panic("OOM");
         window.* = .{
-            .ptr = sdlError(c.SDL_CreateWindow(title.ptr, width, height, c.SDL_WINDOW_RESIZABLE)),
+            .ptr = sdlError(c.SDL_CreateWindow(title.ptr, width, height, c.SDL_WINDOW_ALWAYS_ON_TOP)),
             .width = width,
             .height = height,
             .title = title,
@@ -1770,25 +1774,18 @@ pub const UI = struct {
                 _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, tb);
 
-                const dest: c.SDL_FRect = if (canvas_.params.aspect_ratio) |aspect_ratio| blk: {
-                    const viewport = utils.calculateViewport(
-                        cmd.bounding_box.x,
-                        cmd.bounding_box.y,
-                        cmd.bounding_box.width,
-                        cmd.bounding_box.height,
-                        aspect_ratio,
-                    );
-                    break :blk .{
-                        .x = viewport.x,
-                        .y = viewport.y,
-                        .w = viewport.w,
-                        .h = viewport.h,
-                    };
-                } else .{
-                    .x = cmd.bounding_box.x,
-                    .y = cmd.bounding_box.y,
-                    .w = cmd.bounding_box.width,
-                    .h = cmd.bounding_box.height,
+                const viewport = utils.calculateViewport(
+                    cmd.bounding_box.x,
+                    cmd.bounding_box.y,
+                    cmd.bounding_box.width,
+                    cmd.bounding_box.height,
+                    canvas_.params.aspect_ratio,
+                );
+                const dest: c.SDL_FRect = .{
+                    .x = viewport.x,
+                    .y = viewport.y,
+                    .w = viewport.w,
+                    .h = viewport.h,
                 };
 
                 const bg_color_sdl: c.SDL_FColor = if (canvas_.params.bg_color) |bg|
@@ -2052,8 +2049,8 @@ pub const UI = struct {
         return self.current_window.ctx.allocWidget(widgets.Padding, .start(params));
     }
 
-    pub fn combobox(self: *Self, params: widgets.Combobox.Params) *widgets.Combobox {
-        return self.current_window.ctx.allocWidget(widgets.Combobox, .start(self.current_window.ctx, params));
+    pub fn combobox(self: *Self, comptime Option: type, params: widgets.Combobox(Option).Params) *widgets.Combobox(Option) {
+        return self.current_window.ctx.allocWidget(widgets.Combobox(Option), .start(self.current_window.ctx, params));
     }
 
     pub fn comboboxItem(self: *Self, params: widgets.ComboboxItem.Params) *widgets.ComboboxItem {

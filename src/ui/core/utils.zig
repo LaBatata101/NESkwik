@@ -1,9 +1,19 @@
 pub const AspectRatio = enum {
+    none,
     @"4_3",
     @"16_9",
 
-    fn value(self: @This()) f32 {
+    pub fn label(self: @This()) []const u8 {
         return switch (self) {
+            .none => "None",
+            .@"4_3" => "4:3",
+            .@"16_9" => "16:9",
+        };
+    }
+
+    fn value(self: @This()) ?f32 {
+        return switch (self) {
+            .none => null,
             .@"4_3" => @as(f32, @floatFromInt(4)) / 3,
             .@"16_9" => @as(f32, @floatFromInt(16)) / 9,
         };
@@ -12,7 +22,12 @@ pub const AspectRatio = enum {
 
 const Viewport = struct { x: f32, y: f32, w: f32, h: f32 };
 pub fn calculateViewport(win_x: f32, win_y: f32, win_w: f32, win_h: f32, aspect: AspectRatio) Viewport {
-    const desired_aspect = aspect.value();
+    const desired_aspect = aspect.value() orelse return .{
+        .x = win_x,
+        .y = win_y,
+        .w = win_w,
+        .h = win_h,
+    };
     const device_aspect = win_w / win_h;
 
     var delta: f32 = 0;
