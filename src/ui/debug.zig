@@ -5,6 +5,7 @@ const c = @import("../root.zig").c;
 const UI = @import("core/ui.zig").UI;
 const trace = @import("../trace.zig");
 const opcodes = @import("../opcodes.zig");
+const theme = @import("common.zig").theme;
 const UIState = @import("gui.zig").UIState;
 const Shape = @import("core/widgets.zig").Shape;
 const Color = @import("core/color.zig").Color;
@@ -13,40 +14,6 @@ const NES_HEIGHT = @import("../root.zig").NES_HEIGHT;
 const ProcessorStatus = @import("../cpu.zig").ProcessorStatus;
 const SYSTEM_PALETTE = @import("../render.zig").SYSTEM_PALETTE;
 const PatternTableFrame = @import("../render.zig").PatternTableFrame;
-
-const theme = struct {
-    const bg_base = Color.rgb(18, 20, 24);
-    const bg_panel = Color.rgb(24, 27, 32);
-    const bg_section = Color.rgb(30, 34, 41);
-    const bg_hover = Color.rgb(38, 43, 52);
-    const bg_active = Color.rgb(44, 100, 220).withAlpha(40);
-
-    const border = Color.rgb(45, 50, 62);
-    const border_dim = Color.rgb(35, 40, 50);
-
-    const text_primary = Color.rgb(220, 225, 235); // main text
-    const text_secondary = Color.rgb(140, 150, 170); // dim labels
-    const text_muted = Color.rgb(80, 90, 110); // very dim
-    const text_accent = Color.rgb(97, 175, 255); // blue accent (addresses, keywords)
-    const text_value = Color.rgb(152, 221, 130); // green (register values)
-    const text_warn = Color.rgb(255, 200, 80); // amber (PC indicator)
-    const text_error = Color.rgb(255, 100, 100); // red (error/flags)
-
-    const accent_blue = Color.rgb(60, 130, 240);
-    const accent_green = Color.rgb(60, 200, 120);
-    const accent_amber = Color.rgb(255, 180, 50);
-    const accent_purple = Color.rgb(180, 120, 255);
-    const accent_red = Color.rgb(240, 80, 80);
-};
-
-const PANEL_GAP: u16 = 1;
-const SECTION_PAD: clay.Padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 };
-const HEADER_PAD: clay.Padding = .{ .left = 12, .right = 12, .top = 7, .bottom = 7 };
-const LABEL_FONT: u16 = 18; // section header labels (caps)
-const VALUE_FONT: u16 = 16; // register values / data
-const CODE_FONT: u16 = 16; // disassembly lines
-const SWATCH_SIZE: f32 = 14; // palette colour swatch
-const SWATCH_GAP: u16 = 2;
 
 pub fn drawUI(ui: *UI, ui_state: *UIState) void {
     const root = ui.row(.{ .bg_color = theme.bg_base, .sizing = .grow, .gap = 2 });
@@ -77,7 +44,7 @@ fn drawDebugSidebar(ui: *UI, ui_state: *UIState) void {
     const sidebar = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
-        .gap = PANEL_GAP,
+        .gap = theme.PANEL_GAP,
         .child_alignment = .{ .y = .top },
     });
     {
@@ -92,7 +59,7 @@ fn drawSectionHeader(ui: *UI, title: []const u8, accent: Color) void {
     const header = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .bg_color = theme.bg_section,
-        .padding = HEADER_PAD,
+        .padding = theme.HEADER_PAD,
         .child_alignment = .{ .y = .center },
         .gap = 8,
         .border_width = 1,
@@ -108,7 +75,7 @@ fn drawSectionHeader(ui: *UI, title: []const u8, accent: Color) void {
 
         _ = ui.label(.{
             .text = title,
-            .font_size = LABEL_FONT,
+            .font_size = theme.LABEL_FONT,
             .color = theme.text_secondary,
         });
     }
@@ -193,7 +160,7 @@ fn drawDisassemblyRow(
 
         _ = ui.label(.{
             .text = addr,
-            .font_size = CODE_FONT,
+            .font_size = theme.CODE_FONT,
             .color = if (is_current) theme.text_warn else theme.text_accent,
         });
 
@@ -201,7 +168,7 @@ fn drawDisassemblyRow(
 
         _ = ui.label(.{
             .text = mnemonic,
-            .font_size = CODE_FONT,
+            .font_size = theme.CODE_FONT,
             .color = if (is_current) theme.text_primary else theme.text_primary.withAlpha(180),
         });
 
@@ -209,7 +176,7 @@ fn drawDisassemblyRow(
             _ = ui.spacer(.{ .sizing = .{ .w = .fixed(6) } });
             _ = ui.label(.{
                 .text = operand,
-                .font_size = CODE_FONT,
+                .font_size = theme.CODE_FONT,
                 .color = if (is_current) theme.text_value else theme.text_secondary,
             });
         }
@@ -225,7 +192,7 @@ fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
     const body = ui.column(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .bg_color = theme.bg_panel,
-        .padding = SECTION_PAD,
+        .padding = theme.SECTION_PAD,
         .gap = 6,
     });
     {
@@ -271,7 +238,7 @@ fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
         });
         {
             // _ = ui.label(.{ .text = "FLAGS:", .font_size = LABEL_FONT, .color = theme.text_muted });
-            _ = ui.label(.{ .text = "FLAGS:", .font_size = LABEL_FONT, .color = theme.text_secondary });
+            _ = ui.label(.{ .text = "FLAGS:", .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
             _ = ui.spacer(.{ .sizing = .{ .w = .fixed(6) } });
             drawFlagBadge(ui, "N", cpu.status.negative_flag);
             drawFlagBadge(ui, "V", cpu.status.overflow_flag);
@@ -306,9 +273,9 @@ fn drawRegisterBadge(ui: *UI, label: []const u8, value: []const u8, accent: Colo
         _ = ui.spacer(.{ .sizing = .{ .w = .fixed(7) } });
 
         // _ = ui.label(.{ .text = label, .font_size = LABEL_FONT, .color = theme.text_muted });
-        _ = ui.label(.{ .text = label, .font_size = LABEL_FONT, .color = theme.text_secondary });
+        _ = ui.label(.{ .text = label, .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
         _ = ui.spacer(.{ .sizing = .{ .w = .fixed(5) } });
-        _ = ui.label(.{ .text = value, .font_size = VALUE_FONT, .color = theme.text_value });
+        _ = ui.label(.{ .text = value, .font_size = theme.VALUE_FONT, .color = theme.text_value });
     }
     badge.end();
 }
@@ -327,7 +294,7 @@ fn drawFlagBadge(ui: *UI, name: []const u8, active: bool) void {
         .child_alignment = .center,
     });
     {
-        _ = ui.label(.{ .text = name, .font_size = LABEL_FONT, .color = txt });
+        _ = ui.label(.{ .text = name, .font_size = theme.LABEL_FONT, .color = txt });
     }
     pill.end();
 }
@@ -340,7 +307,7 @@ fn drawPPUPanel(ui: *UI, ui_state: *UIState) void {
     const body = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .bg_color = theme.bg_panel,
-        .padding = SECTION_PAD,
+        .padding = theme.SECTION_PAD,
         .gap = 6,
         .child_alignment = .{ .y = .center },
     });
@@ -378,7 +345,7 @@ fn drawStatBadge(ui: *UI, key: []const u8, value: []const u8, accent: Color) voi
         .gap = 2,
     });
     {
-        _ = ui.label(.{ .text = key, .font_size = LABEL_FONT, .color = accent });
+        _ = ui.label(.{ .text = key, .font_size = theme.LABEL_FONT, .color = accent });
         _ = ui.label(.{ .text = value, .font_size = 16, .color = theme.text_primary });
     }
     cell.end();
@@ -403,7 +370,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
     const col = ui.column(.{
         .sizing = .{ .w = .fit, .h = .grow },
         .bg_color = theme.bg_panel,
-        .gap = PANEL_GAP,
+        .gap = theme.PANEL_GAP,
     });
     {
         drawSectionHeader(ui, "PATTERN TABLES", theme.accent_green);
@@ -438,7 +405,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
                     .pixels = &pt1.data,
                 });
                 // _ = ui.label(.{ .text = "CHR $0000", .font_size = LABEL_FONT, .color = theme.text_muted });
-                _ = ui.label(.{ .text = "CHR $0000", .font_size = LABEL_FONT, .color = theme.text_secondary });
+                _ = ui.label(.{ .text = "CHR $0000", .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
             }
             pt1_wrapper.end();
 
@@ -464,7 +431,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
                     .pixels = &pt2.data,
                 });
                 // _ = ui.label(.{ .text = "CHR $1000", .font_size = LABEL_FONT, .color = theme.text_muted });
-                _ = ui.label(.{ .text = "CHR $1000", .font_size = LABEL_FONT, .color = theme.text_secondary });
+                _ = ui.label(.{ .text = "CHR $1000", .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
             }
             pt2_wrapper.end();
         }
@@ -479,7 +446,7 @@ fn drawPalettePanel(ui: *UI, ui_state: *UIState) void {
     const col = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
-        .gap = PANEL_GAP,
+        .gap = theme.PANEL_GAP,
     });
     {
         drawSectionHeader(ui, "PALETTE RAM", theme.accent_red);
@@ -515,7 +482,7 @@ fn drawPaletteGroup(
         .gap = 6,
     });
     {
-        _ = ui.label(.{ .text = label, .font_size = LABEL_FONT, .color = theme.text_secondary });
+        _ = ui.label(.{ .text = label, .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
 
         // 4 sub-palettes, each 4 colours, separated by a subtle gap
         const palettes_row = ui.column(.{
@@ -532,7 +499,7 @@ fn drawPaletteGroup(
                     .border_color = theme.border_dim,
                     .corner_radius = 2,
                     .padding = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
-                    .gap = SWATCH_GAP,
+                    .gap = theme.SWATCH_GAP,
                 });
                 {
                     // Sub-palette index label
@@ -542,7 +509,7 @@ fn drawPaletteGroup(
                             "{d}",
                             .{palette_num},
                         ) catch @panic("fmt"),
-                        .font_size = LABEL_FONT,
+                        .font_size = theme.LABEL_FONT,
                         // .color = theme.text_muted,
                         .color = theme.text_secondary,
                     });
@@ -554,7 +521,7 @@ fn drawPaletteGroup(
 
                         _ = ui.shape(.{
                             .vertices = &Shape.SQUARE,
-                            .sizing = .{ .w = .fixed(SWATCH_SIZE), .h = .fixed(SWATCH_SIZE) },
+                            .sizing = .{ .w = .fixed(theme.SWATCH_SIZE), .h = .fixed(theme.SWATCH_SIZE) },
                             .color = color,
                         });
                     }
