@@ -30,6 +30,7 @@ pub const c = @cImport({
     @cInclude("glslang/Include/glslang_c_interface.h");
     @cInclude("glslang/Public/resource_limits_c.h");
     @cInclude("vulkan/vulkan.h");
+    @cInclude("spirv_cross_c.h");
 });
 
 pub const NES_WIDTH = 256;

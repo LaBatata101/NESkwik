@@ -9,6 +9,7 @@ const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
 const shaders = @import("shaders.zig");
 const utils = @import("utils.zig");
+const pipeline = @import("../../shaders/pipeline.zig");
 
 const PIXELOID_FONT = @embedFile("pixeloid_font");
 
@@ -1261,6 +1262,16 @@ pub const UI = struct {
     quit: bool = false,
     fps_manager: FPSManager,
 
+    shader_pipeline: ?*pipeline.ShaderPipeline = null,
+    pending_shader_render: ?PendingShaderRender = null,
+
+    const PendingShaderRender = struct {
+        texture: ?*c.SDL_GPUTexture,
+        src_w: u32,
+        src_h: u32,
+        viewport: pipeline.Viewport,
+    };
+
     const Self = @This();
     const CLAY_ERROR_HANDLER = clay.ErrorHandler{ .error_handler_function = handleClayError };
 
@@ -1338,6 +1349,8 @@ pub const UI = struct {
             .renderer = try Renderer.init(allocator, gpu_device, main_window.ptr, vk_version),
         };
 
+        const shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
+
         const gui = try allocator.create(UI);
         gui.* = .{
             .allocator = allocator,
@@ -1347,6 +1360,7 @@ pub const UI = struct {
             .gpu_device = gpu_device,
             .font = font,
             .fps_manager = FPSManager.init(),
+            .shader_pipeline = shader_pipeline,
         };
 
         return gui;
@@ -1359,6 +1373,8 @@ pub const UI = struct {
             window.deinit(self.allocator, self.gpu_device);
         }
         self.secondary_windows.deinit(self.allocator);
+
+        if (self.shader_pipeline) |sp| sp.deinit();
 
         c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);
@@ -1390,6 +1406,24 @@ pub const UI = struct {
 
     pub fn setWindowFullscreen(self: *const Self, value: bool) void {
         sdlError(c.SDL_SetWindowFullscreen(self.current_window.ptr, value));
+    }
+
+    /// Load a RetroArch `.slangp` shader preset. Replaces any previously loaded preset.
+    pub fn setShaderPreset(self: *Self, path: []const u8) !void {
+        const sp = self.shader_pipeline orelse return error.NoShaderPipeline;
+        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
+        try sp.loadPreset(path, swapchain_format);
+    }
+
+    /// Clear the active shader preset and return to passthrough rendering.
+    pub fn clearShaderPreset(self: *Self) void {
+        if (self.shader_pipeline) |sp| sp.unloadPreset();
+    }
+
+    /// Returns the path of the currently loaded shader preset, or null if none.
+    pub fn getShaderPresetPath(self: *const Self) ?[]const u8 {
+        const sp = self.shader_pipeline orelse return null;
+        return sp.getPresetPath();
     }
 
     pub fn createWindow(
@@ -1707,6 +1741,29 @@ pub const UI = struct {
         }
         c.SDL_EndGPURenderPass(render_pass);
 
+        // After the UI render pass, run the shader pipeline if a frame is pending.
+        if (window.ptr == self.main_window.ptr) {
+            if (self.pending_shader_render) |pending| {
+                defer self.pending_shader_render = null;
+                if (self.shader_pipeline) |sp| {
+                    const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, window.ptr);
+                    sp.renderFrame(
+                        pending.texture,
+                        pending.src_w,
+                        pending.src_h,
+                        pending.viewport,
+                        cmd,
+                        swapchain_tex,
+                        win_w,
+                        win_h,
+                        swapchain_format,
+                    ) catch |err| {
+                        std.log.err("Shader pipeline render failed: {}", .{err});
+                    };
+                }
+            }
+        }
+
         sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
     }
 
@@ -1774,20 +1831,7 @@ pub const UI = struct {
                 _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, tb);
 
-                const viewport = utils.calculateViewport(
-                    cmd.bounding_box.x,
-                    cmd.bounding_box.y,
-                    cmd.bounding_box.width,
-                    cmd.bounding_box.height,
-                    canvas_.params.aspect_ratio,
-                );
-                const dest: c.SDL_FRect = .{
-                    .x = viewport.x,
-                    .y = viewport.y,
-                    .w = viewport.w,
-                    .h = viewport.h,
-                };
-
+                // Always push a black background rect to cover the canvas area.
                 const bg_color_sdl: c.SDL_FColor = if (canvas_.params.bg_color) |bg|
                     bg.toSDL()
                 else
@@ -1800,13 +1844,50 @@ pub const UI = struct {
                     .h = cmd.bounding_box.height,
                 }, bg_color_sdl, null);
 
-                const color: c.SDL_FColor = if (canvas_.params.fg_color) |fg_color| blk: {
-                    break :blk fg_color.toSDL();
-                } else .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
-
-                window.renderer.setTexture(texture);
-                window.renderer.pushRect(dest, color, null);
-                window.renderer.flush();
+                const sp = self.shader_pipeline orelse null;
+                if (sp != null and sp.?.isActive() and window.ptr == self.main_window.ptr) {
+                    // Shader pipeline active: defer rendering to after the UI pass.
+                    const vp = utils.calculateViewport(
+                        cmd.bounding_box.x,
+                        cmd.bounding_box.y,
+                        cmd.bounding_box.width,
+                        cmd.bounding_box.height,
+                        canvas_.params.aspect_ratio,
+                    );
+                    self.pending_shader_render = .{
+                        .texture = texture,
+                        .src_w = canvas_.params.w,
+                        .src_h = canvas_.params.h,
+                        .viewport = .{
+                            .x = @intFromFloat(vp.x),
+                            .y = @intFromFloat(vp.y),
+                            .w = @intFromFloat(vp.w),
+                            .h = @intFromFloat(vp.h),
+                        },
+                    };
+                    window.renderer.flush();
+                } else {
+                    // No shader pipeline: draw the NES frame directly into the UI batch.
+                    const viewport = utils.calculateViewport(
+                        cmd.bounding_box.x,
+                        cmd.bounding_box.y,
+                        cmd.bounding_box.width,
+                        cmd.bounding_box.height,
+                        canvas_.params.aspect_ratio,
+                    );
+                    const dest: c.SDL_FRect = .{
+                        .x = viewport.x,
+                        .y = viewport.y,
+                        .w = viewport.w,
+                        .h = viewport.h,
+                    };
+                    const color: c.SDL_FColor = if (canvas_.params.fg_color) |fg_color| blk: {
+                        break :blk fg_color.toSDL();
+                    } else .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+                    window.renderer.setTexture(texture);
+                    window.renderer.pushRect(dest, color, null);
+                    window.renderer.flush();
+                }
             },
             .shape => |shape_data| {
                 const rect = cmd.bounding_box;

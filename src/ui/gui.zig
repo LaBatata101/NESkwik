@@ -32,6 +32,14 @@ pub const UIState = struct {
     const Self = @This();
     const EmulatorSettings = struct {
         aspect_ratio: utils.AspectRatio = .@"4_3",
+        /// Path to the active shader preset (owned by this struct).
+        shader_preset_path: ?[]u8 = null,
+        /// Set to true to trigger loading the shader preset on the next frame.
+        should_load_shader: bool = false,
+        /// Set to true to trigger clearing the shader preset on the next frame.
+        should_clear_shader: bool = false,
+        /// Last shader load error message to display in the settings window (owned).
+        shader_error: ?[]u8 = null,
     };
 
     pub fn init(alloc: std.mem.Allocator) Self {
@@ -44,6 +52,12 @@ pub const UIState = struct {
         }
         if (self.rom_bytes) |rom_bytes| {
             self.alloc.free(rom_bytes);
+        }
+        if (self.settings.shader_preset_path) |path| {
+            self.alloc.free(path);
+        }
+        if (self.settings.shader_error) |msg| {
+            self.alloc.free(msg);
         }
 
         if (self.emulation_running) { // TODO: add flag to check if a ROM was loaded
@@ -77,6 +91,35 @@ const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
 };
 
 pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
+    // Handle deferred shader preset load/clear requests.
+    if (ui_state.settings.should_load_shader) {
+        ui_state.settings.should_load_shader = false;
+        if (ui_state.settings.shader_preset_path) |path| {
+            if (ui_state.settings.shader_error) |old| {
+                ui_state.alloc.free(old);
+                ui_state.settings.shader_error = null;
+            }
+            ui.setShaderPreset(path) catch |err| {
+                std.log.err("Failed to load shader preset '{s}': {s}", .{ path, @errorName(err) });
+                ui_state.settings.shader_error = std.fmt.allocPrint(
+                    ui_state.alloc,
+                    "Load failed: {s}",
+                    .{@errorName(err)},
+                ) catch null;
+                // Clear the bad path so it doesn't show as "active".
+                ui_state.alloc.free(path);
+                ui_state.settings.shader_preset_path = null;
+            };
+        }
+    } else if (ui_state.settings.should_clear_shader) {
+        ui_state.settings.should_clear_shader = false;
+        ui.clearShaderPreset();
+        if (ui_state.settings.shader_error) |old| {
+            ui_state.alloc.free(old);
+            ui_state.settings.shader_error = null;
+        }
+    }
+
     const root = ui.column(.{});
     {
         if (!ui.isWindowFullscreen()) {
@@ -108,8 +151,8 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 if (ui.menuItem(.{ .label = "Settings" }).clicked(ui.main_window.ctx)) {
                     ui.createWindow(
                         "Settings",
-                        360,
-                        120,
+                        400,
+                        260,
                         .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(ui_state) },
                     );
                 }
@@ -150,6 +193,7 @@ fn drawSettingsWindowUI(ui: *UI, user_data: ?*anyopaque) void {
     });
     {
         drawVideoSection(ui, ui_state);
+        drawShaderSection(ui, ui_state);
     }
     root.end();
 }
@@ -254,6 +298,141 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
         ui_state.settings.aspect_ratio = aspect_ratio_opts.selected();
     }
     row.end();
+}
+
+fn drawShaderSection(ui: *UI, ui_state: *UIState) void {
+    const col = ui.column(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .bg_color = theme.bg_panel,
+        .gap = theme.PANEL_GAP,
+        .child_alignment = .{ .y = .top },
+    });
+    {
+        drawSectionHeader(ui, "SHADER", theme.accent_purple);
+
+        const body = ui.column(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .bg_color = theme.bg_panel,
+            .padding = theme.SECTION_PAD,
+            .gap = 14,
+        });
+        {
+            drawShaderPresetRow(ui, ui_state);
+            if (ui_state.settings.shader_error) |err_msg| {
+                _ = ui.label(.{
+                    .text = err_msg,
+                    .font_size = 13,
+                    .color = theme.accent_red,
+                });
+            }
+        }
+        body.end();
+    }
+    col.end();
+}
+
+fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 12,
+    });
+    {
+        const label_col = ui.column(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .gap = 3,
+            .child_alignment = .{ .x = .left },
+        });
+        {
+            _ = ui.label(.{
+                .text = "PRESET",
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_primary,
+            });
+
+            const active_path = ui.getShaderPresetPath();
+            const preview_text = if (active_path) |p| blk: {
+                // Show just the filename part
+                const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
+                    std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
+                break :blk if (slash > 0) p[slash + 1 ..] else p;
+            } else "None";
+
+            _ = ui.label(.{
+                .text = preview_text,
+                .font_size = 14,
+                .color = theme.text_secondary,
+            });
+        }
+        label_col.end();
+
+        // "Load" button — opens file dialog
+        if (ui.button(.{
+            .text = "Load",
+            .font_size = theme.LABEL_FONT,
+            .text_color = theme.text_primary,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.bg_hover,
+            .padding = theme.HEADER_PAD,
+        }).clicked(ui.current_window.ctx)) {
+            const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
+                @panic("Failed to allocate");
+            defer ui.main_window.ctx.frameAlloc().free(default_location);
+
+            c.SDL_ShowOpenFileDialog(
+                shader_dialog_callback,
+                clay.anytypeToAnyopaquePtr(ui_state),
+                ui.main_window.ptr,
+                &shader_filter_list,
+                shader_filter_list.len,
+                default_location.ptr,
+                false,
+            );
+        }
+
+        // "Clear" button — clears the active preset
+        if (ui.button(.{
+            .text = "Clear",
+            .font_size = theme.LABEL_FONT,
+            .text_color = theme.text_primary,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.bg_hover,
+            .padding = theme.HEADER_PAD,
+        }).clicked(ui.current_window.ctx)) {
+            if (ui_state.settings.shader_preset_path) |path| {
+                ui_state.alloc.free(path);
+                ui_state.settings.shader_preset_path = null;
+            }
+            ui_state.settings.should_clear_shader = true;
+        }
+    }
+    row.end();
+}
+
+const shader_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
+    .{ .name = "RetroArch Shader Presets", .pattern = "slangp" },
+    .{ .name = "All files", .pattern = "*" },
+};
+
+fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
+    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
+
+    if (filelist == null) {
+        std.debug.print("An error ocurred while selecting shader file: {s}\n", .{c.SDL_GetError()});
+        return;
+    }
+    if (filelist.* == null) {
+        return;
+    }
+
+    const filepath = std.mem.span(filelist.*);
+    std.log.debug("User selected shader: {s}", .{filepath});
+
+    if (ui_state.settings.shader_preset_path) |old_path| {
+        ui_state.alloc.free(old_path);
+    }
+    ui_state.settings.shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+    ui_state.settings.should_load_shader = true;
 }
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
