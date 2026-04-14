@@ -1128,6 +1128,87 @@ pub const Slider = struct {
         return self.updated_value;
     }
 };
+
+/// An on/off toggle switch rendered as a pill with a sliding circle thumb.
+/// Click to flip.  Call `.value()` to read the (potentially updated) state.
+pub const Toggle = struct {
+    updated_value: bool,
+
+    pub const Params = struct {
+        id: []const u8,
+        value: bool,
+        on_color: Color,
+        off_color: Color,
+        thumb_color: Color,
+        /// Height of the pill (width = height × 2).
+        size: u16 = 20,
+    };
+
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        const element_id = clay.ElementId.ID(params.id);
+        clay.openElementWithId(element_id);
+
+        const is_hovered = clay.pointerOver(element_id);
+        var new_value = params.value;
+        if (is_hovered and ctx.frame.mouse_pressed) new_value = !params.value;
+
+        const h: f32 = @floatFromInt(params.size);
+        const w: f32 = h * 2.0;
+        const pad: u16 = @intFromFloat(@round(h * 0.15));
+        const circle_d: f32 = h - @as(f32, @floatFromInt(pad)) * 2.0;
+
+        const bg_color = if (params.value) params.on_color else params.off_color;
+
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(w), .h = .fixed(h) },
+                .direction = .left_to_right,
+                .child_alignment = .{ .y = .center },
+                .padding = .all(pad),
+            },
+            .background_color = bg_color.toClay(),
+            .corner_radius = .all(h / 2.0),
+        });
+
+        // When on, push the thumb to the right side with a spacer first.
+        if (params.value) {
+            _ = clay.openElement();
+            clay.configureOpenElement(.{
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(0) } },
+            });
+            clay.closeElement();
+        }
+
+        // Circular thumb.
+        _ = clay.openElement();
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(circle_d), .h = .fixed(circle_d) } },
+            .background_color = params.thumb_color.toClay(),
+            .corner_radius = .all(circle_d / 2.0),
+        });
+        clay.closeElement();
+
+        // When off, push the thumb to the left with a trailing spacer.
+        if (!params.value) {
+            _ = clay.openElement();
+            clay.configureOpenElement(.{
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(0) } },
+            });
+            clay.closeElement();
+        }
+
+        clay.closeElement();
+        return .{ .updated_value = new_value };
+    }
+
+    /// Returns the (potentially flipped) value after this frame's click.
+    pub fn value(self: *const Self) bool {
+        return self.updated_value;
+    }
+};
+
 pub const ShapeData = struct {
     /// Must have values between 0.0-1.0
     vertices: []const clay.Vector2,

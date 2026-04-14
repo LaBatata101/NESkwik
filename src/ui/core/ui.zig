@@ -2177,4 +2177,8 @@ pub const UI = struct {
     pub fn slider(self: *Self, params: widgets.Slider.Params) *widgets.Slider {
         return self.current_window.ctx.allocWidget(widgets.Slider, .start(self.current_window.ctx, params));
     }
+
+    pub fn toggle(self: *Self, params: widgets.Toggle.Params) *widgets.Toggle {
+        return self.current_window.ctx.allocWidget(widgets.Toggle, .start(self.current_window.ctx, params));
+    }
 };
