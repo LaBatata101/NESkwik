@@ -290,6 +290,7 @@ pub const WidgetState = union(enum) {
     dropdown_menu: DropdownMenuState,
     combobox: ComboboxState,
     tooltip: TooltipState,
+    slider: SliderState,
 
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
@@ -309,6 +310,9 @@ pub const WidgetState = union(enum) {
     };
     pub const TooltipState = struct {
         hover_start_ms: u64,
+    };
+    pub const SliderState = struct {
+        dragging: bool = false,
     };
 };
 
@@ -2168,5 +2172,9 @@ pub const UI = struct {
 
     pub fn separator(self: *Self, params: widgets.Separator.Params) *widgets.Separator {
         return self.current_window.ctx.allocWidget(widgets.Separator, .start(params));
+    }
+
+    pub fn slider(self: *Self, params: widgets.Slider.Params) *widgets.Slider {
+        return self.current_window.ctx.allocWidget(widgets.Slider, .start(self.current_window.ctx, params));
     }
 };

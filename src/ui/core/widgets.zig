@@ -1017,6 +1017,117 @@ const ComboboxItem = struct {
     }
 };
 
+pub const Slider = struct {
+    id: clay.ElementId,
+    ctx: *UIContext,
+    updated_value: f32,
+
+    pub const Params = struct {
+        id: []const u8,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: ?f32 = null,
+        /// Height of the track bar in pixels.
+        height: u16 = 4,
+        /// Diameter of the circular thumb; also controls the overall widget height.
+        thumb_size: u16 = 14,
+        fill_color: Color,
+        track_color: Color,
+        thumb_color: Color,
+        corner_radius: f32 = 2,
+    };
+
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        const element_id = clay.ElementId.ID(params.id);
+        clay.openElementWithId(element_id);
+
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .slider = .{ .dragging = false } });
+        const is_hovered = clay.pointerOver(element_id);
+
+        if (is_hovered and ctx.frame.mouse_pressed) state.slider.dragging = true;
+        if (ctx.frame.mouse_released) state.slider.dragging = false;
+
+        const elem = clay.getElementData(element_id);
+        const track_w = if (elem.found and elem.bounding_box.width > 1) elem.bounding_box.width else 200.0;
+        const track_x = if (elem.found) elem.bounding_box.x else 0.0;
+
+        // Compute value from the mouse's absolute X position within the track.
+        var new_value = params.value;
+        if (state.slider.dragging and ctx.frame.mouse_down) {
+            const range = params.max - params.min;
+            new_value = std.math.clamp(
+                params.min + (ctx.mouse_x - track_x) / track_w * range,
+                params.min,
+                params.max,
+            );
+            if (params.step) |step| if (step > 0) {
+                new_value = @round((new_value - params.min) / step) * step + params.min;
+                new_value = std.math.clamp(new_value, params.min, params.max);
+            };
+        }
+
+        // Full-width track with a proportional left fill and a thumb at the boundary.
+        const frac = if (params.max > params.min)
+            std.math.clamp((params.value - params.min) / (params.max - params.min), 0.0, 1.0)
+        else
+            0.0;
+
+        const thumb_d: f32 = @floatFromInt(params.thumb_size);
+        // Fill ends half a thumb-diameter before the thumb centre so the thumb sits exactly at the value boundary.
+        const fill_w = std.math.clamp(track_w * frac - thumb_d / 2.0, 0.0, track_w - thumb_d);
+
+        const track_h: f32 = @floatFromInt(params.height);
+
+        // Outer container
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fixed(thumb_d) },
+                .direction = .left_to_right,
+                .child_alignment = .{ .y = .center },
+            },
+        });
+
+        // Left fill (up to the thumb).
+        if (fill_w > 0) {
+            _ = clay.openElement();
+            clay.configureOpenElement(.{
+                .layout = .{ .sizing = .{ .w = .fixed(fill_w), .h = .fixed(track_h) } },
+                .background_color = params.fill_color.toClay(),
+                .corner_radius = .all(params.corner_radius),
+            });
+            clay.closeElement();
+        }
+
+        // Circular thumb
+        _ = clay.openElement();
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(thumb_d), .h = .fixed(thumb_d) } },
+            .background_color = params.thumb_color.toClay(),
+            .corner_radius = .all(thumb_d / 2.0),
+        });
+        clay.closeElement();
+
+        // Right remainder track.
+        _ = clay.openElement();
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(track_h) } },
+            .background_color = params.track_color.toClay(),
+            .corner_radius = .all(params.corner_radius),
+        });
+        clay.closeElement();
+
+        clay.closeElement();
+        return .{ .id = element_id, .ctx = ctx, .updated_value = new_value };
+    }
+
+    /// Returns the value after applying any drag delta this frame.
+    pub fn value(self: *const Self) f32 {
+        return self.updated_value;
+    }
+};
 pub const ShapeData = struct {
     /// Must have values between 0.0-1.0
     vertices: []const clay.Vector2,
