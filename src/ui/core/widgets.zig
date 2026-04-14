@@ -352,6 +352,7 @@ pub const ScrollContainer = struct {
         padding: clay.Padding = .{},
         gap: u16 = 0,
         show_scrollbar: bool = true,
+        scrollbar_color: Color = Color.rgb(120, 130, 150),
     };
     const Self = @This();
 
@@ -449,7 +450,10 @@ pub const ScrollContainer = struct {
                             .offset = .{ .x = -2, .y = scroll_bar_y },
                             .z_index = 10,
                         },
-                        .background_color = if (is_dragging or is_hovered) .{ 0, 0, 0, 100 } else .{ 0, 0, 0, 50 },
+                        .background_color = if (is_dragging or is_hovered)
+                            params.scrollbar_color.toClay()
+                        else
+                            params.scrollbar_color.withAlpha(140).toClay(),
                         .corner_radius = .all(3),
                     });
                     clay.closeElement();

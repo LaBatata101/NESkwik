@@ -175,7 +175,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     ui.createWindow(
                         "Settings",
                         400,
-                        260,
+                        480,
                         .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(ui_state) },
                     );
                 }
@@ -370,8 +370,32 @@ fn drawShaderSection(ui: *UI, ui_state: *UIState) void {
             }
         }
         body.end();
+
+        // Parameters sub-section — only when a shader with params is loaded.
+        const param_infos = ui.getShaderParamInfos();
+        if (!ui_state.settings.shader_loading and param_infos.len > 0) {
+            drawShaderParamsSection(ui, param_infos);
+        }
     }
     col.end();
+}
+
+fn drawShaderParamsSection(ui: *UI, param_infos: []const @import("../shaders/pipeline.zig").ParamInfo) void {
+    drawSectionHeader(ui, "PARAMETERS", theme.accent_purple);
+
+    const scroll = ui.scrollArea(.{
+        .id = "shader_params_scroll",
+        .sizing = .{ .w = .grow, .h = .fixed(200) },
+        .vertical = true,
+        .padding = theme.SECTION_PAD,
+        .gap = 12,
+    });
+    {
+        for (param_infos, 0..) |info, i| {
+            drawParamRow(ui, info, i);
+        }
+    }
+    scroll.end();
 }
 
 fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
@@ -453,6 +477,101 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
         });
     }
     col.end();
+}
+
+fn drawParamRow(ui: *UI, info: @import("../shaders/pipeline.zig").ParamInfo, index: usize) void {
+    const alloc = ui.current_window.ctx.frameAlloc();
+
+    // Section title: min == max == 0 (and step == 0 or null).
+    // Shader authors use these entries to label groups of related params.
+    const is_section = info.min == 0.0 and info.max == 0.0 and
+        (info.step == null or info.step.? == 0.0);
+    if (is_section) {
+        const row = ui.row(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .child_alignment = .{ .y = .center },
+            .gap = 6,
+        });
+        {
+            _ = ui.label(.{
+                .text = info.display_name,
+                .font_size = 12,
+                .color = theme.accent_purple,
+            });
+            const sep = ui.row(.{ .sizing = .{ .w = .grow, .h = .fixed(1) } });
+            sep.end();
+            _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(0) } });
+        }
+        row.end();
+        return;
+    }
+
+    // Toggle: range [0, 1] with step 1 — treat as boolean on/off switch.
+    const is_toggle = info.min == 0.0 and info.max == 1.0 and
+        info.step != null and info.step.? == 1.0;
+
+    const current = ui.getShaderParam(info.name);
+
+    const widget_id = std.fmt.allocPrint(alloc, "param_widget_{d}", .{index}) catch info.name;
+
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+    });
+    {
+        _ = ui.label(.{
+            .text = info.display_name,
+            .font_size = 14,
+            .color = theme.text_secondary,
+        });
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        if (is_toggle) {
+            const tog = ui.toggle(.{
+                .id = widget_id,
+                .value = current != 0.0,
+                .on_color = theme.accent_purple,
+                .off_color = theme.text_muted,
+                .thumb_color = theme.text_primary,
+                .size = 18,
+            });
+            const new_val: f32 = if (tog.value()) 1.0 else 0.0;
+            if (new_val != current) ui.setShaderParam(info.name, new_val);
+        } else {
+            // Format value label: derive precision from step size.
+            const decimals: usize = if (info.step) |s| (if (s >= 1.0) 0 else if (s >= 0.1) 1 else 2) else 2;
+            const value_text = switch (decimals) {
+                0 => std.fmt.allocPrint(alloc, "{d:.0}", .{current}) catch "?",
+                1 => std.fmt.allocPrint(alloc, "{d:.1}", .{current}) catch "?",
+                else => std.fmt.allocPrint(alloc, "{d:.2}", .{current}) catch "?",
+            };
+            _ = ui.label(.{
+                .text = value_text,
+                .font_size = 14,
+                .color = theme.text_value,
+            });
+        }
+    }
+    row.end();
+
+    if (!is_toggle) {
+        // Draggable track bar below the label row.
+        const drag = ui.slider(.{
+            .id = widget_id,
+            .value = current,
+            .min = info.min,
+            .max = info.max,
+            .step = info.step,
+            .height = 4,
+            .fill_color = theme.accent_purple,
+            .track_color = theme.bg_section,
+            .thumb_color = theme.text_primary,
+            .corner_radius = 2,
+        });
+        const new_val = drag.value();
+        if (new_val != current) ui.setShaderParam(info.name, new_val);
+    }
 }
 
 const shader_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{

@@ -1412,6 +1412,20 @@ pub const UI = struct {
         sdlError(c.SDL_SetWindowFullscreen(self.current_window.ptr, value));
     }
 
+    pub fn getShaderParamInfos(self: *const Self) []const pipeline.ParamInfo {
+        const sp = self.shader_pipeline orelse return &.{};
+        return sp.getParamInfos();
+    }
+
+    pub fn getShaderParam(self: *const Self, name: []const u8) f32 {
+        const sp = self.shader_pipeline orelse return 0;
+        return sp.getParam(name);
+    }
+
+    pub fn setShaderParam(self: *Self, name: []const u8, value: f32) void {
+        if (self.shader_pipeline) |sp| sp.setParam(name, value);
+    }
+
     /// Load a RetroArch `.slangp` shader preset. Replaces any previously loaded preset.
     /// TODO: remove?
     pub fn setShaderPreset(self: *Self, path: []const u8) !void {

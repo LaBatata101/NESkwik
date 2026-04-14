@@ -278,10 +278,23 @@ const ShaderPass = struct {
     }
 };
 
+/// Public metadata for a single shader parameter, used by the UI.
+pub const ParamInfo = struct {
+    /// Key used to read/write the value (points into pass reflection data).
+    name: []const u8,
+    /// Human-readable label from `#pragma parameter` (owned by LoadedPreset).
+    display_name: []const u8,
+    min: f32,
+    max: f32,
+    step: ?f32,
+};
+
 const LoadedPreset = struct {
     passes: []ShaderPass,
     /// Parameter name -> bytes of the f32 value.
     param_data: std.StringHashMap([]u8),
+    /// Ordered list of parameter metadata for UI display.
+    param_meta: std.ArrayListUnmanaged(ParamInfo) = .empty,
     luts: std.StringHashMap(Lut),
 
     fn deinit(self: *LoadedPreset, alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
@@ -295,6 +308,9 @@ const LoadedPreset = struct {
             alloc.free(entry.value_ptr.*);
         }
         self.param_data.deinit();
+
+        for (self.param_meta.items) |info| alloc.free(info.display_name);
+        self.param_meta.deinit(alloc);
 
         var lut_it = self.luts.iterator();
         while (lut_it.next()) |entry| {
@@ -644,7 +660,14 @@ const CompilePassResult = struct {
     texture_format: c.SDL_GPUTextureFormat,
 };
 
-const Param = struct { name: []const u8, value: f32 };
+const Param = struct {
+    name: []const u8, // borrowed from reflection (not owned here)
+    display_name: []const u8, // owned (duped from ShaderParam.option_name)
+    value: f32,
+    min: f32,
+    max: f32,
+    step: ?f32,
+};
 
 fn compileAndCreatePipeline(
     alloc: std.mem.Allocator,
@@ -685,7 +708,14 @@ fn compileAndCreatePipeline(
                                     std.log.warn("UBO field '{s}' has no #pragma parameter, defaulting to 0", .{pname});
                                     break :blk &parser.ShaderParam{ .option_name = pname };
                                 };
-                                try params.append(alloc, .{ .name = pname, .value = field.initial });
+                                try params.append(alloc, .{
+                                    .name = pname,
+                                    .display_name = try alloc.dupe(u8, field.option_name),
+                                    .value = field.initial,
+                                    .min = field.min,
+                                    .max = field.max,
+                                    .step = field.step,
+                                });
                             }
                         }
                     },
@@ -834,7 +864,19 @@ fn compilePassWorkerInner(args: WorkerArgs) !void {
         else
             try args.alloc.dupe(u8, std.mem.asBytes(&param.value));
         if (try args.preset.param_data.fetchPut(param.name, bytes)) |old| {
+            // Parameter was already registered by another pass — just update
+            // the value bytes and discard the duplicate display_name.
             args.alloc.free(old.value);
+            args.alloc.free(param.display_name);
+        } else {
+            // First time we see this parameter — record its full metadata.
+            try args.preset.param_meta.append(args.alloc, .{
+                .name = param.name,
+                .display_name = param.display_name, // ownership transferred
+                .min = param.min,
+                .max = param.max,
+                .step = param.step,
+            });
         }
     }
 
@@ -1577,6 +1619,28 @@ pub const ShaderPipeline = struct {
 
     pub fn getPresetPath(self: *const Self) ?[]const u8 {
         return self.preset_path;
+    }
+
+    /// Returns the ordered list of tunable parameters for the active preset.
+    pub fn getParamInfos(self: *const Self) []const ParamInfo {
+        const p = self.preset orelse return &.{};
+        return p.param_meta.items;
+    }
+
+    /// Read the current f32 value of a parameter by name.
+    pub fn getParam(self: *const Self, name: []const u8) f32 {
+        const p = self.preset orelse return 0;
+        const bytes = p.param_data.get(name) orelse return 0;
+        return std.mem.bytesAsValue(f32, bytes[0..4]).*;
+    }
+
+    /// Write a new f32 value for a parameter by name.  No-op if the preset
+    /// is not loaded or the parameter does not exist.
+    pub fn setParam(self: *Self, name: []const u8, value: f32) void {
+        const p = &(self.preset orelse return);
+        if (p.param_data.getPtr(name)) |bytes_ptr| {
+            @memcpy(bytes_ptr.*[0..4], std.mem.asBytes(&value));
+        }
     }
 
     pub fn isCompiling(self: *const Self) bool {
