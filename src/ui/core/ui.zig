@@ -291,6 +291,7 @@ pub const WidgetState = union(enum) {
     combobox: ComboboxState,
     tooltip: TooltipState,
     slider: SliderState,
+    toggle: ToggleState,
 
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
@@ -313,6 +314,10 @@ pub const WidgetState = union(enum) {
     };
     pub const SliderState = struct {
         dragging: bool = false,
+        visual_value: f32,
+    };
+    pub const ToggleState = struct {
+        progress: f32,
     };
 };
 

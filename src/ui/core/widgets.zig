@@ -6,6 +6,28 @@ pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
 const utils = @import("utils.zig");
 
+fn animateValue(current: f32, target: f32, speed: f32, dt: f32) f32 {
+    if (dt <= 0.0) return current;
+
+    const delta = target - current;
+    if (@abs(delta) <= 0.0001) return target;
+
+    const blend = 1.0 - @exp(-speed * dt);
+    return current + delta * blend;
+}
+
+fn lerpColor(a: Color, b: Color, t: f32) Color {
+    const clamped_t = std.math.clamp(t, 0.0, 1.0);
+    const inv_t = 1.0 - clamped_t;
+
+    return .{
+        .r = @intFromFloat(@round(@as(f32, @floatFromInt(a.r)) * inv_t + @as(f32, @floatFromInt(b.r)) * clamped_t)),
+        .g = @intFromFloat(@round(@as(f32, @floatFromInt(a.g)) * inv_t + @as(f32, @floatFromInt(b.g)) * clamped_t)),
+        .b = @intFromFloat(@round(@as(f32, @floatFromInt(a.b)) * inv_t + @as(f32, @floatFromInt(b.b)) * clamped_t)),
+        .a = @intFromFloat(@round(@as(f32, @floatFromInt(a.a)) * inv_t + @as(f32, @floatFromInt(b.a)) * clamped_t)),
+    };
+}
+
 pub const CustomData = union(enum) {
     canvas: Canvas,
     shape: ShapeData,
@@ -1048,7 +1070,10 @@ pub const Slider = struct {
         const element_id = clay.ElementId.ID(params.id);
         clay.openElementWithId(element_id);
 
-        const state = ctx.getOrCreateWidgetState(element_id, .{ .slider = .{ .dragging = false } });
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .slider = .{
+            .dragging = false,
+            .visual_value = params.value,
+        } });
         const is_hovered = clay.pointerOver(element_id);
 
         if (is_hovered and ctx.frame.mouse_pressed) state.slider.dragging = true;
@@ -1059,23 +1084,35 @@ pub const Slider = struct {
         const track_x = if (elem.found) elem.bounding_box.x else 0.0;
 
         // Compute value from the mouse's absolute X position within the track.
+        var raw_value = params.value;
         var new_value = params.value;
         if (state.slider.dragging and ctx.frame.mouse_down) {
             const range = params.max - params.min;
-            new_value = std.math.clamp(
+            raw_value = std.math.clamp(
                 params.min + (ctx.mouse_x - track_x) / track_w * range,
                 params.min,
                 params.max,
             );
+            new_value = raw_value;
             if (params.step) |step| if (step > 0) {
                 new_value = @round((new_value - params.min) / step) * step + params.min;
                 new_value = std.math.clamp(new_value, params.min, params.max);
             };
         }
 
+        const visual_target = if (state.slider.dragging and ctx.frame.mouse_down) raw_value else params.value;
+        state.slider.visual_value = animateValue(
+            state.slider.visual_value,
+            visual_target,
+            if (state.slider.dragging and ctx.frame.mouse_down) 28.0 else 18.0,
+            ctx.dt,
+        );
+        const visual_value = std.math.clamp(state.slider.visual_value, params.min, params.max);
+        state.slider.visual_value = visual_value;
+
         // Full-width track with a proportional left fill and a thumb at the boundary.
         const frac = if (params.max > params.min)
-            std.math.clamp((params.value - params.min) / (params.max - params.min), 0.0, 1.0)
+            std.math.clamp((visual_value - params.min) / (params.max - params.min), 0.0, 1.0)
         else
             0.0;
 
@@ -1154,6 +1191,9 @@ pub const Toggle = struct {
         const element_id = clay.ElementId.ID(params.id);
         clay.openElementWithId(element_id);
 
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .toggle = .{
+            .progress = if (params.value) 1.0 else 0.0,
+        } });
         const is_hovered = clay.pointerOver(element_id);
         var new_value = params.value;
         if (is_hovered and ctx.frame.mouse_pressed) new_value = !params.value;
@@ -1162,8 +1202,16 @@ pub const Toggle = struct {
         const w: f32 = h * 2.0;
         const pad: u16 = @intFromFloat(@round(h * 0.15));
         const circle_d: f32 = h - @as(f32, @floatFromInt(pad)) * 2.0;
+        const travel = @max(0.0, w - @as(f32, @floatFromInt(pad * 2)) - circle_d);
+        const target_progress: f32 = if (new_value) 1.0 else 0.0;
 
-        const bg_color = if (params.value) params.on_color else params.off_color;
+        state.toggle.progress = animateValue(state.toggle.progress, target_progress, 20.0, ctx.dt);
+        const progress = std.math.clamp(state.toggle.progress, 0.0, 1.0);
+        state.toggle.progress = progress;
+
+        const bg_color = lerpColor(params.off_color, params.on_color, progress);
+        const leading_space = travel * progress;
+        const trailing_space = travel - leading_space;
 
         clay.configureOpenElement(.{
             .layout = .{
@@ -1176,16 +1224,14 @@ pub const Toggle = struct {
             .corner_radius = .all(h / 2.0),
         });
 
-        // When on, push the thumb to the right side with a spacer first.
-        if (params.value) {
+        if (leading_space > 0.0) {
             _ = clay.openElement();
             clay.configureOpenElement(.{
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(0) } },
+                .layout = .{ .sizing = .{ .w = .fixed(leading_space), .h = .fixed(0) } },
             });
             clay.closeElement();
         }
 
-        // Circular thumb.
         _ = clay.openElement();
         clay.configureOpenElement(.{
             .layout = .{ .sizing = .{ .w = .fixed(circle_d), .h = .fixed(circle_d) } },
@@ -1194,11 +1240,10 @@ pub const Toggle = struct {
         });
         clay.closeElement();
 
-        // When off, push the thumb to the left with a trailing spacer.
-        if (!params.value) {
+        if (trailing_space > 0.0) {
             _ = clay.openElement();
             clay.configureOpenElement(.{
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(0) } },
+                .layout = .{ .sizing = .{ .w = .fixed(trailing_space), .h = .fixed(0) } },
             });
             clay.closeElement();
         }
