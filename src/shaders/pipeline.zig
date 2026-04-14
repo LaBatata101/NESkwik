@@ -755,6 +755,7 @@ const WorkerArgs = struct {
     initial_values: *const std.StringHashMap(slangp.TypeUnion),
     mutex: *std.Thread.Mutex,
     had_error: *bool,
+    compile_progress: *std.atomic.Value(u32),
 };
 
 fn compilePassWorker(args: WorkerArgs) void {
@@ -864,26 +865,52 @@ fn compilePassWorkerInner(args: WorkerArgs) !void {
         .texture_format = result.texture_format,
         .filter = filter,
     };
+    _ = args.compile_progress.fetchAdd(1, .monotonic);
 }
 
-fn loadPresetFile(
-    alloc: std.mem.Allocator,
-    path: []const u8,
-    vk_version: c_uint,
-    device: ?*c.SDL_GPUDevice,
-    swapchain_format: c.SDL_GPUTextureFormat,
-) !LoadedPreset {
+/// Holds a parsed `.slangp` preset file before GPU compilation begins.
+/// `content` must outlive `shader_config` because `ShaderPass.path` values
+/// are slices into `content` (not separately allocated).
+/// `dir` is an owned copy of the preset's containing directory path.
+const ParsedPreset = struct {
+    content: []u8,
+    shader_config: slangp.ShaderConfig,
+    dir: []u8,
+
+    fn deinit(self: *ParsedPreset, alloc: std.mem.Allocator) void {
+        self.shader_config.deinit(alloc);
+        alloc.free(self.dir);
+        alloc.free(self.content);
+    }
+};
+
+/// Read and parse a `.slangp` preset file.
+fn parsePresetFile(alloc: std.mem.Allocator, path: []const u8) !ParsedPreset {
     const full_path = try std.fs.realpathAlloc(alloc, path);
     defer alloc.free(full_path);
-    const dir = std.fs.path.dirname(full_path).?;
+    const dir = try alloc.dupe(u8, std.fs.path.dirname(full_path).?);
+    errdefer alloc.free(dir);
 
     const file = try std.fs.cwd().openFile(full_path, .{});
     defer file.close();
     const content = try file.readToEndAlloc(alloc, 1024 * 1024);
-    defer alloc.free(content);
+    errdefer alloc.free(content);
 
-    var shader_config = try slangp.parse_slangp(alloc, content);
-    defer shader_config.deinit(alloc);
+    const shader_config = try slangp.parse_slangp(alloc, content);
+    return .{ .content = content, .shader_config = shader_config, .dir = dir };
+}
+
+/// Load LUT textures and compile all shader passes from an already-parsed preset.
+fn compilePreset(
+    alloc: std.mem.Allocator,
+    parsed: *ParsedPreset,
+    vk_version: c_uint,
+    device: ?*c.SDL_GPUDevice,
+    swapchain_format: c.SDL_GPUTextureFormat,
+    progress: *std.atomic.Value(u32),
+) !LoadedPreset {
+    const dir = parsed.dir;
+    const shader_config = &parsed.shader_config;
 
     // Load LUT textures
     var luts: std.StringHashMap(Lut) = .init(alloc);
@@ -1019,6 +1046,7 @@ fn loadPresetFile(
             .initial_values = &shader_config.shader_params_initial_values,
             .mutex = &mutex,
             .had_error = &had_error,
+            .compile_progress = progress,
         }});
     }
     wg.wait();
@@ -1026,6 +1054,19 @@ fn loadPresetFile(
     if (had_error) return error.ShaderCompilationFailed;
 
     return preset;
+}
+
+fn loadPresetFile(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    vk_version: c_uint,
+    device: ?*c.SDL_GPUDevice,
+    swapchain_format: c.SDL_GPUTextureFormat,
+    progress: *std.atomic.Value(u32),
+) !LoadedPreset {
+    var parsed = try parsePresetFile(alloc, path);
+    defer parsed.deinit(alloc);
+    return compilePreset(alloc, &parsed, vk_version, device, swapchain_format, progress);
 }
 
 fn prepareUniformPayload(
@@ -1341,6 +1382,17 @@ pub const ShaderPipeline = struct {
     preset: ?LoadedPreset = null,
     preset_path: ?[]u8 = null,
 
+    // Async compile state
+    compile_progress: std.atomic.Value(u32) = .init(0),
+    compile_total: u32 = 0,
+    compile_thread: ?std.Thread = null,
+    compile_mutex: std.Thread.Mutex = .{},
+    pending_preset: ?LoadedPreset = null,
+    pending_preset_path: ?[]u8 = null,
+    compile_failed: bool = false,
+    compile_error_msg: ?[]u8 = null,
+    compile_done: std.atomic.Value(bool) = .init(false),
+
     // Usage flags derived from preset reflection at load time
     uses_pass_output: bool = false,
     uses_pass_feedback: bool = false,
@@ -1407,6 +1459,17 @@ pub const ShaderPipeline = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.compile_thread) |t| {
+            t.join();
+            self.compile_thread = null;
+        }
+        {
+            self.compile_mutex.lock();
+            defer self.compile_mutex.unlock();
+            if (self.pending_preset) |*p| p.deinit(self.alloc, self.device);
+            if (self.pending_preset_path) |p| self.alloc.free(p);
+            if (self.compile_error_msg) |m| self.alloc.free(m);
+        }
         self.clearAccumulationState();
         self.pass_output.deinit();
         self.pass_feedback.deinit();
@@ -1424,12 +1487,14 @@ pub const ShaderPipeline = struct {
         // Unload any existing preset first
         self.unloadPreset();
 
+        var dummy_progress: std.atomic.Value(u32) = .init(0);
         self.preset = try loadPresetFile(
             self.alloc,
             path,
             self.vk_version,
             self.device,
             swapchain_format,
+            &dummy_progress,
         );
         self.preset_path = try self.alloc.dupe(u8, path);
 
@@ -1463,7 +1528,33 @@ pub const ShaderPipeline = struct {
     }
 
     /// Unload the current preset and reset all GPU state.
+    /// If an async load is in progress it is joined first.
     pub fn unloadPreset(self: *Self) void {
+        if (self.compile_thread) |t| {
+            t.join();
+            self.compile_thread = null;
+        }
+        {
+            self.compile_mutex.lock();
+            defer self.compile_mutex.unlock();
+            if (self.pending_preset) |*p| {
+                p.deinit(self.alloc, self.device);
+                self.pending_preset = null;
+            }
+            if (self.pending_preset_path) |p| {
+                self.alloc.free(p);
+                self.pending_preset_path = null;
+            }
+            if (self.compile_error_msg) |m| {
+                self.alloc.free(m);
+                self.compile_error_msg = null;
+            }
+            self.compile_failed = false;
+        }
+        self.compile_progress.store(0, .monotonic);
+        self.compile_total = 0;
+        self.compile_done.store(false, .monotonic);
+
         self.clearAccumulationState();
         if (self.preset) |*p| {
             p.deinit(self.alloc, self.device);
@@ -1486,6 +1577,158 @@ pub const ShaderPipeline = struct {
 
     pub fn getPresetPath(self: *const Self) ?[]const u8 {
         return self.preset_path;
+    }
+
+    pub fn isCompiling(self: *const Self) bool {
+        return self.compile_thread != null and !self.compile_done.load(.acquire);
+    }
+
+    /// Start an asynchronous shader preset load.  Progress can be tracked
+    /// via `compile_progress` / `compile_total`, and the result retrieved
+    /// by calling `pollLoadResult` each frame.
+    pub fn startLoadPreset(self: *Self, path: []const u8, swapchain_format: c.SDL_GPUTextureFormat) !void {
+        // unloadPreset joins any in-progress thread and resets all state.
+        self.unloadPreset();
+
+        var parsed = try parsePresetFile(self.alloc, path);
+        errdefer parsed.deinit(self.alloc);
+        self.compile_total = @intCast(parsed.shader_config.total_passes);
+
+        const ctx = try self.alloc.create(AsyncLoadCtx);
+        errdefer self.alloc.destroy(ctx);
+        ctx.* = .{
+            .pipeline = self,
+            .path = try self.alloc.dupe(u8, path),
+            .swapchain_format = swapchain_format,
+            .parsed = parsed, // ownership transferred; freed by asyncLoadFn
+        };
+        errdefer self.alloc.free(ctx.path);
+
+        self.compile_thread = try std.Thread.spawn(.{}, asyncLoadFn, .{ctx});
+    }
+
+    /// The result of a `pollLoadResult` call.
+    pub const ShaderLoadPoll = union(enum) {
+        /// No async load has been started.
+        idle,
+        /// Compilation is in progress; `completed`/`total` indicate how many
+        /// passes have finished.
+        compiling: struct { completed: u32, total: u32 },
+        /// Compilation succeeded and the preset is now active.
+        done,
+        /// Compilation failed; the slice is the error message (owned by the
+        /// pipeline — do not free it).
+        failed: []const u8,
+    };
+
+    /// Poll the status of an async `startLoadPreset` call.
+    /// When `.done` or `.failed` is returned the compile thread has been
+    /// joined and the pipeline has been updated.
+    pub fn pollLoadResult(self: *Self) ShaderLoadPoll {
+        if (self.compile_thread == null) return .idle;
+
+        if (!self.compile_done.load(.acquire)) {
+            return .{ .compiling = .{
+                .completed = self.compile_progress.load(.monotonic),
+                .total = self.compile_total,
+            } };
+        }
+
+        // Compilation finished — join the thread.
+        if (self.compile_thread) |t| {
+            t.join();
+            self.compile_thread = null;
+        }
+
+        self.compile_mutex.lock();
+        defer self.compile_mutex.unlock();
+
+        if (self.compile_failed) {
+            return .{ .failed = self.compile_error_msg orelse "Unknown error" };
+        }
+
+        // Move the pending result into the active fields.
+        if (self.pending_preset) |preset| {
+            self.preset = preset;
+            self.pending_preset = null;
+            self.preset_path = self.pending_preset_path;
+            self.pending_preset_path = null;
+
+            self.uses_pass_output = false;
+            self.uses_pass_feedback = false;
+            self.max_frame_history = 0;
+
+            for (self.preset.?.passes) |pass| {
+                for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
+                    for (set_info.bindings.items) |binding| {
+                        switch (binding.binding_type) {
+                            .sampler2D => |st| switch (st) {
+                                .PassOutput => self.uses_pass_output = true,
+                                .PassFeedback => self.uses_pass_feedback = true,
+                                .OriginalHistory => |id| self.max_frame_history = @max(id, self.max_frame_history),
+                                else => {},
+                            },
+                            else => {},
+                        }
+                    }
+                }
+            }
+
+            self.frame_history.resize(self.alloc, self.max_frame_history) catch {};
+
+            std.log.info("Loaded shader preset: {s} ({} pass(es))", .{
+                self.preset_path.?, self.preset.?.passes.len,
+            });
+        }
+
+        return .done;
+    }
+
+    /// Context passed to the async compilation thread.
+    const AsyncLoadCtx = struct {
+        pipeline: *ShaderPipeline,
+        /// Owned copy of the preset path (used only to store as `preset_path`).
+        path: []u8,
+        swapchain_format: c.SDL_GPUTextureFormat,
+        /// Already-parsed preset data; ownership transferred from `startLoadPreset`.
+        parsed: ParsedPreset,
+    };
+
+    fn asyncLoadFn(ctx: *AsyncLoadCtx) void {
+        const self = ctx.pipeline;
+        defer {
+            ctx.parsed.deinit(self.alloc);
+            self.alloc.free(ctx.path);
+            self.alloc.destroy(ctx);
+        }
+
+        if (compilePreset(
+            self.alloc,
+            &ctx.parsed,
+            self.vk_version,
+            self.device,
+            ctx.swapchain_format,
+            &self.compile_progress,
+        )) |preset| {
+            self.compile_mutex.lock();
+            defer self.compile_mutex.unlock();
+            self.pending_preset = preset;
+            self.pending_preset_path = ctx.path;
+            // Prevent the defer above from double-freeing ctx.path now that
+            // ownership has moved to pending_preset_path.
+            ctx.path = &.{};
+        } else |err| {
+            self.compile_mutex.lock();
+            defer self.compile_mutex.unlock();
+            self.compile_failed = true;
+            self.compile_error_msg = std.fmt.allocPrint(
+                self.alloc,
+                "Load failed: {s}",
+                .{@errorName(err)},
+            ) catch null;
+        }
+
+        self.compile_done.store(true, .release);
     }
 
     /// Render the NES frame through all shader passes and blit the result to

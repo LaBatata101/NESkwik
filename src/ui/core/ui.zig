@@ -1409,10 +1409,34 @@ pub const UI = struct {
     }
 
     /// Load a RetroArch `.slangp` shader preset. Replaces any previously loaded preset.
+    /// TODO: remove?
     pub fn setShaderPreset(self: *Self, path: []const u8) !void {
         const sp = self.shader_pipeline orelse return error.NoShaderPipeline;
         const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
         try sp.loadPreset(path, swapchain_format);
+    }
+
+    /// Start an asynchronous load of a `.slangp` shader preset.
+    /// Poll progress and completion each frame via `pollShaderLoad`.
+    pub fn startShaderPreset(self: *Self, path: []const u8) !void {
+        const sp = self.shader_pipeline orelse return error.NoShaderPipeline;
+        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
+        try sp.startLoadPreset(path, swapchain_format);
+    }
+
+    /// Poll the status of an in-progress async shader load.
+    pub fn pollShaderLoad(self: *Self) pipeline.ShaderPipeline.ShaderLoadPoll {
+        const sp = self.shader_pipeline orelse return .idle;
+        return sp.pollLoadResult();
+    }
+
+    /// Return the current async compile progress counters.
+    pub fn getShaderProgress(self: *const Self) struct { completed: u32, total: u32 } {
+        const sp = self.shader_pipeline orelse return .{ .completed = 0, .total = 0 };
+        return .{
+            .completed = sp.compile_progress.load(.monotonic),
+            .total = sp.compile_total,
+        };
     }
 
     /// Clear the active shader preset and return to passthrough rendering.

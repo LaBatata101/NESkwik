@@ -38,6 +38,8 @@ pub const UIState = struct {
         should_load_shader: bool = false,
         /// Set to true to trigger clearing the shader preset on the next frame.
         should_clear_shader: bool = false,
+        /// True while an async shader compile is in progress.
+        shader_loading: bool = false,
         /// Last shader load error message to display in the settings window (owned).
         shader_error: ?[]u8 = null,
     };
@@ -99,8 +101,8 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 ui_state.alloc.free(old);
                 ui_state.settings.shader_error = null;
             }
-            ui.setShaderPreset(path) catch |err| {
-                std.log.err("Failed to load shader preset '{s}': {s}", .{ path, @errorName(err) });
+            ui.startShaderPreset(path) catch |err| {
+                std.log.err("Failed to start shader load '{s}': {s}", .{ path, @errorName(err) });
                 ui_state.settings.shader_error = std.fmt.allocPrint(
                     ui_state.alloc,
                     "Load failed: {s}",
@@ -110,13 +112,34 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 ui_state.alloc.free(path);
                 ui_state.settings.shader_preset_path = null;
             };
+            if (ui_state.settings.shader_error == null) {
+                ui_state.settings.shader_loading = true;
+            }
         }
     } else if (ui_state.settings.should_clear_shader) {
         ui_state.settings.should_clear_shader = false;
         ui.clearShaderPreset();
+        ui_state.settings.shader_loading = false;
         if (ui_state.settings.shader_error) |old| {
             ui_state.alloc.free(old);
             ui_state.settings.shader_error = null;
+        }
+    }
+
+    // Poll an in-progress async shader compile.
+    if (ui_state.settings.shader_loading) {
+        switch (ui.pollShaderLoad()) {
+            .idle, .done => ui_state.settings.shader_loading = false,
+            .compiling => {},
+            .failed => |msg| {
+                ui_state.settings.shader_loading = false;
+                if (ui_state.settings.shader_error) |old| ui_state.alloc.free(old);
+                ui_state.settings.shader_error = ui_state.alloc.dupe(u8, msg) catch null;
+                if (ui_state.settings.shader_preset_path) |path| {
+                    ui_state.alloc.free(path);
+                    ui_state.settings.shader_preset_path = null;
+                }
+            },
         }
     }
 
@@ -248,16 +271,17 @@ fn drawVideoSection(ui: *UI, ui_state: *UIState) void {
 }
 
 fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
-    const row = ui.row(.{
+    const col = ui.column(.{
         .sizing = .{ .w = .grow, .h = .fit },
-        .child_alignment = .{ .y = .center },
-        .gap = 12,
+        .gap = 6,
+        .child_alignment = .{ .x = .left },
     });
     {
-        const label_col = ui.column(.{
+        // Top row: label on the left, combobox pinned to the right.
+        const header_row = ui.row(.{
             .sizing = .{ .w = .grow, .h = .fit },
-            .gap = 3,
-            .child_alignment = .{ .x = .left },
+            .child_alignment = .{ .y = .center },
+            .gap = 8,
         });
         {
             _ = ui.label(.{
@@ -265,39 +289,42 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
                 .font_size = theme.LABEL_FONT,
                 .color = theme.text_primary,
             });
-            _ = ui.label(.{
-                .text = "Controls how the NES frame is scaled to fill the window.",
-                .font_size = 14,
-                .color = theme.text_secondary,
-            });
-        }
-        label_col.end();
 
-        const aspect_ratio_opts = ui.combobox(utils.AspectRatio, .{
-            .id = "aspect_ratio_combo",
-            .selected = ui_state.settings.aspect_ratio,
-            .options = &.{ .none, .@"4_3", .@"16_9" },
-            .bg_color = theme.bg_section,
-            .bg_color_on_hover = theme.bg_hover,
-            .border_color = theme.border_dim,
-            .border_color_on_open = theme.border_open,
-            .border_color_on_hover = theme.border,
-            .text_color = theme.text_primary,
-            .float_panel = .{
+            _ = ui.spacer(.{ .sizing = .grow });
+
+            const aspect_ratio_opts = ui.combobox(utils.AspectRatio, .{
+                .id = "aspect_ratio_combo",
+                .selected = ui_state.settings.aspect_ratio,
+                .options = &.{ .none, .@"4_3", .@"16_9" },
                 .bg_color = theme.bg_section,
-                .border_color = theme.border_open,
-            },
-            .item = .{
                 .bg_color_on_hover = theme.bg_hover,
-                .bg_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-                .text_color = theme.text_secondary,
-                .text_color_on_hover = theme.text_accent,
-            },
-        });
+                .border_color = theme.border_dim,
+                .border_color_on_open = theme.border_open,
+                .border_color_on_hover = theme.border,
+                .text_color = theme.text_primary,
+                .float_panel = .{
+                    .bg_color = theme.bg_section,
+                    .border_color = theme.border_open,
+                },
+                .item = .{
+                    .bg_color_on_hover = theme.bg_hover,
+                    .bg_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                    .text_color = theme.text_secondary,
+                    .text_color_on_hover = theme.text_accent,
+                },
+            });
 
-        ui_state.settings.aspect_ratio = aspect_ratio_opts.selected();
+            ui_state.settings.aspect_ratio = aspect_ratio_opts.selected();
+        }
+        header_row.end();
+
+        _ = ui.label(.{
+            .text = "Controls how the NES frame is scaled to fill the window.",
+            .font_size = 14,
+            .color = theme.text_secondary,
+        });
     }
-    row.end();
+    col.end();
 }
 
 fn drawShaderSection(ui: *UI, ui_state: *UIState) void {
@@ -318,7 +345,23 @@ fn drawShaderSection(ui: *UI, ui_state: *UIState) void {
         });
         {
             drawShaderPresetRow(ui, ui_state);
-            if (ui_state.settings.shader_error) |err_msg| {
+            if (ui_state.settings.shader_loading) {
+                const progress = ui.getShaderProgress();
+                const alloc = ui.current_window.ctx.frameAlloc();
+                const progress_text = if (progress.total > 0)
+                    std.fmt.allocPrint(
+                        alloc,
+                        "Compiling... {d}/{d} passes",
+                        .{ progress.completed, progress.total },
+                    ) catch "Compiling..."
+                else
+                    "Compiling...";
+                _ = ui.label(.{
+                    .text = progress_text,
+                    .font_size = 13,
+                    .color = theme.accent_purple,
+                });
+            } else if (ui_state.settings.shader_error) |err_msg| {
                 _ = ui.label(.{
                     .text = err_msg,
                     .font_size = 13,
@@ -332,16 +375,17 @@ fn drawShaderSection(ui: *UI, ui_state: *UIState) void {
 }
 
 fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
-    const row = ui.row(.{
+    const col = ui.column(.{
         .sizing = .{ .w = .grow, .h = .fit },
-        .child_alignment = .{ .y = .center },
-        .gap = 12,
+        .gap = 6,
+        .child_alignment = .{ .x = .left },
     });
     {
-        const label_col = ui.column(.{
+        // Top row: label on the left, buttons pinned to the right.
+        const header_row = ui.row(.{
             .sizing = .{ .w = .grow, .h = .fit },
-            .gap = 3,
-            .child_alignment = .{ .x = .left },
+            .child_alignment = .{ .y = .center },
+            .gap = 8,
         });
         {
             _ = ui.label(.{
@@ -350,63 +394,65 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
                 .color = theme.text_primary,
             });
 
-            const active_path = ui.getShaderPresetPath();
-            const preview_text = if (active_path) |p| blk: {
-                // Show just the filename part
-                const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
-                    std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
-                break :blk if (slash > 0) p[slash + 1 ..] else p;
-            } else "None";
+            _ = ui.spacer(.{ .sizing = .grow });
 
-            _ = ui.label(.{
-                .text = preview_text,
-                .font_size = 14,
-                .color = theme.text_secondary,
-            });
-        }
-        label_col.end();
+            // "Load" button — opens file dialog
+            if (ui.button(.{
+                .text = "Load",
+                .font_size = theme.LABEL_FONT,
+                .text_color = theme.text_primary,
+                .bg_color = theme.bg_section,
+                .hover_color = theme.bg_hover,
+                .padding = theme.HEADER_PAD,
+            }).clicked(ui.current_window.ctx)) {
+                const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
+                    @panic("Failed to allocate");
+                defer ui.main_window.ctx.frameAlloc().free(default_location);
 
-        // "Load" button — opens file dialog
-        if (ui.button(.{
-            .text = "Load",
-            .font_size = theme.LABEL_FONT,
-            .text_color = theme.text_primary,
-            .bg_color = theme.bg_section,
-            .hover_color = theme.bg_hover,
-            .padding = theme.HEADER_PAD,
-        }).clicked(ui.current_window.ctx)) {
-            const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
-                @panic("Failed to allocate");
-            defer ui.main_window.ctx.frameAlloc().free(default_location);
-
-            c.SDL_ShowOpenFileDialog(
-                shader_dialog_callback,
-                clay.anytypeToAnyopaquePtr(ui_state),
-                ui.main_window.ptr,
-                &shader_filter_list,
-                shader_filter_list.len,
-                default_location.ptr,
-                false,
-            );
-        }
-
-        // "Clear" button — clears the active preset
-        if (ui.button(.{
-            .text = "Clear",
-            .font_size = theme.LABEL_FONT,
-            .text_color = theme.text_primary,
-            .bg_color = theme.bg_section,
-            .hover_color = theme.bg_hover,
-            .padding = theme.HEADER_PAD,
-        }).clicked(ui.current_window.ctx)) {
-            if (ui_state.settings.shader_preset_path) |path| {
-                ui_state.alloc.free(path);
-                ui_state.settings.shader_preset_path = null;
+                c.SDL_ShowOpenFileDialog(
+                    shader_dialog_callback,
+                    clay.anytypeToAnyopaquePtr(ui_state),
+                    ui.main_window.ptr,
+                    &shader_filter_list,
+                    shader_filter_list.len,
+                    default_location.ptr,
+                    false,
+                );
             }
-            ui_state.settings.should_clear_shader = true;
+
+            // "Clear" button — clears the active preset
+            if (ui.button(.{
+                .text = "Clear",
+                .font_size = theme.LABEL_FONT,
+                .text_color = theme.text_primary,
+                .bg_color = theme.bg_section,
+                .hover_color = theme.bg_hover,
+                .padding = theme.HEADER_PAD,
+            }).clicked(ui.current_window.ctx)) {
+                if (ui_state.settings.shader_preset_path) |path| {
+                    ui_state.alloc.free(path);
+                    ui_state.settings.shader_preset_path = null;
+                }
+                ui_state.settings.should_clear_shader = true;
+            }
         }
+        header_row.end();
+
+        // Filename on its own line so a long name never crowds the buttons.
+        const active_path = ui.getShaderPresetPath();
+        const preview_text = if (active_path) |p| blk: {
+            const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
+                std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
+            break :blk if (slash > 0) p[slash + 1 ..] else p;
+        } else "None";
+
+        _ = ui.label(.{
+            .text = preview_text,
+            .font_size = 14,
+            .color = theme.text_secondary,
+        });
     }
-    row.end();
+    col.end();
 }
 
 const shader_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
