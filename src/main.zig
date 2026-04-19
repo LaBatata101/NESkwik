@@ -123,8 +123,7 @@ pub fn main() !void {
         gui.drawGUI(ui, &ui_state);
 
         if (ui_state.emulation_running) {
-            if (ui.getPressedKey()) |key| ui_state.system.controller_keydown(key);
-            if (ui.getReleasedKey()) |key| ui_state.system.controller_keyup(key);
+            ui_state.system.sync_controllers(ui);
             if (ui.isKeyPressed(.ESCAPE)) std.process.exit(0);
             if (ui.isKeyPressed(.F9)) step_mode = !step_mode;
             if (ui.isKeyPressed(.R)) ui_state.system.reset();

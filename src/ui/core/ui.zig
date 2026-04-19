@@ -707,6 +707,10 @@ pub const InputContext = struct {
         }
         return null;
     }
+
+    pub fn isKeyDown(self: *const InputContext, key: Key) bool {
+        return self.keys[@intFromEnum(key)].event == .down;
+    }
 };
 
 pub const Renderer = struct {
@@ -1562,6 +1566,10 @@ pub const UI = struct {
 
     pub fn isKeyPressed(self: *const Self, key: Key) bool {
         return self.current_window.ctx.input.isKeyPressed(key, false);
+    }
+
+    pub fn isKeyDown(self: *const Self, key: Key) bool {
+        return self.current_window.ctx.input.isKeyDown(key);
     }
 
     pub fn getPressedKey(self: *const Self) ?Key {

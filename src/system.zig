@@ -188,21 +188,21 @@ pub const System = struct {
         return &self.ppu.frame_buffer.data;
     }
 
-    pub fn controller_keydown(self: *Self, key_code: Keys) void {
-        if (self.keymap1.get(key_code)) |key| {
-            self.bus.controllers.cntrl1_status.insert(key);
+    pub fn sync_controllers(self: *Self, ui: anytype) void {
+        self.bus.controllers.cntrl1_status = .{};
+        var it1 = self.keymap1.iterator();
+        while (it1.next()) |entry| {
+            if (ui.isKeyDown(entry.key_ptr.*)) {
+                self.bus.controllers.cntrl1_status.insert(entry.value_ptr.*);
+            }
         }
-        if (self.keymap2.get(key_code)) |key| {
-            self.bus.controllers.cntrl2_status.insert(key);
-        }
-    }
 
-    pub fn controller_keyup(self: *Self, key_code: Keys) void {
-        if (self.keymap1.get(key_code)) |key| {
-            self.bus.controllers.cntrl1_status.remove(key);
-        }
-        if (self.keymap2.get(key_code)) |key| {
-            self.bus.controllers.cntrl2_status.remove(key);
+        self.bus.controllers.cntrl2_status = .{};
+        var it2 = self.keymap2.iterator();
+        while (it2.next()) |entry| {
+            if (ui.isKeyDown(entry.key_ptr.*)) {
+                self.bus.controllers.cntrl2_status.insert(entry.value_ptr.*);
+            }
         }
     }
 };
