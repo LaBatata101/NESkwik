@@ -423,7 +423,7 @@ fn compileShader(
 
     var options = [_]c.struct_glslang_spv_options_s{.{
         .generate_debug_info = builtin.mode == .Debug,
-        .strip_debug_info = builtin.mode != .Debug,
+        .strip_debug_info = false,
         .disable_optimizer = builtin.mode == .Debug,
         .optimize_size = false,
         .disassemble = false,
@@ -863,6 +863,7 @@ fn compilePassWorkerInner(args: WorkerArgs) !void {
             try args.alloc.dupe(u8, initial.bytes())
         else
             try args.alloc.dupe(u8, std.mem.asBytes(&param.value));
+
         if (try args.preset.param_data.fetchPut(param.name, bytes)) |old| {
             // Parameter was already registered by another pass — just update
             // the value bytes and discard the duplicate display_name.

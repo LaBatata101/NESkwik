@@ -254,9 +254,9 @@ pub const TypeUnion = union(enum) {
         }
     }
 
-    pub fn bytes(self: @This()) []u8 {
+    pub inline fn bytes(self: @This()) []const u8 {
         return switch (self) {
-            inline else => |value| @ptrCast(@constCast(std.mem.asBytes(&value))),
+            inline else => |value| std.mem.asBytes(&value),
         };
     }
 };
