@@ -1684,6 +1684,7 @@ pub const UI = struct {
                 },
             }
         }
+
         const cmd = c.SDL_AcquireGPUCommandBuffer(self.gpu_device);
         var swapchain_tex: ?*c.SDL_GPUTexture = null;
         var win_w: u32 = 0;
@@ -1710,11 +1711,11 @@ pub const UI = struct {
                 .size = total_size,
             });
 
-            const ptr = @as([*]u8, @ptrCast(@alignCast(c.SDL_MapGPUTransferBuffer(
+            const ptr: [*]u8 = @ptrCast(@alignCast(c.SDL_MapGPUTransferBuffer(
                 self.gpu_device,
                 transfer_buffer,
                 false,
-            ))));
+            )));
             @memcpy(ptr[0..vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
             @memcpy(ptr[vertices_size..total_size], std.mem.sliceAsBytes(window.renderer.indices.items));
             c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buffer);

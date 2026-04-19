@@ -90,7 +90,7 @@ pub const SDLAudioOut = struct {
 
     pub fn sampleRate(self: *const Self) f64 {
         _ = self;
-        return @as(f64, @floatFromInt(OUT_SAMPLE_RATE));
+        return @floatFromInt(OUT_SAMPLE_RATE);
     }
 
     pub fn wait(self: *Self, in_size: usize) void {
@@ -110,8 +110,8 @@ fn audio_stream_callback(
     total_amount: c_int,
 ) callconv(.c) void {
     _ = additional_amount;
-    const stream = @as(*c.SDL_AudioStream, @ptrCast(stream_arg.?));
-    const this = @as(*SDLAudioOut, @ptrCast(@alignCast(userdata.?)));
+    const stream: *c.SDL_AudioStream = @ptrCast(stream_arg.?);
+    const this: *SDLAudioOut = @ptrCast(@alignCast(userdata.?));
 
     this.mutex.lock();
     defer this.mutex.unlock();
@@ -121,7 +121,7 @@ fn audio_stream_callback(
     const max_bytes = this.buffer.input_samples * sample_size;
     const transferred_bytes_usize: usize = @intCast(@min(max_bytes, total_bytes));
 
-    const transferred_bytes: c_int = @as(c_int, @intCast(transferred_bytes_usize));
+    const transferred_bytes: c_int = @intCast(transferred_bytes_usize);
     const transferred_samples: usize = @divExact(transferred_bytes_usize, sample_size);
 
     if (transferred_bytes < total_bytes) {
@@ -131,18 +131,18 @@ fn audio_stream_callback(
     if (transferred_samples > 0) {
         const first_samples = BUFFER_SIZE - this.buffer.playback_counter;
         if (transferred_samples <= first_samples) {
-            const src_ptr = @as([*]const u8, @ptrCast(&this.buffer.samples[this.buffer.playback_counter]));
+            const src_ptr: [*]const u8 = @ptrCast(&this.buffer.samples[this.buffer.playback_counter]);
             _ = c.SDL_PutAudioStreamData(stream, src_ptr, transferred_bytes);
         } else {
             // First part
-            const first_bytes: c_int = @as(c_int, @intCast(first_samples * sample_size));
-            const src1_ptr = @as([*]const u8, @ptrCast(&this.buffer.samples[this.buffer.playback_counter]));
+            const first_bytes: c_int = @intCast(first_samples * sample_size);
+            const src1_ptr: [*]const u8 = @ptrCast(&this.buffer.samples[this.buffer.playback_counter]);
             _ = c.SDL_PutAudioStreamData(stream, src1_ptr, first_bytes);
 
             // Second part
             const second_samples = transferred_samples - first_samples;
-            const second_bytes: c_int = @as(c_int, @intCast(second_samples * sample_size));
-            const src2_ptr = @as([*]const u8, @ptrCast(&this.buffer.samples[0]));
+            const second_bytes: c_int = @intCast(second_samples * sample_size);
+            const src2_ptr: [*]const u8 = @ptrCast(&this.buffer.samples[0]);
             _ = c.SDL_PutAudioStreamData(stream, src2_ptr, second_bytes);
         }
 
