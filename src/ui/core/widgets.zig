@@ -137,6 +137,7 @@ pub const Button = struct {
         elevation: u8 = 2,
         border: ?clay.BorderElementConfig = null,
         sizing: clay.Sizing = .fit,
+        text_alignment: clay.TextAlignment = .center,
         tooltip: ?struct {
             text: []const u8,
             text_size: u16 = 14,
@@ -158,7 +159,7 @@ pub const Button = struct {
         const button_color = if (is_hovered) hover_col else params.bg_color;
 
         clay.configureOpenElement(.{
-            .layout = .{ .sizing = params.sizing, .padding = params.padding, .child_alignment = .center },
+            .layout = .{ .sizing = params.sizing, .padding = params.padding, .child_alignment = if (params.text_alignment == .left) .{ .x = .left, .y = .center } else .center },
             .background_color = button_color.toClay(),
             .corner_radius = .all(params.corner_radius),
             .border = if (params.border) |border|
@@ -176,7 +177,7 @@ pub const Button = struct {
 
         _ = Label.start(.{
             .text = params.text,
-            .alignment = .center,
+            .alignment = params.text_alignment,
             .font_size = params.font_size,
             .color = params.text_color,
         });
@@ -1049,7 +1050,7 @@ pub const Slider = struct {
     updated_value: f32,
 
     pub const Params = struct {
-        id: []const u8,
+        id: ?[]const u8 = null,
         value: f32,
         min: f32,
         max: f32,
@@ -1067,8 +1068,11 @@ pub const Slider = struct {
     const Self = @This();
 
     pub fn start(ctx: *UIContext, params: Params) Self {
-        const element_id = clay.ElementId.ID(params.id);
-        clay.openElementWithId(element_id);
+        const element_id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
 
         const state = ctx.getOrCreateWidgetState(element_id, .{ .slider = .{
             .dragging = false,
@@ -1176,11 +1180,11 @@ pub const Toggle = struct {
     updated_value: bool,
 
     pub const Params = struct {
-        id: []const u8,
+        id: ?[]const u8 = null,
         value: bool,
-        on_color: Color,
-        off_color: Color,
-        thumb_color: Color,
+        on_color: Color = .blue,
+        off_color: Color = .gray,
+        thumb_color: Color = .white,
         /// Height of the pill (width = height × 2).
         size: u16 = 20,
     };
@@ -1188,8 +1192,11 @@ pub const Toggle = struct {
     const Self = @This();
 
     pub fn start(ctx: *UIContext, params: Params) Self {
-        const element_id = clay.ElementId.ID(params.id);
-        clay.openElementWithId(element_id);
+        const element_id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
 
         const state = ctx.getOrCreateWidgetState(element_id, .{ .toggle = .{
             .progress = if (params.value) 1.0 else 0.0,

@@ -146,7 +146,7 @@ pub fn main() !void {
 
             if (!step_mode) ui_state.system.run_frame();
 
-            if (ui.isWindowFullscreen()) {
+            if (ui_state.settings.hide_mouse_on_inactivity) {
                 if (!is_cursor_hidden and ui.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
                     sdlError(c.SDL_HideCursor());
                     is_cursor_hidden = true;
