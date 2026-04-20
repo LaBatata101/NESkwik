@@ -938,6 +938,17 @@ pub const Renderer = struct {
         }
     }
 
+    fn forceDrawCallBreak(self: *Self) usize {
+        const split_index = self.draw_calls.items.len;
+        self.draw_calls.append(self.allocator, .{
+            .texture = self.current_texture,
+            .index_offset = @intCast(self.indices.items.len),
+            .index_count = 0,
+            .clip_rect = self.current_clip,
+        }) catch @panic("Failed to allocate");
+        return split_index;
+    }
+
     fn setTexture(self: *Self, texture: ?*c.SDL_GPUTexture) void {
         self.current_texture = texture orelse self.white_texture;
         self.flush();
@@ -1276,13 +1287,20 @@ pub const UI = struct {
     fps_manager: FPSManager,
 
     shader_pipeline: ?*pipeline.ShaderPipeline = null,
+    border_shader_pipeline: ?*pipeline.ShaderPipeline = null,
     pending_shader_render: ?PendingShaderRender = null,
 
     const PendingShaderRender = struct {
         texture: ?*c.SDL_GPUTexture,
         src_w: u32,
         src_h: u32,
+        /// The letterbox-constrained game content area within the canvas.
         viewport: pipeline.Viewport,
+        /// The full canvas bounding box (game + letterbox bars, excludes menubar etc.).
+        canvas: pipeline.Viewport,
+        /// Index into draw_calls where overlay elements (e.g. dropdown menus) begin.
+        /// These must be rendered AFTER the shader blit so they appear on top.
+        overlay_draw_call_start: usize,
     };
 
     const Self = @This();
@@ -1363,6 +1381,7 @@ pub const UI = struct {
         };
 
         const shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
+        const border_shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
 
         const gui = try allocator.create(UI);
         gui.* = .{
@@ -1374,6 +1393,7 @@ pub const UI = struct {
             .font = font,
             .fps_manager = FPSManager.init(),
             .shader_pipeline = shader_pipeline,
+            .border_shader_pipeline = border_shader_pipeline,
         };
 
         return gui;
@@ -1388,6 +1408,7 @@ pub const UI = struct {
         self.secondary_windows.deinit(self.allocator);
 
         if (self.shader_pipeline) |sp| sp.deinit();
+        if (self.border_shader_pipeline) |bsp| bsp.deinit();
 
         c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);
@@ -1426,13 +1447,27 @@ pub const UI = struct {
         return sp.getParamInfos();
     }
 
+    pub fn getBorderShaderParamInfos(self: *const Self) []const pipeline.ParamInfo {
+        const bsp = self.border_shader_pipeline orelse return &.{};
+        return bsp.getParamInfos();
+    }
+
     pub fn getShaderParam(self: *const Self, name: []const u8) f32 {
         const sp = self.shader_pipeline orelse return 0;
         return sp.getParam(name);
     }
 
+    pub fn getBorderShaderParam(self: *const Self, name: []const u8) f32 {
+        const bsp = self.border_shader_pipeline orelse return 0;
+        return bsp.getParam(name);
+    }
+
     pub fn setShaderParam(self: *Self, name: []const u8, value: f32) void {
         if (self.shader_pipeline) |sp| sp.setParam(name, value);
+    }
+
+    pub fn setBorderShaderParam(self: *Self, name: []const u8, value: f32) void {
+        if (self.border_shader_pipeline) |bsp| bsp.setParam(name, value);
     }
 
     /// Load a RetroArch `.slangp` shader preset. Replaces any previously loaded preset.
@@ -1475,6 +1510,37 @@ pub const UI = struct {
     pub fn getShaderPresetPath(self: *const Self) ?[]const u8 {
         const sp = self.shader_pipeline orelse return null;
         return sp.getPresetPath();
+    }
+
+    /// Start an asynchronous load of a `.slangp` border shader preset.
+    /// The border shader is rendered into the letterbox area around the main content.
+    pub fn startBorderShaderPreset(self: *Self, path: []const u8) !void {
+        const bsp = self.border_shader_pipeline orelse return error.NoShaderPipeline;
+        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
+        try bsp.startLoadPreset(path, swapchain_format);
+    }
+
+    /// Clear the active border shader preset.
+    pub fn clearBorderShaderPreset(self: *Self) void {
+        if (self.border_shader_pipeline) |bsp| bsp.unloadPreset();
+    }
+
+    /// Poll the status of an in-progress async border shader load.
+    pub fn pollBorderShaderLoad(self: *Self) pipeline.ShaderPipeline.ShaderLoadPoll {
+        const bsp = self.border_shader_pipeline orelse return .idle;
+        return bsp.pollLoadResult();
+    }
+
+    /// Returns true if a border shader preset is currently active.
+    pub fn hasBorderShader(self: *const Self) bool {
+        const bsp = self.border_shader_pipeline orelse return false;
+        return bsp.isActive();
+    }
+
+    /// Returns the path of the currently loaded border shader preset, or null if none.
+    pub fn getBorderShaderPresetPath(self: *const Self) ?[]const u8 {
+        const bsp = self.border_shader_pipeline orelse return null;
+        return bsp.getPresetPath();
     }
 
     pub fn createWindow(
@@ -1747,15 +1813,15 @@ pub const UI = struct {
             c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buffer);
         }
 
-        var color_target = c.SDL_GPUColorTargetInfo{
-            .texture = swapchain_tex,
-            .clear_color = .{ .r = 0.94, .g = 0.94, .b = 0.98, .a = 1.0 },
-            .load_op = c.SDL_GPU_LOADOP_CLEAR,
-            .store_op = c.SDL_GPU_STOREOP_STORE,
-        };
-
-        const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
-        c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
+        // When a shader is pending, split draw calls into two passes:
+        //   pass 1 (CLEAR): draw calls before the canvas element
+        //   shader blits: border + main shader
+        //   pass 2 (LOAD): overlay draw calls after the canvas (dropdowns, tooltips, etc.)
+        // When no shader is pending, everything goes into a single pass.
+        const overlay_start: usize = if (window.ptr == self.main_window.ptr)
+            if (self.pending_shader_render) |pending| pending.overlay_draw_call_start else window.renderer.draw_calls.items.len
+        else
+            window.renderer.draw_calls.items.len;
 
         const MVP = [16]f32{
             2.0 / @as(f32, @floatFromInt(window.width)), 0,                                             0, 0,
@@ -1763,61 +1829,131 @@ pub const UI = struct {
             0,                                           0,                                             1, 0,
             -1,                                          1,                                             0, 1,
         };
-        c.SDL_PushGPUVertexUniformData(cmd, 0, &MVP, @sizeOf(@TypeOf(MVP)));
 
-        c.SDL_BindGPUVertexBuffers(
-            render_pass,
-            0,
-            &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 },
-            1,
-        );
-        c.SDL_BindGPUIndexBuffer(
-            render_pass,
-            &.{ .buffer = window.renderer.index_buffer, .offset = 0 },
-            c.SDL_GPU_INDEXELEMENTSIZE_32BIT,
-        );
+        // Pass 1: background UI elements (clear swapchain first).
+        {
+            const color_target = c.SDL_GPUColorTargetInfo{
+                .texture = swapchain_tex,
+                .clear_color = .{ .r = 0.94, .g = 0.94, .b = 0.98, .a = 1.0 },
+                .load_op = c.SDL_GPU_LOADOP_CLEAR,
+                .store_op = c.SDL_GPU_STOREOP_STORE,
+            };
+            const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
+            c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
+            c.SDL_PushGPUVertexUniformData(cmd, 0, &MVP, @sizeOf(@TypeOf(MVP)));
+            c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
+            c.SDL_BindGPUIndexBuffer(render_pass, &.{ .buffer = window.renderer.index_buffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
 
-        for (window.renderer.draw_calls.items) |call| {
-            if (call.index_count == 0) continue;
-
-            c.SDL_BindGPUFragmentSamplers(
-                render_pass,
-                0,
-                &.{ .texture = call.texture, .sampler = window.renderer.sampler },
-                1,
-            );
-
-            if (call.clip_rect) |rect| {
-                c.SDL_SetGPUScissor(render_pass, &rect);
-            } else {
-                c.SDL_SetGPUScissor(render_pass, &.{ .x = 0, .y = 0, .w = @intCast(win_w), .h = @intCast(win_h) });
+            for (window.renderer.draw_calls.items[0..overlay_start]) |call| {
+                if (call.index_count == 0) continue;
+                c.SDL_BindGPUFragmentSamplers(render_pass, 0, &.{ .texture = call.texture, .sampler = window.renderer.sampler }, 1);
+                if (call.clip_rect) |rect| {
+                    c.SDL_SetGPUScissor(render_pass, &rect);
+                } else {
+                    c.SDL_SetGPUScissor(render_pass, &.{ .x = 0, .y = 0, .w = @intCast(win_w), .h = @intCast(win_h) });
+                }
+                c.SDL_DrawGPUIndexedPrimitives(render_pass, call.index_count, 1, call.index_offset, 0, 0);
             }
-
-            c.SDL_DrawGPUIndexedPrimitives(render_pass, call.index_count, 1, call.index_offset, 0, 0);
+            c.SDL_EndGPURenderPass(render_pass);
         }
-        c.SDL_EndGPURenderPass(render_pass);
 
-        // After the UI render pass, run the shader pipeline if a frame is pending.
+        // Shader blits (between the two UI passes so overlays appear on top).
         if (window.ptr == self.main_window.ptr) {
             if (self.pending_shader_render) |pending| {
                 defer self.pending_shader_render = null;
-                if (self.shader_pipeline) |sp| {
-                    const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, window.ptr);
-                    sp.renderFrame(
-                        pending.texture,
-                        pending.src_w,
-                        pending.src_h,
-                        pending.viewport,
-                        cmd,
-                        swapchain_tex,
-                        win_w,
-                        win_h,
-                        swapchain_format,
-                    ) catch |err| {
-                        std.log.err("Shader pipeline render failed: {}", .{err});
-                    };
+                const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, window.ptr);
+
+                // Render border shader first (behind main content) when there is a
+                // letterbox within the canvas area and a border preset is loaded. Fills only
+                // the letterbox bars around the maind content.
+                const has_letterbox = pending.viewport.w != pending.canvas.w or
+                    pending.viewport.h != pending.canvas.h;
+                if (has_letterbox) {
+                    if (self.border_shader_pipeline) |border_shader_pipeline| {
+                        if (border_shader_pipeline.isActive()) border_shader_pipeline.renderFrame(
+                            pending.texture,
+                            pending.src_w,
+                            pending.src_h,
+                            pending.canvas,
+                            cmd,
+                            swapchain_tex,
+                            win_w,
+                            win_h,
+                            swapchain_format,
+                            c.SDL_GPU_LOADOP_LOAD,
+                        ) catch |err| {
+                            std.log.err("Border shader render failed: {}", .{err});
+                        };
+                    }
+                }
+
+                if (self.shader_pipeline) |shader_pipeline| {
+                    // Render the NES frame through all shader passes and blit the result to
+                    // the swapchain texture at the given viewport position.
+                    if (shader_pipeline.isActive()) {
+                        shader_pipeline.renderFrame(
+                            pending.texture,
+                            pending.src_w,
+                            pending.src_h,
+                            pending.viewport,
+                            cmd,
+                            swapchain_tex,
+                            win_w,
+                            win_h,
+                            swapchain_format,
+                            c.SDL_GPU_LOADOP_LOAD,
+                        ) catch |err| {
+                            std.log.err("Shader pipeline render failed: {}", .{err});
+                        };
+                    } else {
+                        // No main shader — blit the NES frame directly to the viewport.
+                        c.SDL_BlitGPUTexture(cmd, &c.SDL_GPUBlitInfo{
+                            .source = .{
+                                .texture = pending.texture,
+                                .x = 0,
+                                .y = 0,
+                                .w = pending.src_w,
+                                .h = pending.src_h,
+                            },
+                            .destination = .{
+                                .texture = swapchain_tex,
+                                .x = @intCast(@max(0, pending.viewport.x)),
+                                .y = @intCast(@max(0, pending.viewport.y)),
+                                .w = pending.viewport.w,
+                                .h = pending.viewport.h,
+                            },
+                            .load_op = c.SDL_GPU_LOADOP_LOAD,
+                            .filter = c.SDL_GPU_FILTER_NEAREST,
+                        });
+                    }
                 }
             }
+        }
+
+        // Pass 2: overlay UI elements (dropdowns, tooltips, etc.) on top of the shader.
+        if (overlay_start < window.renderer.draw_calls.items.len) {
+            const color_target = c.SDL_GPUColorTargetInfo{
+                .texture = swapchain_tex,
+                .load_op = c.SDL_GPU_LOADOP_LOAD,
+                .store_op = c.SDL_GPU_STOREOP_STORE,
+            };
+            const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
+            c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
+            c.SDL_PushGPUVertexUniformData(cmd, 0, &MVP, @sizeOf(@TypeOf(MVP)));
+            c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
+            c.SDL_BindGPUIndexBuffer(render_pass, &.{ .buffer = window.renderer.index_buffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
+
+            for (window.renderer.draw_calls.items[overlay_start..]) |call| {
+                if (call.index_count == 0) continue;
+                c.SDL_BindGPUFragmentSamplers(render_pass, 0, &.{ .texture = call.texture, .sampler = window.renderer.sampler }, 1);
+                if (call.clip_rect) |rect| {
+                    c.SDL_SetGPUScissor(render_pass, &rect);
+                } else {
+                    c.SDL_SetGPUScissor(render_pass, &.{ .x = 0, .y = 0, .w = @intCast(win_w), .h = @intCast(win_h) });
+                }
+                c.SDL_DrawGPUIndexedPrimitives(render_pass, call.index_count, 1, call.index_offset, 0, 0);
+            }
+            c.SDL_EndGPURenderPass(render_pass);
         }
 
         sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
@@ -1901,8 +2037,11 @@ pub const UI = struct {
                 }, bg_color_sdl, null);
 
                 const sp = self.shader_pipeline orelse null;
-                if (sp != null and sp.?.isActive() and window.ptr == self.main_window.ptr) {
-                    // Shader pipeline active: defer rendering to after the UI pass.
+                const bsp = self.border_shader_pipeline orelse null;
+                const should_defer = window.ptr == self.main_window.ptr and
+                    ((sp != null and sp.?.isActive()) or (bsp != null and bsp.?.isActive()));
+                if (should_defer) {
+                    // A shader pipeline is active: defer rendering to after the UI pass.
                     const vp = utils.calculateViewport(
                         cmd.bounding_box.x,
                         cmd.bounding_box.y,
@@ -1910,6 +2049,12 @@ pub const UI = struct {
                         cmd.bounding_box.height,
                         canvas_.params.aspect_ratio,
                     );
+
+                    // Flush and force a batch boundary so overlay elements rendered after
+                    // the canvas cannot be merged back into the pre-shader solid-color
+                    // draw call and then get overwritten by the shader blit.
+                    window.renderer.flush();
+                    const overlay_start = window.renderer.forceDrawCallBreak();
                     self.pending_shader_render = .{
                         .texture = texture,
                         .src_w = canvas_.params.w,
@@ -1920,8 +2065,14 @@ pub const UI = struct {
                             .w = @intFromFloat(vp.w),
                             .h = @intFromFloat(vp.h),
                         },
+                        .canvas = .{
+                            .x = @intFromFloat(cmd.bounding_box.x),
+                            .y = @intFromFloat(cmd.bounding_box.y),
+                            .w = @intFromFloat(cmd.bounding_box.width),
+                            .h = @intFromFloat(cmd.bounding_box.height),
+                        },
+                        .overlay_draw_call_start = overlay_start,
                     };
-                    window.renderer.flush();
                 } else {
                     // No shader pipeline: draw the NES frame directly into the UI batch.
                     const viewport = utils.calculateViewport(

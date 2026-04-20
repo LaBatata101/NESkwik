@@ -127,6 +127,7 @@ pub const Button = struct {
         id: ?[]const u8 = null,
         text: []const u8,
         on_click: ?*const fn () void = null,
+        enabled: bool = true,
         bg_color: Color = Color.blue,
         hover_color: ?Color = null,
         text_color: Color = Color.white,
@@ -154,7 +155,7 @@ pub const Button = struct {
             break :b element_id;
         } else clay.openElement();
 
-        const is_hovered = clay.hovered();
+        const is_hovered = params.enabled and clay.hovered();
         const hover_col = params.hover_color orelse params.bg_color.lighten(0.15);
         const button_color = if (is_hovered) hover_col else params.bg_color;
 
@@ -261,6 +262,7 @@ pub const Button = struct {
     }
 
     pub fn clicked(self: *const Self, ctx: *UIContext) bool {
+        if (!self.params.enabled) return false;
         const is_hovered = clay.pointerOver(self.id);
         return is_hovered and ctx.frame.mouse_pressed;
     }

@@ -43,6 +43,16 @@ pub const UIState = struct {
         shader_loading: bool = false,
         /// Last shader load error message to display in the settings window (owned).
         shader_error: ?[]u8 = null,
+        /// Path to the active border shader preset (owned by this struct).
+        border_shader_preset_path: ?[]u8 = null,
+        /// Set to true to trigger loading the border shader preset on the next frame.
+        should_load_border_shader: bool = false,
+        /// Set to true to trigger clearing the border shader preset on the next frame.
+        should_clear_border_shader: bool = false,
+        /// True while an async border shader compile is in progress.
+        border_shader_loading: bool = false,
+        /// Last border shader load error message (owned).
+        border_shader_error: ?[]u8 = null,
         /// Currently selected category in the settings sidebar.
         selected_category: SettingsCategory = .general,
         hide_mouse_on_inactivity: bool = false,
@@ -63,6 +73,12 @@ pub const UIState = struct {
             self.alloc.free(path);
         }
         if (self.settings.shader_error) |msg| {
+            self.alloc.free(msg);
+        }
+        if (self.settings.border_shader_preset_path) |path| {
+            self.alloc.free(path);
+        }
+        if (self.settings.border_shader_error) |msg| {
             self.alloc.free(msg);
         }
 
@@ -142,6 +158,55 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 if (ui_state.settings.shader_preset_path) |path| {
                     ui_state.alloc.free(path);
                     ui_state.settings.shader_preset_path = null;
+                }
+            },
+        }
+    }
+
+    // Handle deferred border shader preset load/clear requests.
+    if (ui_state.settings.should_load_border_shader) {
+        ui_state.settings.should_load_border_shader = false;
+        if (ui_state.settings.border_shader_preset_path) |path| {
+            if (ui_state.settings.border_shader_error) |old| {
+                ui_state.alloc.free(old);
+                ui_state.settings.border_shader_error = null;
+            }
+            ui.startBorderShaderPreset(path) catch |err| {
+                std.log.err("Failed to start border shader load '{s}': {s}", .{ path, @errorName(err) });
+                ui_state.settings.border_shader_error = std.fmt.allocPrint(
+                    ui_state.alloc,
+                    "Load failed: {s}",
+                    .{@errorName(err)},
+                ) catch null;
+                ui_state.alloc.free(path);
+                ui_state.settings.border_shader_preset_path = null;
+            };
+            if (ui_state.settings.border_shader_error == null) {
+                ui_state.settings.border_shader_loading = true;
+            }
+        }
+    } else if (ui_state.settings.should_clear_border_shader) {
+        ui_state.settings.should_clear_border_shader = false;
+        ui.clearBorderShaderPreset();
+        ui_state.settings.border_shader_loading = false;
+        if (ui_state.settings.border_shader_error) |old| {
+            ui_state.alloc.free(old);
+            ui_state.settings.border_shader_error = null;
+        }
+    }
+
+    // Poll an in-progress async border shader compile.
+    if (ui_state.settings.border_shader_loading) {
+        switch (ui.pollBorderShaderLoad()) {
+            .idle, .done => ui_state.settings.border_shader_loading = false,
+            .compiling => {},
+            .failed => |msg| {
+                ui_state.settings.border_shader_loading = false;
+                if (ui_state.settings.border_shader_error) |old| ui_state.alloc.free(old);
+                ui_state.settings.border_shader_error = ui_state.alloc.dupe(u8, msg) catch null;
+                if (ui_state.settings.border_shader_preset_path) |path| {
+                    ui_state.alloc.free(path);
+                    ui_state.settings.border_shader_preset_path = null;
                 }
             },
         }
@@ -290,16 +355,24 @@ fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
     const content = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
-        .padding = .{ .left = 18, .right = 18, .top = 16, .bottom = 16 },
-        .gap = 16,
         .child_alignment = .{ .x = .left, .y = .top },
     });
     {
-        switch (ui_state.settings.selected_category) {
-            .general => drawSettingsGeneralContent(ui, ui_state),
-            .video => drawSettingsVideoContent(ui, ui_state),
-            .shader => drawSettingsShaderContent(ui, ui_state),
+        const scroll = ui.scrollArea(.{
+            .id = "settings_content_scroll",
+            .sizing = .grow,
+            .vertical = true,
+            .padding = .{ .left = 18, .right = 18, .top = 16, .bottom = 16 },
+            .gap = 16,
+        });
+        {
+            switch (ui_state.settings.selected_category) {
+                .general => drawSettingsGeneralContent(ui, ui_state),
+                .video => drawSettingsVideoContent(ui, ui_state),
+                .shader => drawSettingsShaderContent(ui, ui_state),
+            }
         }
+        scroll.end();
     }
     content.end();
 }
@@ -433,12 +506,48 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
     // Parameters sub-section — only when a shader with params is loaded.
     const param_infos = ui.getShaderParamInfos();
     if (!ui_state.settings.shader_loading and param_infos.len > 0) {
-        drawShaderParamsSection(ui, param_infos);
+        drawShaderParamsSection(ui, "Parameters", "shader_params_scroll", param_infos, .main);
+    }
+
+    drawContentSectionHeader(ui, "Border Preset");
+    {
+        const section = drawContentSection(ui);
+        drawBorderShaderPresetRow(ui, ui_state);
+        if (ui_state.settings.border_shader_loading) {
+            _ = ui.label(.{
+                .text = "Compiling...",
+                .font_size = 13,
+                .color = theme.accent_purple,
+            });
+        } else if (ui_state.settings.border_shader_error) |err_msg| {
+            _ = ui.label(.{
+                .text = err_msg,
+                .font_size = 13,
+                .color = theme.accent_red,
+            });
+        }
+        section.end();
+    }
+
+    const border_param_infos = ui.getBorderShaderParamInfos();
+    if (!ui_state.settings.border_shader_loading and border_param_infos.len > 0) {
+        drawShaderParamsSection(ui, "Border Parameters", "border_shader_params_scroll", border_param_infos, .border);
     }
 }
 
-fn drawShaderParamsSection(ui: *UI, param_infos: []const pipeline.ParamInfo) void {
-    drawContentSectionHeader(ui, "Parameters");
+const ParamTarget = enum {
+    main,
+    border,
+};
+
+fn drawShaderParamsSection(
+    ui: *UI,
+    title: []const u8,
+    scroll_id: []const u8,
+    param_infos: []const pipeline.ParamInfo,
+    target: ParamTarget,
+) void {
+    drawContentSectionHeader(ui, title);
 
     const wrapper = ui.column(.{
         .sizing = .{ .w = .grow, .h = .fixed(220) },
@@ -449,7 +558,7 @@ fn drawShaderParamsSection(ui: *UI, param_infos: []const pipeline.ParamInfo) voi
     });
     {
         const scroll = ui.scrollArea(.{
-            .id = "shader_params_scroll",
+            .id = scroll_id,
             .sizing = .grow,
             .vertical = true,
             .padding = .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
@@ -457,7 +566,7 @@ fn drawShaderParamsSection(ui: *UI, param_infos: []const pipeline.ParamInfo) voi
         });
         {
             for (param_infos) |info| {
-                drawParamRow(ui, info);
+                drawParamRow(ui, info, target);
             }
         }
         scroll.end();
@@ -466,6 +575,8 @@ fn drawShaderParamsSection(ui: *UI, param_infos: []const pipeline.ParamInfo) voi
 }
 
 fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
+    const can_clear_shader = ui_state.settings.shader_preset_path != null or ui_state.settings.shader_loading;
+
     // Row: "Preset" label on the left, Load/Clear buttons on the right.
     const header_row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -508,9 +619,10 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
         if (ui.button(.{
             .text = "Clear",
             .font_size = 15,
-            .text_color = theme.text_secondary,
-            .bg_color = theme.bg_hover,
-            .hover_color = theme.border,
+            .enabled = can_clear_shader,
+            .text_color = if (can_clear_shader) theme.text_primary else theme.text_secondary,
+            .bg_color = if (can_clear_shader) theme.bg_hover else theme.bg_panel,
+            .hover_color = if (can_clear_shader) theme.border else theme.bg_panel,
             .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
@@ -538,7 +650,21 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
     });
 }
 
-fn drawParamRow(ui: *UI, info: pipeline.ParamInfo) void {
+fn getParamValue(ui: *UI, target: ParamTarget, name: []const u8) f32 {
+    return switch (target) {
+        .main => ui.getShaderParam(name),
+        .border => ui.getBorderShaderParam(name),
+    };
+}
+
+fn setParamValue(ui: *UI, target: ParamTarget, name: []const u8, value: f32) void {
+    switch (target) {
+        .main => ui.setShaderParam(name, value),
+        .border => ui.setBorderShaderParam(name, value),
+    }
+}
+
+fn drawParamRow(ui: *UI, info: pipeline.ParamInfo, target: ParamTarget) void {
     const alloc = ui.current_window.ctx.frameAlloc();
 
     // Section title: min == max == 0 (and step == 0 or null).
@@ -569,7 +695,7 @@ fn drawParamRow(ui: *UI, info: pipeline.ParamInfo) void {
     const is_toggle = info.min == 0.0 and info.max == 1.0 and
         info.step != null and info.step.? == 1.0;
 
-    const current = ui.getShaderParam(info.name);
+    const current = getParamValue(ui, target, info.name);
 
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -593,7 +719,7 @@ fn drawParamRow(ui: *UI, info: pipeline.ParamInfo) void {
                 .size = 18,
             });
             const new_val: f32 = if (tog.value()) 1.0 else 0.0;
-            if (new_val != current) ui.setShaderParam(info.name, new_val);
+            if (new_val != current) setParamValue(ui, target, info.name, new_val);
         } else {
             // Format value label: derive precision from step size.
             const decimals: usize = if (info.step) |s| (if (s >= 1.0) 0 else if (s >= 0.1) 1 else 2) else 2;
@@ -625,7 +751,7 @@ fn drawParamRow(ui: *UI, info: pipeline.ParamInfo) void {
             .corner_radius = 2,
         });
         const new_val = drag.value();
-        if (new_val != current) ui.setShaderParam(info.name, new_val);
+        if (new_val != current) setParamValue(ui, target, info.name, new_val);
     }
 }
 
@@ -653,6 +779,101 @@ fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u
     }
     ui_state.settings.shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
     ui_state.settings.should_load_shader = true;
+}
+
+fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
+    const can_clear_border_shader = ui_state.settings.border_shader_preset_path != null or ui_state.settings.border_shader_loading;
+
+    const header_row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+    });
+    {
+        _ = ui.label(.{
+            .text = "Border Preset",
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_primary,
+        });
+
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        if (ui.button(.{
+            .text = "Load",
+            .font_size = 15,
+            .text_color = theme.text_primary,
+            .bg_color = theme.bg_hover,
+            .hover_color = theme.border,
+            .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
+            .elevation = 0,
+        }).clicked(ui.current_window.ctx)) {
+            const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
+                @panic("Failed to allocate");
+            defer ui.main_window.ctx.frameAlloc().free(default_location);
+
+            c.SDL_ShowOpenFileDialog(
+                border_shader_dialog_callback,
+                clay.anytypeToAnyopaquePtr(ui_state),
+                ui.main_window.ptr,
+                &shader_filter_list,
+                shader_filter_list.len,
+                default_location.ptr,
+                false,
+            );
+        }
+
+        if (ui.button(.{
+            .text = "Clear",
+            .font_size = 15,
+            .enabled = can_clear_border_shader,
+            .text_color = if (can_clear_border_shader) theme.text_primary else theme.text_secondary,
+            .bg_color = if (can_clear_border_shader) theme.bg_hover else theme.bg_panel,
+            .hover_color = if (can_clear_border_shader) theme.border else theme.bg_panel,
+            .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
+            .elevation = 0,
+        }).clicked(ui.current_window.ctx)) {
+            if (ui_state.settings.border_shader_preset_path) |path| {
+                ui_state.alloc.free(path);
+                ui_state.settings.border_shader_preset_path = null;
+            }
+            ui_state.settings.should_clear_border_shader = true;
+        }
+    }
+    header_row.end();
+
+    const active_path = ui.getBorderShaderPresetPath();
+    const preview_text = if (active_path) |p| blk: {
+        const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
+            std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
+        break :blk if (slash > 0) p[slash + 1 ..] else p;
+    } else "None";
+
+    _ = ui.label(.{
+        .text = preview_text,
+        .font_size = 14,
+        .color = theme.text_secondary,
+    });
+}
+
+fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
+    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
+
+    if (filelist == null) {
+        std.debug.print("An error ocurred while selecting border shader file: {s}\n", .{c.SDL_GetError()});
+        return;
+    }
+    if (filelist.* == null) {
+        return;
+    }
+
+    const filepath = std.mem.span(filelist.*);
+    std.log.debug("User selected border shader: {s}", .{filepath});
+
+    if (ui_state.settings.border_shader_preset_path) |old_path| {
+        ui_state.alloc.free(old_path);
+    }
+    ui_state.settings.border_shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+    ui_state.settings.should_load_border_shader = true;
 }
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {

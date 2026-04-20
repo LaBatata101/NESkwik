@@ -1796,8 +1796,6 @@ pub const ShaderPipeline = struct {
         self.compile_done.store(true, .release);
     }
 
-    /// Render the NES frame through all shader passes and blit the result to
-    /// the swapchain texture at the given viewport position.
     pub fn renderFrame(
         self: *Self,
         input_texture: ?*c.SDL_GPUTexture,
@@ -1809,6 +1807,7 @@ pub const ShaderPipeline = struct {
         win_w: u32,
         win_h: u32,
         swapchain_format: c.SDL_GPUTextureFormat,
+        blit_load_op: c.SDL_GPULoadOp,
     ) !void {
         const preset = &self.preset.?;
 
@@ -1831,8 +1830,8 @@ pub const ShaderPipeline = struct {
         };
 
         var source_tex: *Texture = input;
-        var current_w = src_w;
-        var current_h = src_h;
+        var current_w = viewport.w;
+        var current_h = viewport.h;
 
         try renderPasses(
             self.alloc,
@@ -1875,7 +1874,7 @@ pub const ShaderPipeline = struct {
                     .w = viewport.w,
                     .h = viewport.h,
                 },
-                .load_op = c.SDL_GPU_LOADOP_LOAD,
+                .load_op = blit_load_op,
                 .filter = last_pass.filter,
             });
         }
