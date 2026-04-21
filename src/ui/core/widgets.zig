@@ -843,6 +843,7 @@ pub fn Combobox(comptime Option: type) type {
                 .is_open = false,
                 .selected_key = optionKey(params.selected orelse params.options[0]),
             } });
+            state.combobox.selected_key = optionKey(params.selected orelse params.options[0]);
 
             const menu_list_id = clay.ElementId.localIDI("combobox_list", element_id.id);
             const scroll_id = clay.ElementId.localIDI("scroll_area", element_id.id);
