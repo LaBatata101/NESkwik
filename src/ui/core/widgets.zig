@@ -474,6 +474,7 @@ pub const ScrollContainer = struct {
                             .attach_points = .{ .element = .right_top, .parent = .right_top },
                             .offset = .{ .x = -2, .y = scroll_bar_y },
                             .z_index = 10,
+                            .pointer_capture_mode = .passthrough,
                         },
                         .background_color = if (is_dragging or is_hovered)
                             params.scrollbar_color.toClay()
