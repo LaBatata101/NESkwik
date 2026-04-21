@@ -352,19 +352,16 @@ fn drawSidebarItem(ui: *UI, ui_state: *UIState, category: SettingsCategory) void
 }
 
 fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
-    const content = ui.column(.{
-        .sizing = .grow,
-        .bg_color = theme.bg_panel,
-        .child_alignment = .{ .x = .left, .y = .top },
-    });
+    const scroll = ui.scrollArea(.{});
     {
-        const scroll = ui.scrollArea(.{
-            .id = "settings_content_scroll",
+        const content = ui.column(.{
             .sizing = .grow,
-            .vertical = true,
-            .padding = .{ .left = 18, .right = 18, .top = 16, .bottom = 16 },
-            .gap = 16,
+            .bg_color = theme.bg_panel,
+            .child_alignment = .{ .x = .left, .y = .top },
+            .padding = .all(5),
+            .gap = 5,
         });
+
         {
             switch (ui_state.settings.selected_category) {
                 .general => drawSettingsGeneralContent(ui, ui_state),
@@ -372,9 +369,10 @@ fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
                 .shader => drawSettingsShaderContent(ui, ui_state),
             }
         }
-        scroll.end();
+
+        content.end();
     }
-    content.end();
+    scroll.end();
 }
 
 fn drawContentSectionHeader(ui: *UI, title: []const u8) void {
@@ -422,7 +420,7 @@ fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
             });
             _ = ui.spacer(.{ .sizing = .grow });
             ui_state.settings.hide_mouse_on_inactivity = ui
-                .toggle(.{ .value = ui_state.settings.hide_mouse_on_inactivity })
+                .toggle(.{ .value = ui_state.settings.hide_mouse_on_inactivity, .size = 22 })
                 .value();
         }
         row.end();
