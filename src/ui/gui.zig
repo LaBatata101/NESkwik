@@ -56,6 +56,7 @@ pub const UIState = struct {
         /// Currently selected category in the settings sidebar.
         selected_category: SettingsCategory = .general,
         hide_mouse_on_inactivity: bool = false,
+        emulation_speed: EmulationSpeed = .normal,
     };
 
     pub fn init(alloc: std.mem.Allocator) Self {
@@ -275,6 +276,34 @@ fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
     _ = ui.spacer(.{ .sizing = .grow });
 }
 
+pub const EmulationSpeed = enum {
+    half,
+    normal,
+    double,
+    triple,
+    quadruple,
+
+    pub fn label(self: @This()) []const u8 {
+        return switch (self) {
+            .half => "0.5x",
+            .normal => "1x",
+            .double => "2x",
+            .triple => "3x",
+            .quadruple => "4x",
+        };
+    }
+
+    pub fn multiplier(self: @This()) f32 {
+        return switch (self) {
+            .half => 0.5,
+            .normal => 1.0,
+            .double => 2.0,
+            .triple => 3.0,
+            .quadruple => 4.0,
+        };
+    }
+};
+
 const SettingsCategory = enum {
     general,
     video,
@@ -424,8 +453,51 @@ fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
                 .value();
         }
         row.end();
+
+        drawEmulationSpeedRow(ui, ui_state);
     }
     section.end();
+}
+
+fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+    });
+    {
+        _ = ui.label(.{
+            .text = "Emulation Speed",
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_primary,
+        });
+
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        const speed_opts = ui.combobox(EmulationSpeed, .{
+            .selected = ui_state.settings.emulation_speed,
+            .options = &.{ .half, .normal, .double, .triple, .quadruple },
+            .bg_color = theme.bg_hover,
+            .bg_color_on_hover = theme.bg_hover,
+            .border_color = theme.border_dim,
+            .border_color_on_open = theme.border_open,
+            .border_color_on_hover = theme.border,
+            .text_color = theme.text_primary,
+            .float_panel = .{
+                .bg_color = theme.bg_section,
+                .border_color = theme.border_open,
+            },
+            .item = .{
+                .bg_color_on_hover = theme.bg_hover,
+                .bg_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                .text_color = theme.text_secondary,
+                .text_color_on_hover = theme.text_accent,
+            },
+        });
+
+        ui_state.settings.emulation_speed = speed_opts.selected();
+    }
+    row.end();
 }
 
 fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {

@@ -74,6 +74,7 @@ pub fn main() !void {
 
     var last_mouse_activity_time: u64 = c.SDL_GetTicks();
     var is_cursor_hidden: bool = false;
+    var frame_acc: f32 = 0.0;
 
     while (!ui.shouldClose()) {
         ui.beginFrame();
@@ -144,7 +145,16 @@ pub fn main() !void {
                 }
             }
 
-            if (!step_mode) ui_state.system.run_frame();
+            if (!step_mode) {
+                const speed = ui_state.settings.emulation_speed;
+                frame_acc += speed.multiplier();
+                const frames_to_run: u32 = @intFromFloat(frame_acc);
+                frame_acc -= @floatFromInt(frames_to_run);
+                ui_state.system.apu.device.setSpeed(speed.multiplier());
+                for (0..frames_to_run) |_| {
+                    ui_state.system.run_frame();
+                }
+            }
 
             if (ui_state.settings.hide_mouse_on_inactivity) {
                 if (!is_cursor_hidden and ui.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {

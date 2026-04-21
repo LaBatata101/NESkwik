@@ -4,7 +4,9 @@ const c = @import("root.zig").c;
 const Sample = @import("apu/buffer.zig").Sample;
 
 const OUT_SAMPLE_RATE: i32 = 44100;
-const BUFFER_SIZE: usize = @divExact(@as(usize, @intCast(OUT_SAMPLE_RATE)), 15);
+// 4x the base 1x buffer so at 4x speed (which pushes 4*735 samples/frame) we
+// always have enough ring-buffer headroom between the produce and consume sides.
+const BUFFER_SIZE: usize = @divExact(@as(usize, @intCast(OUT_SAMPLE_RATE)), 15) * 4;
 
 const BufferOut = struct {
     samples: [BUFFER_SIZE]Sample,
@@ -21,6 +23,7 @@ pub const SDLAudioOut = struct {
     stream: *c.SDL_AudioStream,
     // To disable the audio output when running the test ROMs from CLI.
     disable: bool = false,
+    current_speed: f32 = 1.0,
 
     const Self = @This();
 
@@ -57,6 +60,31 @@ pub const SDLAudioOut = struct {
     pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
         _ = c.SDL_DestroyAudioStream(self.stream);
         alloc.destroy(self);
+    }
+
+    /// Change playback speed. The SDL stream's source sample rate is set to
+    /// OUT_SAMPLE_RATE * speed so that SDL resamples back to OUT_SAMPLE_RATE.
+    /// At Nx speed the APU produces Nx samples/frame; SDL therefore drains Nx
+    /// samples/frame, keeping the ring buffer balanced.
+    pub fn setSpeed(self: *Self, speed: f32) void {
+        if (self.current_speed == speed) return;
+        self.current_speed = speed;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Flush any stale samples so the callback doesn't play them at the
+        // new rate and produce a pitch glitch.
+        self.buffer.input_samples = 0;
+        self.buffer.input_counter = self.buffer.playback_counter;
+
+        const new_freq: c_int = @intFromFloat(@as(f32, OUT_SAMPLE_RATE) * speed);
+        const src_spec: c.SDL_AudioSpec = .{
+            .freq = new_freq,
+            .format = c.SDL_AUDIO_S16LE,
+            .channels = 1,
+        };
+        _ = c.SDL_SetAudioStreamFormat(self.stream, &src_spec, null);
     }
 
     pub fn play(self: *Self, buffer: []const Sample) void {
