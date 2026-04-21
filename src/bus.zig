@@ -3,6 +3,7 @@ const CPU = @import("cpu.zig").CPU;
 const PPU = @import("ppu.zig").PPU;
 const APU = @import("apu/apu.zig").APU;
 const Rom = @import("rom.zig").Rom;
+const TestRom = @import("rom.zig").TestRom;
 const Controllers = @import("controller.zig").Controllers;
 
 pub const Bus = struct {
@@ -48,8 +49,11 @@ pub const Bus = struct {
             },
             0x4016 => self.controllers.cntrl1_read(),
             0x4017 => self.controllers.cntrl2_read(),
+            // $4020-$5FFF is cartridge expansion space. None of the implemented
+            // mappers expose it yet, so treat it as unmapped/open bus for now.
+            0x4020...0x5FFF => 0,
             0x6000...0x7FFF => self.rom.prg_ram_read(addr),
-            0x4020...0x5FFF, 0x8000...0xFFFF => self.rom.prg_rom_read(addr),
+            0x8000...0xFFFF => self.rom.prg_rom_read(addr),
             else => {
                 std.log.warn("BUS: Ignoring mem read at 0x{X:04}", .{addr});
                 return 0;
@@ -116,3 +120,18 @@ pub const Bus = struct {
         }
     }
 };
+
+test "expansion space reads do not route into PRG ROM" {
+    const alloc = std.testing.allocator;
+    const program = [_]u8{0xEA};
+    var test_rom = TestRom.init(alloc, &program);
+    defer test_rom.deinit();
+
+    // Fill PRG ROM with a non-zero pattern so an accidental PRG-ROM read is obvious.
+    @memset(test_rom.prg_rom, 0xAA);
+
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+
+    try std.testing.expectEqual(@as(u8, 0), bus.mem_read(0x4020));
+    try std.testing.expectEqual(@as(u8, 0), bus.mem_read(0x5FFF));
+}
