@@ -516,6 +516,11 @@ pub const Canvas = struct {
     id: clay.ElementId,
     params: Params,
 
+    /// Which shader pipeline to pull the preview texture from.
+    /// When set on a canvas in a secondary window, `renderCustom` will use
+    /// the pipeline's last rendered output texture instead of uploading pixels.
+    pub const ShaderPreview = enum { main, border };
+
     pub const Params = struct {
         id: ?[]const u8 = null,
         sizing: clay.Sizing = .grow,
@@ -526,6 +531,10 @@ pub const Canvas = struct {
         fg_color: ?Color = null,
         bg_color: ?Color = null,
         aspect_ratio: utils.AspectRatio = .none,
+        /// When set, the canvas uses the named pipeline's last output texture
+        /// instead of uploading `pixels`. Falls back to `pixels` if the
+        /// pipeline has no output yet.
+        shader_preview: ?ShaderPreview = null,
     };
     const Self = @This();
 

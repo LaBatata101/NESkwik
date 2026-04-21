@@ -1296,6 +1296,7 @@ pub const UI = struct {
     shader_pipeline: ?*pipeline.ShaderPipeline = null,
     border_shader_pipeline: ?*pipeline.ShaderPipeline = null,
     pending_shader_render: ?PendingShaderRender = null,
+    border_shader_rendered_this_frame: bool = false,
 
     const PendingShaderRender = struct {
         texture: ?*c.SDL_GPUTexture,
@@ -1618,8 +1619,23 @@ pub const UI = struct {
     }
 
     pub fn endFrame(self: *Self) void {
+        self.border_shader_rendered_this_frame = false;
         const render_commands = clay.endLayout();
         self.renderCommands(self.main_window, render_commands);
+
+        // If the settings window is open and the border shader has never rendered
+        // (e.g. emulation not started yet), do a preview-only pass so the settings
+        // preview canvas has an output texture to display.
+        if (self.secondary_windows.items.len > 0) {
+            if (self.border_shader_pipeline) |bsp| {
+                if (!self.border_shader_rendered_this_frame) {
+                    bsp.renderForPreview(
+                        @intCast(self.main_window.width),
+                        @intCast(self.main_window.height),
+                    ) catch {};
+                }
+            }
+        }
 
         // Render secondary windows
         for (self.secondary_windows.items) |window| {
@@ -1877,20 +1893,23 @@ pub const UI = struct {
                     pending.viewport.h != pending.canvas.h;
                 if (has_letterbox) {
                     if (self.border_shader_pipeline) |border_shader_pipeline| {
-                        if (border_shader_pipeline.isActive()) border_shader_pipeline.renderFrame(
-                            pending.texture,
-                            pending.src_w,
-                            pending.src_h,
-                            pending.canvas,
-                            cmd,
-                            swapchain_tex,
-                            win_w,
-                            win_h,
-                            swapchain_format,
-                            c.SDL_GPU_LOADOP_LOAD,
-                        ) catch |err| {
-                            std.log.err("Border shader render failed: {}", .{err});
-                        };
+                        if (border_shader_pipeline.isActive()) {
+                            self.border_shader_rendered_this_frame = true;
+                            border_shader_pipeline.renderFrame(
+                                pending.texture,
+                                pending.src_w,
+                                pending.src_h,
+                                pending.canvas,
+                                cmd,
+                                swapchain_tex,
+                                win_w,
+                                win_h,
+                                swapchain_format,
+                                c.SDL_GPU_LOADOP_LOAD,
+                            ) catch |err| {
+                                std.log.err("Border shader render failed: {}", .{err});
+                            };
+                        }
                     }
                 }
 
@@ -1970,6 +1989,41 @@ pub const UI = struct {
         const data = clay.anyopaquePtrToType(*widgets.CustomData, cmd.render_data.custom.custom_data.?);
         switch (data.*) {
             .canvas => |canvas_| {
+                // Content-shader preview fast path: use the pipeline output texture
+                // directly, skipping the pixel upload entirely.
+                if (canvas_.params.shader_preview) |which| {
+                    if (which == .main) {
+                        if (self.shader_pipeline) |pl| {
+                            if (pl.getLastOutputTexture()) |tex| {
+                                window.renderer.setTexture(null);
+                                window.renderer.pushRect(.{
+                                    .x = cmd.bounding_box.x,
+                                    .y = cmd.bounding_box.y,
+                                    .w = cmd.bounding_box.width,
+                                    .h = cmd.bounding_box.height,
+                                }, .{ .r = 0, .g = 0, .b = 0, .a = 1 }, null);
+                                const vp = utils.calculateViewport(
+                                    cmd.bounding_box.x,
+                                    cmd.bounding_box.y,
+                                    cmd.bounding_box.width,
+                                    cmd.bounding_box.height,
+                                    canvas_.params.aspect_ratio,
+                                );
+                                window.renderer.setTexture(tex);
+                                window.renderer.pushRect(
+                                    .{ .x = vp.x, .y = vp.y, .w = vp.w, .h = vp.h },
+                                    .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+                                    null,
+                                );
+                                window.renderer.flush();
+                                return;
+                            }
+                        }
+                    }
+                    // .border falls through to the normal upload path below so the
+                    // NES frame is available as a GPU texture for the composite.
+                }
+
                 var texture: ?*c.SDL_GPUTexture = undefined;
                 var should_create = true;
 
@@ -2042,6 +2096,42 @@ pub const UI = struct {
                     .w = cmd.bounding_box.width,
                     .h = cmd.bounding_box.height,
                 }, bg_color_sdl, null);
+
+                // Border-shader preview composite: stretch border output to fill the
+                // preview area, then overlay the NES frame using the canvas aspect
+                // ratio so only the letterbox strips around the content show it.
+                if (canvas_.params.shader_preview) |which| {
+                    if (which == .border) {
+                        if (self.border_shader_pipeline) |pl| {
+                            if (pl.getLastOutputTexture()) |border_tex| {
+                                window.renderer.setTexture(border_tex);
+                                window.renderer.pushRect(.{
+                                    .x = cmd.bounding_box.x,
+                                    .y = cmd.bounding_box.y,
+                                    .w = cmd.bounding_box.width,
+                                    .h = cmd.bounding_box.height,
+                                }, .{ .r = 1, .g = 1, .b = 1, .a = 1 }, null);
+                                const content_vp = utils.calculateViewport(
+                                    cmd.bounding_box.x,
+                                    cmd.bounding_box.y,
+                                    cmd.bounding_box.width,
+                                    cmd.bounding_box.height,
+                                    canvas_.params.aspect_ratio,
+                                );
+                                window.renderer.setTexture(texture);
+                                window.renderer.pushRect(
+                                    .{ .x = content_vp.x, .y = content_vp.y, .w = content_vp.w, .h = content_vp.h },
+                                    .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+                                    null,
+                                );
+                                window.renderer.flush();
+                                return;
+                            }
+                        }
+                        // No border shader output yet: fall through to render just the
+                        // NES frame pixels (or black) as a plain preview.
+                    }
+                }
 
                 const sp = self.shader_pipeline orelse null;
                 const bsp = self.border_shader_pipeline orelse null;

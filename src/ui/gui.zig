@@ -543,7 +543,7 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
 }
 
 fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
-    drawContentSectionHeader(ui, "Preset");
+    drawContentSectionHeader(ui, "Shader");
     {
         const section = drawContentSection(ui);
         drawShaderPresetRow(ui, ui_state);
@@ -570,16 +570,15 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
                 .color = theme.accent_red,
             });
         }
+
+        const param_infos = ui.getShaderParamInfos();
+        if (!ui_state.settings.shader_loading and param_infos.len > 0) {
+            drawShaderParamsSection(ui, "Parameters", param_infos, .main);
+        }
         section.end();
     }
 
-    // Parameters sub-section — only when a shader with params is loaded.
-    const param_infos = ui.getShaderParamInfos();
-    if (!ui_state.settings.shader_loading and param_infos.len > 0) {
-        drawShaderParamsSection(ui, "Parameters", "shader_params_scroll", param_infos, .main);
-    }
-
-    drawContentSectionHeader(ui, "Border Preset");
+    drawContentSectionHeader(ui, "Border Shader");
     {
         const section = drawContentSection(ui);
         drawBorderShaderPresetRow(ui, ui_state);
@@ -596,12 +595,13 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
                 .color = theme.accent_red,
             });
         }
-        section.end();
-    }
 
-    const border_param_infos = ui.getBorderShaderParamInfos();
-    if (!ui_state.settings.border_shader_loading and border_param_infos.len > 0) {
-        drawShaderParamsSection(ui, "Border Parameters", "border_shader_params_scroll", border_param_infos, .border);
+        const border_param_infos = ui.getBorderShaderParamInfos();
+        if (!ui_state.settings.border_shader_loading and border_param_infos.len > 0) {
+            drawShaderParamsSection(ui, "Border Parameters", border_param_infos, .border);
+        }
+
+        section.end();
     }
 }
 
@@ -613,7 +613,6 @@ const ParamTarget = enum {
 fn drawShaderParamsSection(
     ui: *UI,
     title: []const u8,
-    scroll_id: []const u8,
     param_infos: []const pipeline.ParamInfo,
     target: ParamTarget,
 ) void {
@@ -628,7 +627,6 @@ fn drawShaderParamsSection(
     });
     {
         const scroll = ui.scrollArea(.{
-            .id = scroll_id,
             .sizing = .grow,
             .vertical = true,
             .padding = .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
@@ -644,10 +642,62 @@ fn drawShaderParamsSection(
     wrapper.end();
 }
 
+const PREVIEW_MAX_W: f32 = 320;
+const PREVIEW_MAX_H: f32 = 270;
+const PREVIEW_FRAME_PADDING: f32 = 2;
+const PREVIEW_LABEL_HEIGHT: f32 = 22;
+const black_pixel = [_]u8{ 0, 0, 0, 255 };
+
+fn drawShaderPreview(
+    ui: *UI,
+    pixels: []const u8,
+    px_w: u32,
+    px_h: u32,
+    shader: widgets.Canvas.ShaderPreview,
+    aspect_ratio: utils.AspectRatio,
+) void {
+    const content_aspect = aspect_ratio.value() orelse @as(f32, @floatFromInt(4)) / 3;
+    const preview_box_aspect = if (shader == .border)
+        @max(content_aspect, @as(f32, 16.0) / 9.0)
+    else
+        content_aspect;
+    const width_limited_height = PREVIEW_MAX_W / preview_box_aspect;
+    const preview_w: f32 = if (width_limited_height <= PREVIEW_MAX_H)
+        PREVIEW_MAX_W
+    else
+        PREVIEW_MAX_H * preview_box_aspect;
+    const preview_h: f32 = if (width_limited_height <= PREVIEW_MAX_H)
+        width_limited_height
+    else
+        PREVIEW_MAX_H;
+
+    const wrapper = ui.column(.{
+        .sizing = .{
+            .w = .fixed(preview_w + PREVIEW_FRAME_PADDING),
+            .h = .fixed(preview_h + PREVIEW_FRAME_PADDING + PREVIEW_LABEL_HEIGHT),
+        },
+        .bg_color = theme.border_dim,
+        .padding = .all(1),
+        .child_alignment = .center,
+    });
+    {
+        _ = ui.label(.{ .text = "Preview", .color = theme.accent_green });
+        _ = ui.canvas(.{
+            .sizing = .grow,
+            .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
+            .pixels = pixels,
+            .w = px_w,
+            .h = px_h,
+            .aspect_ratio = aspect_ratio,
+            .shader_preview = shader,
+        });
+    }
+    wrapper.end();
+}
+
 fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
     const can_clear_shader = ui_state.settings.shader_preset_path != null or ui_state.settings.shader_loading;
 
-    // Row: "Preset" label on the left, Load/Clear buttons on the right.
     const header_row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .{ .y = .center },
@@ -655,7 +705,7 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
     });
     {
         _ = ui.label(.{
-            .text = "Preset",
+            .text = "Shader",
             .font_size = theme.LABEL_FONT,
             .color = theme.text_primary,
         });
@@ -705,19 +755,25 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
     }
     header_row.end();
 
-    // Active preset filename on a second row.
+    // Active preset filename.
     const active_path = ui.getShaderPresetPath();
-    const preview_text = if (active_path) |p| blk: {
+    const filename = if (active_path) |p| blk: {
         const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
             std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
         break :blk if (slash > 0) p[slash + 1 ..] else p;
     } else "None";
 
     _ = ui.label(.{
-        .text = preview_text,
+        .text = filename,
         .font_size = 14,
         .color = theme.text_secondary,
     });
+
+    if (ui_state.emulation_running) {
+        const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
+        drawShaderPreview(ui, ui_state.system.frame_buffer(), NES_WIDTH, NES_HEIGHT, .main, .none);
+        center.end();
+    }
 }
 
 fn getParamValue(ui: *UI, target: ParamTarget, name: []const u8) f32 {
@@ -861,7 +917,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
     });
     {
         _ = ui.label(.{
-            .text = "Border Preset",
+            .text = "Border Shader",
             .font_size = theme.LABEL_FONT,
             .color = theme.text_primary,
         });
@@ -911,18 +967,37 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
     }
     header_row.end();
 
+    // Active preset filename.
     const active_path = ui.getBorderShaderPresetPath();
-    const preview_text = if (active_path) |p| blk: {
+    const filename = if (active_path) |p| blk: {
         const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
             std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
         break :blk if (slash > 0) p[slash + 1 ..] else p;
     } else "None";
 
     _ = ui.label(.{
-        .text = preview_text,
+        .text = filename,
         .font_size = 14,
         .color = theme.text_secondary,
     });
+
+    const show_border_preview = ui_state.settings.border_shader_preset_path != null or
+        ui_state.settings.border_shader_loading;
+    if (show_border_preview) {
+        const preview_aspect_ratio: utils.AspectRatio = switch (ui_state.settings.aspect_ratio) {
+            .none => .@"4_3",
+            else => ui_state.settings.aspect_ratio,
+        };
+        const preview_pixels: []const u8 = if (ui_state.emulation_running)
+            ui_state.system.frame_buffer()
+        else
+            &black_pixel;
+        const px_w: u32 = if (ui_state.emulation_running) NES_WIDTH else 1;
+        const px_h: u32 = if (ui_state.emulation_running) NES_HEIGHT else 1;
+        const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
+        drawShaderPreview(ui, preview_pixels, px_w, px_h, .border, preview_aspect_ratio);
+        center.end();
+    }
 }
 
 fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
