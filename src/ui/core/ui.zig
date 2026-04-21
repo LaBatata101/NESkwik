@@ -138,6 +138,13 @@ pub const UIContext = struct {
 
         const scroll_smoothing: f32 = 5.0; // Higher = faster decay (try 5.0-15.0)
         const scroll_threshold: f32 = 0.1; // Stop animating below this velocity
+        // Any intentional mouse movement cancels leftover scroll velocity so it
+        // doesn't bleed into a neighbouring (e.g. outer) scroll container.
+        const md = self.frame.mouse_delta;
+        if (md.x * md.x + md.y * md.y > 4.0) {
+            self.frame.scroll.velocity_x = 0;
+            self.frame.scroll.velocity_y = 0;
+        }
         // Apply velocity to scroll deltas for smooth animation
         if (@abs(self.frame.scroll.velocity_x) > scroll_threshold or @abs(self.frame.scroll.velocity_y) > scroll_threshold) {
             self.frame.scroll.delta_x = self.frame.scroll.velocity_x * self.dt * 60.0;
