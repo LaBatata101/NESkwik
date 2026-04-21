@@ -283,9 +283,6 @@ pub const CPU = struct {
                 const offset: i8 = @bitCast(self.mem_read(self.pc));
                 _ = self.mem_read(self.pc + 1); // dummy read
                 const jump_addr: u32 = @bitCast(@as(i32, self.pc) +% 1 +% offset);
-                if (jump_addr & 0xFF00 != (self.pc + 1) & 0xFF00) {
-                    self.extra_cycles = 2;
-                }
                 return .{ @truncate(jump_addr), 0 };
             },
             AdressingMode.Indirect => {
@@ -332,18 +329,15 @@ pub const CPU = struct {
         };
     }
 
-    fn branch(self: *Self, jump_addr: u16, condition: bool) u8 {
-        if (condition) {
-            const base_pc = self.pc + 1;
-            self.pc = jump_addr;
+    fn branch(self: *Self, jump_addr: u16, condition: bool) void {
+        if (!condition) return;
 
-            var cycles: u8 = 1;
-            if (base_pc & 0xFF00 != jump_addr & 0xFF00) {
-                cycles += 1;
-            }
-            return cycles;
+        const base_pc = self.pc + 1;
+        self.pc = jump_addr;
+        self.extra_cycles = 1;
+        if (base_pc & 0xFF00 != jump_addr & 0xFF00) {
+            self.extra_cycles += 1;
         }
-        return 0;
     }
 
     fn compare(self: *Self, register: u8, value: u8) void {
@@ -603,14 +597,14 @@ pub const CPU = struct {
             .STY => self.mem_write(instr_addr, self.register_y),
             .CPX => self.compare(self.register_x, self.mem_read(instr_addr)),
             .CPY => self.compare(self.register_y, self.mem_read(instr_addr)),
-            .BNE => _ = self.branch(instr_addr, !self.status.zero_flag),
-            .BEQ => _ = self.branch(instr_addr, self.status.zero_flag),
-            .BCC => _ = self.branch(instr_addr, !self.status.carry_flag),
-            .BCS => _ = self.branch(instr_addr, self.status.carry_flag),
-            .BPL => _ = self.branch(instr_addr, !self.status.negative_flag),
-            .BMI => _ = self.branch(instr_addr, self.status.negative_flag),
-            .BVC => _ = self.branch(instr_addr, !self.status.overflow_flag),
-            .BVS => _ = self.branch(instr_addr, self.status.overflow_flag),
+            .BNE => self.branch(instr_addr, !self.status.zero_flag),
+            .BEQ => self.branch(instr_addr, self.status.zero_flag),
+            .BCC => self.branch(instr_addr, !self.status.carry_flag),
+            .BCS => self.branch(instr_addr, self.status.carry_flag),
+            .BPL => self.branch(instr_addr, !self.status.negative_flag),
+            .BMI => self.branch(instr_addr, self.status.negative_flag),
+            .BVC => self.branch(instr_addr, !self.status.overflow_flag),
+            .BVS => self.branch(instr_addr, self.status.overflow_flag),
             .BIT => {
                 const instr_arg = self.mem_read(instr_addr);
                 self.status.zero_flag = self.register_a & instr_arg == 0;
