@@ -1250,9 +1250,10 @@ pub const Window = struct {
     title: []const u8,
 
     fn deinit(self: *@This(), alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
+        self.renderer.deinit();
+        c.SDL_ReleaseWindowFromGPUDevice(device, self.ptr);
         c.SDL_DestroyWindow(self.ptr);
         self.ctx.deinit(alloc, device);
-        self.renderer.deinit();
         alloc.destroy(self);
     }
 
@@ -1709,7 +1710,6 @@ pub const UI = struct {
                     self.quit = true;
                 } else {
                     const window = self.secondary_windows.pop() orelse unreachable;
-                    sdlError(c.SDL_HideWindow(window.inner.ptr));
                     window.deinit(self.allocator, self.gpu_device);
 
                     self.current_window = self.main_window;
