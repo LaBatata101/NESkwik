@@ -124,13 +124,15 @@ pub const System = struct {
         self.ppu.tick();
         self.ppu.tick();
 
-        if (self.bus.rom.mapper_irq_active() or self.apu.irq_triggered()) {
-            self.cpu.interrupt(CPU.IRQ);
-        }
+        if (self.cpu.cycles_wait == 0) {
+            if (self.bus.rom.mapper_irq_active() or self.apu.irq_triggered()) {
+                self.cpu.interrupt(CPU.IRQ);
+            }
 
-        if (self.ppu.nmi_interrupt) {
-            self.ppu.nmi_interrupt = false;
-            self.cpu.interrupt(CPU.NMI);
+            if (self.ppu.nmi_interrupt) {
+                self.ppu.nmi_interrupt = false;
+                self.cpu.interrupt(CPU.NMI);
+            }
         }
 
         self.cpu.step();

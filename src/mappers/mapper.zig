@@ -21,9 +21,10 @@ pub const Mapper = struct {
     vtable: *const VTable,
 
     const DefaultImpl = struct {
-        fn ppu_address_updated(ptr: *anyopaque, addr: u16) void {
+        fn ppu_address_updated(ptr: *anyopaque, addr: u16, ppu_cycle: u64) void {
             _ = ptr;
             _ = addr;
+            _ = ppu_cycle;
         }
     };
     pub const VTable = struct {
@@ -36,7 +37,7 @@ pub const Mapper = struct {
         chr_write: *const fn (ptr: *anyopaque, addr: u16, value: u8) void,
         mirroring: *const fn (ptr: *const anyopaque) Mirroring,
         irq_active: *const fn (ptr: *anyopaque) bool,
-        ppu_address_updated: *const fn (ptr: *anyopaque, addr: u16) void = @ptrCast(&DefaultImpl.ppu_address_updated),
+        ppu_address_updated: *const fn (ptr: *anyopaque, addr: u16, ppu_cycle: u64) void = @ptrCast(&DefaultImpl.ppu_address_updated),
     };
 
     const Self = @This();
@@ -111,7 +112,7 @@ pub const Mapper = struct {
         return self.vtable.irq_active(self.ptr);
     }
 
-    pub fn ppu_address_updated(self: *Self, addr: u16) void {
-        self.vtable.ppu_address_updated(self.ptr, addr);
+    pub fn ppu_address_updated(self: *Self, addr: u16, ppu_cycle: u64) void {
+        self.vtable.ppu_address_updated(self.ptr, addr, ppu_cycle);
     }
 };

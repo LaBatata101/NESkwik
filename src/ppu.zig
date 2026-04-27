@@ -307,6 +307,8 @@ pub const PPU = struct {
     global_cycle: u64,
     next_vblank_ppu_cycle: u64,
     next_vblank_cpu_cycle: u64,
+    pending_mapper_addr: ?u16,
+    pending_mapper_cycle: u64,
 
     /// A fake dynamic latch representing the capacitance of the wires in the
     /// PPU that we have to emulate.
@@ -347,6 +349,8 @@ pub const PPU = struct {
             .global_cycle = 0,
             .next_vblank_ppu_cycle = 1,
             .next_vblank_cpu_cycle = ppu_to_cpu_cycle(1),
+            .pending_mapper_addr = null,
+            .pending_mapper_cycle = 0,
             .dynamic_latch = 0,
             .frame_is_odd = false,
             .last_cycle_written = 0,
@@ -371,6 +375,8 @@ pub const PPU = struct {
         self.mask_register = .{};
         self.next_vblank_cpu_cycle = ppu_to_cpu_cycle(1);
         self.next_vblank_ppu_cycle = 1;
+        self.pending_mapper_addr = null;
+        self.pending_mapper_cycle = 0;
         self.nmi_interrupt = false;
         self.oam_addr_register = 0;
         self.scanline = 0;
@@ -395,6 +401,13 @@ pub const PPU = struct {
     }
 
     pub fn tick(self: *Self) void {
+        if (self.pending_mapper_addr) |addr| {
+            if (self.global_cycle >= self.pending_mapper_cycle) {
+                self.rom.mapper_ppu_address_updated(addr, self.global_cycle);
+                self.pending_mapper_addr = null;
+            }
+        }
+
         switch (self.scanline) {
             // All but 1 of the scanlines is visible to the user. The pre-render scanline
             // at 261, is used to configure the "shifters" for the first visible scanline, 0.
@@ -442,6 +455,10 @@ pub const PPU = struct {
     }
 
     fn render_scanline(self: *Self) void {
+        if (self.cycle == 257) {
+            @memset(&self.sprite_data.has_sprite_at_x, false);
+        }
+
         switch (self.cycle) {
             // Idle cycle. Just set the index for the frame buffer.
             0 => {
@@ -456,10 +473,6 @@ pub const PPU = struct {
             // Two bytes are fetched, but the purpose for this is unknown.
             337...340 => self.unknown_fetch(),
             else => std.debug.panic("PPU cycle should be bigger than 340. Got {}\n", .{self.cycle}),
-        }
-
-        if (self.cycle == 257) {
-            @memset(&self.sprite_data.has_sprite_at_x, false);
         }
 
         // Sprite evaluation doesn't happen on the pre-render scanline or if the rendering is disabled.
@@ -501,8 +514,9 @@ pub const PPU = struct {
     }
 
     fn fetch_next_sprite_cycle(self: *Self) void {
-        if (self.cycle == 251) {
-            self.reload_shift_registers();
+        // MMC3 scanline IRQs depend on sprite pattern A12 rising during the pre-render line too.
+        if (self.is_rendering_enabled()) {
+            self.sprite_fetch_cycle();
         }
     }
 
@@ -535,7 +549,6 @@ pub const PPU = struct {
                 self.sprite_data.write_to_oam((self.cycle / 2) - 1, 0xFF);
             },
             65...256 => if (self.scanline != PRE_RENDER_SCANLINE) self.sprite_evaluation_cycle(),
-            257...320 => self.sprite_fetch_cycle(),
             else => {},
         }
     }
@@ -647,7 +660,7 @@ pub const PPU = struct {
 
     // Load sprite data for the next scanline into registers.
     fn sprite_fetch_cycle(self: *Self) void {
-        if (self.cycle % 8 != 1) {
+        if (self.cycle % 8 != 5) {
             return;
         }
 
@@ -675,8 +688,9 @@ pub const PPU = struct {
         const tile_addr_lo = bank | tile_idx << 4 | offset;
         const tile_addr_hi = tile_addr_lo + 8;
 
-        const tile_byte_lo = self.chr_read(tile_addr_lo);
-        const tile_byte_hi = self.chr_read(tile_addr_hi);
+        const tile_byte_lo = self.rom.chr_read(tile_addr_lo);
+        const tile_byte_hi = self.rom.chr_read(tile_addr_hi);
+        self.schedule_mapper_ppu_update(tile_addr_lo);
 
         self.sprite_data.x_pos[sprite_idx] = oam_entry.x;
         self.sprite_data.attributes[sprite_idx] = oam_entry.attr;
@@ -859,7 +873,7 @@ pub const PPU = struct {
         const new_addr = addr & 0x3FFF;
         return switch (new_addr) {
             0...0x1FFF => {
-                self.rom.mapper_ppu_address_updated(new_addr);
+                self.rom.mapper_ppu_address_updated(new_addr, self.global_cycle);
                 return self.rom.chr_read(new_addr);
             },
             0x2000...0x3EFF => self.vram[self.mirror_vram_addr(new_addr)],
@@ -879,8 +893,21 @@ pub const PPU = struct {
     }
 
     fn chr_read(self: *Self, addr: u16) u8 {
-        self.rom.mapper_ppu_address_updated(addr);
+        if (self.is_rendering()) {
+            self.schedule_mapper_ppu_update(addr);
+        } else {
+            self.rom.mapper_ppu_address_updated(addr, self.global_cycle);
+        }
         return self.rom.chr_read(addr);
+    }
+
+    fn schedule_mapper_ppu_update(self: *Self, addr: u16) void {
+        if (self.pending_mapper_addr == null) {
+            self.pending_mapper_addr = addr;
+            // CHR data is fetched here for rendering, but MMC3 observes the
+            // PPU A12 transition later in the fetch slot.
+            self.pending_mapper_cycle = self.global_cycle + 14;
+        }
     }
 
     fn vram_read(self: *Self, addr: u16) u8 {
@@ -978,7 +1005,7 @@ pub const PPU = struct {
             self.tmp_addr = @bitCast(tmp_addr);
             self.addr_register = self.tmp_addr;
 
-            self.rom.mapper_ppu_address_updated(tmp_addr & 0x3FFF);
+            self.rom.mapper_ppu_address_updated(tmp_addr & 0x3FFF, self.global_cycle);
         }
 
         self.write_toggle = !self.write_toggle;
@@ -988,6 +1015,7 @@ pub const PPU = struct {
         if (self.scanline >= 240 or !self.is_rendering_enabled()) {
             const new_addr = self.addr_register.addr() +% self.ctrl_register.vram_addr_increment();
             self.addr_register = @bitCast(new_addr);
+            self.rom.mapper_ppu_address_updated(new_addr & 0x3FFF, self.global_cycle);
         } else {
             // "During rendering (on the pre-render line and the visible lines 0-239, provided either background or
             // sprite rendering is enabled), " it will update v in an odd way, triggering a coarse X increment and a

@@ -48,8 +48,8 @@ pub const Mapper4 = struct {
 
     /// Previous state of PPU A12 line (for edge detection)
     ppu_a12: bool,
-    /// Counter for how long A12 has been low (debouncing)
-    ppu_a12_low_counter: u8,
+    /// PPU cycle when A12 most recently went low (for MMC3 low-pass filtering)
+    ppu_a12_low_cycle: u64,
 
     mirroring_mode: Mirroring,
     allocator: std.mem.Allocator,
@@ -96,7 +96,7 @@ pub const Mapper4 = struct {
             .irq_counter_reload = 0,
             .irq_enabled = false,
             .ppu_a12 = false,
-            .ppu_a12_low_counter = 0,
+            .ppu_a12_low_cycle = 0,
             .mirroring_mode = params.mirroring_mode,
             .allocator = allocator,
         };
@@ -267,16 +267,20 @@ pub const Mapper4 = struct {
         return self.irq_flag;
     }
 
-    fn ppu_address_updated(self: *Self, addr: u16) void {
+    fn ppu_address_updated(self: *Self, addr: u16, ppu_cycle: u64) void {
         if (addr >= 0x2000) return;
 
         const a12 = addr & 0x1000 == 0x1000;
-        if (a12 and !self.ppu_a12 and self.ppu_a12_low_counter > 12) {
-            self.clock_irq();
-        } else if (!a12 and !self.ppu_a12) {
-            self.ppu_a12_low_counter +|= 1;
-        } else if (a12) {
-            self.ppu_a12_low_counter = 0;
+        if (a12 == self.ppu_a12) {
+            return;
+        }
+
+        if (a12) {
+            if (ppu_cycle -| self.ppu_a12_low_cycle >= 12) {
+                self.clock_irq();
+            }
+        } else {
+            self.ppu_a12_low_cycle = ppu_cycle;
         }
         self.ppu_a12 = a12;
     }
@@ -455,18 +459,18 @@ test "Mapper4 IRQ functionality" {
     try std.testing.expect(!mapper.irq_active());
 
     // Simulate 3 scanlines (A12 rising edges)
-    mapper.ppu_a12_low_counter = 20;
-    mapper.ppu_address_updated(0x1000); // A12 rises
+    mapper.ppu_a12_low_cycle = 0;
+    mapper.ppu_address_updated(0x1000, 20); // A12 rises
     try std.testing.expect(!mapper.irq_active());
 
     mapper.ppu_a12 = false;
-    mapper.ppu_a12_low_counter = 20;
-    mapper.ppu_address_updated(0x1000); // A12 rises
+    mapper.ppu_a12_low_cycle = 20;
+    mapper.ppu_address_updated(0x1000, 40); // A12 rises
     try std.testing.expect(!mapper.irq_active());
 
     mapper.ppu_a12 = false;
-    mapper.ppu_a12_low_counter = 20;
-    mapper.ppu_address_updated(0x1000); // A12 rises - counter should hit 0
+    mapper.ppu_a12_low_cycle = 40;
+    mapper.ppu_address_updated(0x1000, 60); // A12 rises - counter should hit 0
     try std.testing.expect(mapper.irq_active());
 }
 

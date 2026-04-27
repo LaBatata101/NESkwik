@@ -178,8 +178,8 @@ pub const Rom = struct {
         return self.mapper.irq_active();
     }
 
-    pub fn mapper_ppu_address_updated(self: *Self, addr: u16) void {
-        self.mapper.ppu_address_updated(addr);
+    pub fn mapper_ppu_address_updated(self: *Self, addr: u16, ppu_cycle: u64) void {
+        self.mapper.ppu_address_updated(addr, ppu_cycle);
     }
 };
 
