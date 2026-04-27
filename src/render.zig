@@ -67,6 +67,9 @@ pub const FPSManager = struct {
     last_frame_end: u64,
     dt: u64,
     mode: FramerateMode,
+    frame_count: u64,
+    fps: u64,
+    fps_window_start: u64,
 
     const Self = @This();
     pub const FramerateMode = union(enum) {
@@ -81,11 +84,15 @@ pub const FPSManager = struct {
     }
 
     pub fn init() Self {
+        const now = Self.getTicks();
         return .{
             .target_ticks_per_frame = c.SDL_MS_PER_SECOND / FPS_DEFAULT,
-            .last_frame_end = Self.getTicks(),
+            .last_frame_end = now,
             .dt = 0,
             .mode = .unlimited,
+            .frame_count = 0,
+            .fps = 0,
+            .fps_window_start = now,
         };
     }
 
@@ -115,10 +122,20 @@ pub const FPSManager = struct {
 
         self.last_frame_end = Self.getTicks();
         self.dt = self.last_frame_end -% now + frame_duration;
+
+        self.frame_count += 1;
+        const window = self.last_frame_end -% self.fps_window_start;
+        if (window >= c.SDL_MS_PER_SECOND) {
+            const measured = self.frame_count * c.SDL_MS_PER_SECOND / window;
+            self.fps = if (self.fps == 0) measured else (self.fps + measured) / 2;
+            self.frame_count = 0;
+            self.fps_window_start = self.last_frame_end;
+        }
+
         return self.dt;
     }
 
     pub fn getFPS(self: *const Self) u64 {
-        return @divTrunc(c.SDL_MS_PER_SECOND, @max(self.dt, 1));
+        return self.fps;
     }
 };
