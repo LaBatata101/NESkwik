@@ -89,29 +89,28 @@ pub fn main() !void {
     };
     defer dir.close();
 
-    // Initialize Thread Pool
     var pool: std.Thread.Pool = undefined;
-    // .allocator is required for the pool's internal structures
     try pool.init(.{ .allocator = allocator });
 
-    // Initialize Shared Test State
     var state = TestState.init(allocator);
     defer state.deinit();
 
     std.debug.print("\n=== RUNNING TEST ROMS ===\n\n", .{});
 
-    var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".nes")) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".nes")) continue;
 
         if (filter) |f| {
-            if (std.mem.indexOf(u8, entry.name, f) == null) continue;
+            if (std.mem.indexOf(u8, entry.path, f) == null) continue;
         }
 
         // We must duplicate the path because the thread will run after the
-        // iterator moves to the next entry or closes.
-        const rom_path = try std.fs.path.join(allocator, &.{ TESTS_DIR, entry.name });
+        // walker moves to the next entry or closes.
+        const rom_path = try std.fs.path.join(allocator, &.{ TESTS_DIR, entry.path });
 
         // Spawn the job
         try pool.spawn(run_test_wrapper, .{ &state, rom_path });
@@ -155,7 +154,10 @@ fn run_test_wrapper(state: *TestState, rom_path: []const u8) void {
         // Handle unexpected runtime errors (file not found, etc)
         state.mutex.lock();
         defer state.mutex.unlock();
-        std.debug.print("{s}... \x1b[31mERROR ({})\x1b[0m\n", .{ std.fs.path.stem(rom_path), err });
+        // Strip "test_roms/" prefix then the extension for a readable path-aware name
+        const rel = rom_path[TESTS_DIR.len + 1 ..];
+        const display = if (std.mem.lastIndexOfScalar(u8, rel, '.')) |i| rel[0..i] else rel;
+        std.debug.print("{s}... \x1b[31mERROR ({})\x1b[0m\n", .{ display, err });
         return;
     };
     const exec_time = timer.lap();
@@ -166,7 +168,10 @@ fn run_test_wrapper(state: *TestState, rom_path: []const u8) void {
 
     state.total_count += 1;
 
-    const name_stem = std.fs.path.stem(rom_path);
+    // Strip the leading "test_roms/" prefix so subdirectory tests show "subdir/test"
+    // instead of just "test"; then strip the .nes extension.
+    const rel = rom_path[TESTS_DIR.len + 1 ..];
+    const name_stem = if (std.mem.lastIndexOfScalar(u8, rel, '.')) |i| rel[0..i] else rel;
 
     switch (result) {
         .passed => {
