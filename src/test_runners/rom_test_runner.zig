@@ -225,12 +225,20 @@ fn run_test_rom(allocator: std.mem.Allocator, path: []const u8) !TestResult {
     defer system.deinit();
     system.reset();
 
+    const speed = ness.gui.EmulationSpeed.quadruple;
+    var frame_acc: f32 = 0;
+
     var test_started = false;
     var timestamp: u64 = 0;
     var status = system.bus.mem_read(ADDR_STATUS);
     while (true) {
         while (system.bus.cycles <= (CPU_ONE_SEC_CYCLES / 2) + timestamp) {
-            system.run_frame();
+            frame_acc += speed.multiplier();
+            const frames_to_run: u32 = @intFromFloat(frame_acc);
+            frame_acc -= @floatFromInt(frames_to_run);
+            for (0..frames_to_run) |_| {
+                system.run_frame();
+            }
         }
         timestamp = system.bus.cycles;
 
