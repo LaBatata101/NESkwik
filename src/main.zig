@@ -98,6 +98,7 @@ pub fn main() !void {
             const file_size = try file.getEndPos();
             try file.seekTo(0);
 
+            if (ui_state.rom_bytes) |rom_bytes| allocator.free(rom_bytes);
             ui_state.rom_bytes = try allocator.alloc(u8, file_size);
             _ = try file.read(ui_state.rom_bytes.?);
 
@@ -124,12 +125,12 @@ pub fn main() !void {
         gui.drawGUI(ui, &ui_state);
 
         if (ui_state.emulation_running) {
-            ui_state.system.sync_controllers(ui);
+            ui_state.system.?.sync_controllers(ui);
             if (ui.isKeyPressed(.ESCAPE)) std.process.exit(0);
             if (ui.isKeyPressed(.F9)) step_mode = !step_mode;
-            if (ui.isKeyPressed(.R)) ui_state.system.reset();
-            if (step_mode and ui.isKeyPressed(.F10)) ui_state.system.tick();
-            if (step_mode and ui.isKeyPressed(.F11)) ui_state.system.run_frame();
+            if (ui.isKeyPressed(.R)) ui_state.system.?.reset();
+            if (step_mode and ui.isKeyPressed(.F10)) ui_state.system.?.tick();
+            if (step_mode and ui.isKeyPressed(.F11)) ui_state.system.?.run_frame();
             if (ui.isKeyPressed(.F)) {
                 if (ui.isWindowFullscreen()) {
                     ui.setWindowFullscreen(false);
@@ -150,9 +151,9 @@ pub fn main() !void {
                 frame_acc += speed.multiplier();
                 const frames_to_run: u32 = @intFromFloat(frame_acc);
                 frame_acc -= @floatFromInt(frames_to_run);
-                ui_state.system.apu.device.setSpeed(speed.multiplier());
+                ui_state.system.?.apu.device.setSpeed(speed.multiplier());
                 for (0..frames_to_run) |_| {
-                    ui_state.system.run_frame();
+                    ui_state.system.?.run_frame();
                 }
             }
 

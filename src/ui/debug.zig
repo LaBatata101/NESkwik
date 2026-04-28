@@ -33,7 +33,7 @@ fn drawGameScreen(ui: *UI, ui_state: *UIState) void {
     const wrapper = ui.column(.{ .sizing = .{ .w = .grow, .h = .percent(0.677) } });
     _ = ui.canvas(.{
         .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-        .pixels = ui_state.system.frame_buffer(),
+        .pixels = ui_state.system.?.frame_buffer(),
         .w = NES_WIDTH,
         .h = NES_HEIGHT,
     });
@@ -83,7 +83,7 @@ fn drawSectionHeader(ui: *UI, title: []const u8, accent: Color) void {
 }
 
 fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
-    const system = ui_state.system;
+    const system = ui_state.system.?;
 
     drawSectionHeader(ui, "DISASSEMBLY", theme.accent_amber);
 
@@ -98,7 +98,7 @@ fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
         for (0..12) |i| {
             const is_current = (i == 0); // first entry is always the current PC
 
-            const code = ui_state.rom.prg_rom[(system.cpu.pc + op_size) % ui_state.rom.prg_rom.len];
+            const code = ui_state.rom.?.prg_rom[(system.cpu.pc + op_size) % ui_state.rom.?.prg_rom.len];
             const opcode = opcodes.OP_CODES[code];
 
             const buf = ui.current_window.ctx.frameAlloc().alloc(u8, 23) catch @panic("alloc");
@@ -185,7 +185,7 @@ fn drawDisassemblyRow(
 }
 
 fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
-    const cpu = ui_state.system.cpu;
+    const cpu = ui_state.system.?.cpu;
 
     drawSectionHeader(ui, "CPU REGISTERS", theme.accent_blue);
 
@@ -300,7 +300,7 @@ fn drawFlagBadge(ui: *UI, name: []const u8, active: bool) void {
 }
 
 fn drawPPUPanel(ui: *UI, ui_state: *UIState) void {
-    const ppu = ui_state.system.ppu;
+    const ppu = ui_state.system.?.ppu;
 
     drawSectionHeader(ui, "PPU STATE", theme.accent_purple);
 
@@ -365,7 +365,7 @@ fn drawPatternAndPalettePanel(ui: *UI, ui_state: *UIState) void {
 }
 
 fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
-    const system = ui_state.system;
+    const system = ui_state.system.?;
 
     const col = ui.column(.{
         .sizing = .{ .w = .fit, .h = .grow },
@@ -441,7 +441,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
 }
 
 fn drawPalettePanel(ui: *UI, ui_state: *UIState) void {
-    const palette_ram = ui_state.system.ppu.palette_table;
+    const palette_ram = ui_state.system.?.ppu.palette_table;
 
     const col = ui.column(.{
         .sizing = .grow,

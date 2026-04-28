@@ -25,8 +25,8 @@ pub const UIState = struct {
     emulation_running: bool = false,
 
     rom_bytes: ?[]u8 = null,
-    rom: Rom = undefined,
-    system: System = undefined,
+    rom: ?Rom = null,
+    system: ?System = null,
 
     settings: EmulatorSettings = .{},
 
@@ -84,20 +84,24 @@ pub const UIState = struct {
         }
 
         if (self.emulation_running) { // TODO: add flag to check if a ROM was loaded
-            self.rom.deinit();
-            self.system.deinit();
+            self.rom.?.deinit();
+            self.system.?.deinit();
         }
     }
 
     pub fn loadRom(self: *Self, path: []const u8, bytes: []u8) !void {
+        if (self.rom) |*rom| rom.deinit();
+        if (self.system) |*system| system.deinit();
+
         self.rom = try Rom.init(self.alloc, path, bytes);
-        self.system = try System.init(self.alloc, &self.rom, .{});
-        self.system.reset();
+        self.system = try System.init(self.alloc, &self.rom.?, .{});
+        self.system.?.reset();
         self.emulation_running = true;
         self.render_home_ui = false;
     }
 
     pub fn setSelectedRom(self: *Self, filepath: []const u8) void {
+        if (self.selected_rom_filepath) |path| self.alloc.free(path);
         self.selected_rom_filepath = self.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
         self.should_load_rom = true;
     }
@@ -261,7 +265,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
         } else {
             _ = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-                .pixels = ui_state.system.frame_buffer(),
+                .pixels = ui_state.system.?.frame_buffer(),
                 .w = NES_WIDTH,
                 .h = NES_HEIGHT,
                 .aspect_ratio = ui_state.settings.aspect_ratio,
@@ -771,7 +775,7 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
 
     if (ui_state.emulation_running) {
         const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, ui_state.system.frame_buffer(), NES_WIDTH, NES_HEIGHT, .main, .none);
+        drawShaderPreview(ui, ui_state.system.?.frame_buffer(), NES_WIDTH, NES_HEIGHT, .main, .none);
         center.end();
     }
 }
@@ -989,7 +993,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
             else => ui_state.settings.aspect_ratio,
         };
         const preview_pixels: []const u8 = if (ui_state.emulation_running)
-            ui_state.system.frame_buffer()
+            ui_state.system.?.frame_buffer()
         else
             &black_pixel;
         const px_w: u32 = if (ui_state.emulation_running) NES_WIDTH else 1;
