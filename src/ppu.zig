@@ -300,6 +300,8 @@ pub const PPU = struct {
     sprite_data: SpriteData,
 
     nmi_interrupt: bool,
+    nmi_interrupt_delay: bool,
+    nmi_interrupt_cycle: u64,
 
     frame_buffer: Frame,
     frame_complete: bool,
@@ -309,6 +311,7 @@ pub const PPU = struct {
     next_vblank_cpu_cycle: u64,
     pending_mapper_addr: ?u16,
     pending_mapper_cycle: u64,
+    suppress_vblank_set: bool,
 
     /// A fake dynamic latch representing the capacitance of the wires in the
     /// PPU that we have to emulate.
@@ -317,10 +320,17 @@ pub const PPU = struct {
     last_cycle_written: u64,
 
     frame_is_odd: bool,
+    skip_odd_frame_cycle: bool,
     current_frame_buffer_index: usize,
 
     const Self = @This();
     const PRE_RENDER_SCANLINE: u16 = 261;
+    // CPU-visible VBL/NMI edge timings used by Blargg's ppu_vbl_nmi tests.
+    const VBL_NMI_DELAY: u64 = 15;
+    const VBL_NMI_CANCEL_LAST_CYCLE: u16 = 3;
+    // Rendering enable is sampled before dot 339, then the odd-frame dot is skipped after dot 339.
+    const ODD_FRAME_SKIP_SAMPLE_CYCLE: u16 = 338;
+    const ODD_FRAME_SKIP_APPLY_CYCLE: u16 = 339;
 
     pub fn init(rom: *Rom) Self {
         return .{
@@ -341,6 +351,8 @@ pub const PPU = struct {
             .scanline = PRE_RENDER_SCANLINE,
             .cycle = 0,
             .nmi_interrupt = false,
+            .nmi_interrupt_delay = false,
+            .nmi_interrupt_cycle = 0,
             .bg_data = .{},
             .sprite_data = .{},
             .fine_x = 0,
@@ -351,8 +363,10 @@ pub const PPU = struct {
             .next_vblank_cpu_cycle = ppu_to_cpu_cycle(1),
             .pending_mapper_addr = null,
             .pending_mapper_cycle = 0,
+            .suppress_vblank_set = false,
             .dynamic_latch = 0,
             .frame_is_odd = false,
+            .skip_odd_frame_cycle = false,
             .last_cycle_written = 0,
             .current_frame_buffer_index = 0,
         };
@@ -377,7 +391,10 @@ pub const PPU = struct {
         self.next_vblank_ppu_cycle = 1;
         self.pending_mapper_addr = null;
         self.pending_mapper_cycle = 0;
+        self.suppress_vblank_set = false;
         self.nmi_interrupt = false;
+        self.nmi_interrupt_delay = false;
+        self.nmi_interrupt_cycle = 0;
         self.oam_addr_register = 0;
         self.scanline = 0;
         self.scroll_register = .{};
@@ -386,6 +403,7 @@ pub const PPU = struct {
         self.tmp_addr = .{};
         self.write_toggle = false;
         self.frame_is_odd = false;
+        self.skip_odd_frame_cycle = false;
         self.last_cycle_written = 0;
     }
 
@@ -417,17 +435,24 @@ pub const PPU = struct {
             241...260 => self.vblank_scanline(),
             else => std.debug.panic("Scanline shouldn't be bigger than 261. Got {}\n", .{self.scanline}),
         }
+        const skip_after_this_dot = self.scanline == PRE_RENDER_SCANLINE and
+            self.cycle == ODD_FRAME_SKIP_APPLY_CYCLE and self.skip_odd_frame_cycle;
+        if (self.scanline == PRE_RENDER_SCANLINE and self.cycle == ODD_FRAME_SKIP_SAMPLE_CYCLE and self.frame_is_odd) {
+            self.skip_odd_frame_cycle = self.is_rendering_enabled();
+        }
+
         self.cycle += 1;
         self.global_cycle += 1;
 
-        var dots_this_scanline: u16 = CYCLES_PER_SCANLINE;
+        const dots_this_scanline: u16 = CYCLES_PER_SCANLINE;
 
-        // On odd frames, the pre-render scanline is 1 dot shorter
-        if (self.scanline == PRE_RENDER_SCANLINE and self.frame_is_odd and self.is_rendering_enabled()) {
-            dots_this_scanline -= 1;
-        }
-
-        if (self.cycle >= dots_this_scanline) {
+        if (skip_after_this_dot) {
+            self.skip_odd_frame_cycle = false;
+            self.cycle = 0;
+            self.scanline = 0;
+            self.frame_is_odd = !self.frame_is_odd;
+            self.frame_complete = true;
+        } else if (self.cycle >= dots_this_scanline) {
             self.cycle = 0;
             self.scanline = (self.scanline + 1) % SCANLINES_PER_FRAME;
 
@@ -443,13 +468,23 @@ pub const PPU = struct {
 
     fn vblank_scanline(self: *Self) void {
         if (self.scanline == 241 and self.cycle == 1) {
-            self.status_register.vblank = true; // end of frame, set vblank
             const cycles_this_frame = if (self.frame_is_odd) CYCLES_PER_FRAME - 1 else CYCLES_PER_FRAME;
             self.next_vblank_ppu_cycle += cycles_this_frame;
             self.next_vblank_cpu_cycle = ppu_to_cpu_cycle(self.next_vblank_ppu_cycle);
 
+            if (self.suppress_vblank_set) {
+                self.suppress_vblank_set = false;
+                self.nmi_interrupt = false;
+                self.nmi_interrupt_delay = false;
+                self.nmi_interrupt_cycle = 0;
+                return;
+            }
+
+            self.status_register.vblank = true;
             if (self.ctrl_register.generate_nmi) {
                 self.nmi_interrupt = true;
+                self.nmi_interrupt_delay = false;
+                self.nmi_interrupt_cycle = self.global_cycle + VBL_NMI_DELAY;
             }
         }
     }
@@ -1184,10 +1219,27 @@ pub const PPU = struct {
 
     /// Write a value to the `PPUCTRL` register.
     fn ctrl_write(self: *Self, value: u8) void {
+        const old_ctrl = self.ctrl_register;
         self.ctrl_register = @bitCast(value);
 
         self.tmp_addr.nametable_x = @as(u1, @truncate(self.ctrl_register.name_table_addr)) & 1;
         self.tmp_addr.nametable_y = @as(u1, @truncate(self.ctrl_register.name_table_addr >> 1)) & 1;
+
+        if (!self.ctrl_register.generate_nmi) {
+            if (!self.nmi_interrupt or (self.scanline == 241 and self.cycle <= VBL_NMI_CANCEL_LAST_CYCLE)) {
+                self.nmi_interrupt = false;
+                self.nmi_interrupt_delay = false;
+                self.nmi_interrupt_cycle = 0;
+            } else if (self.nmi_interrupt_cycle > self.global_cycle) {
+                self.nmi_interrupt_cycle = self.global_cycle;
+            }
+        } else if (!old_ctrl.generate_nmi and self.status_register.vblank and
+            !(self.scanline == PRE_RENDER_SCANLINE and self.cycle >= 1))
+        {
+            self.nmi_interrupt = true;
+            self.nmi_interrupt_delay = true;
+            self.nmi_interrupt_cycle = self.global_cycle;
+        }
     }
 
     /// Writes a byte to the `PPUMASK` register (`0x2001`) to configure rendering options.
@@ -1302,8 +1354,19 @@ pub const PPU = struct {
     fn status_read(self: *Self) StatusRegister {
         const status = self.status_register;
 
+        // A read immediately before the VBL flag is set suppresses the set
+        // event for this frame.
+        if (self.scanline == 241 and self.cycle == 1) {
+            self.suppress_vblank_set = true;
+        }
+
         self.write_toggle = false;
         self.status_register.vblank = false;
+        if (self.scanline == 241 and self.cycle <= VBL_NMI_CANCEL_LAST_CYCLE) {
+            self.nmi_interrupt = false;
+            self.nmi_interrupt_delay = false;
+            self.nmi_interrupt_cycle = 0;
+        }
 
         return status;
     }

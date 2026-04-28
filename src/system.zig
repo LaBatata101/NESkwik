@@ -129,9 +129,13 @@ pub const System = struct {
                 self.cpu.interrupt(CPU.IRQ);
             }
 
-            if (self.ppu.nmi_interrupt) {
-                self.ppu.nmi_interrupt = false;
-                self.cpu.interrupt(CPU.NMI);
+            if (self.ppu.nmi_interrupt and self.ppu.global_cycle >= self.ppu.nmi_interrupt_cycle) {
+                if (self.ppu.nmi_interrupt_delay) {
+                    self.ppu.nmi_interrupt_delay = false;
+                } else {
+                    self.ppu.nmi_interrupt = false;
+                    self.cpu.interrupt(CPU.NMI);
+                }
             }
         }
 
@@ -152,9 +156,13 @@ pub const System = struct {
 
     fn run_ppu(self: *Self) void {
         self.ppu.run_to(self.bus.cycles);
-        if (self.ppu.nmi_interrupt) {
-            self.ppu.nmi_interrupt = false;
-            self.cpu.interrupt(CPU.NMI);
+        if (self.ppu.nmi_interrupt and self.ppu.global_cycle >= self.ppu.nmi_interrupt_cycle) {
+            if (self.ppu.nmi_interrupt_delay) {
+                self.ppu.nmi_interrupt_delay = false;
+            } else {
+                self.ppu.nmi_interrupt = false;
+                self.cpu.interrupt(CPU.NMI);
+            }
         }
     }
 
