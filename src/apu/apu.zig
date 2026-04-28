@@ -303,10 +303,11 @@ pub const APU = struct {
                 self.dmc.irq_pending = false;
             },
             0x4017 => {
+                const write_cycle = self.global_cycle + 4;
                 if (self.global_cycle % 2 == 0) {
-                    self.set_4017(value);
+                    self.jitter = .{ .Delay = .{ write_cycle, value } };
                 } else {
-                    self.jitter = .{ .Delay = .{ self.global_cycle + 1, value } };
+                    self.jitter = .{ .Delay = .{ write_cycle + 1, value } };
                 }
             },
             else => {

@@ -108,6 +108,9 @@ pub const CPU = struct {
     status: ProcessorStatus,
 
     irq_delay: ?bool,
+    interrupt_vectoring: bool,
+    interrupt_vectoring_defers_late_nmi: bool,
+    defer_nmi_after_vector: bool,
     cycles_wait: u8,
     extra_cycles: u8,
     bus: *Bus,
@@ -155,6 +158,9 @@ pub const CPU = struct {
             .status = initial_status,
             .bus = bus,
             .irq_delay = null,
+            .interrupt_vectoring = false,
+            .interrupt_vectoring_defers_late_nmi = false,
+            .defer_nmi_after_vector = false,
             .cycles_wait = 0,
             .extra_cycles = 0,
         };
@@ -180,6 +186,9 @@ pub const CPU = struct {
         self.register_y = 0;
         self.sp = STACK_TOP;
         self.irq_delay = null;
+        self.interrupt_vectoring = false;
+        self.interrupt_vectoring_defers_late_nmi = false;
+        self.defer_nmi_after_vector = false;
         self.cycles_wait = 0;
         self.extra_cycles = 0;
 
@@ -672,6 +681,8 @@ pub const CPU = struct {
                 self.stack_push(@bitCast(status));
                 self.pc = self.bus.mem_read_u16(0xFFFE);
                 self.status.interrupt_disable = true;
+                self.interrupt_vectoring = true;
+                self.interrupt_vectoring_defers_late_nmi = true;
             },
 
             // UNOFFICIAL OPCODES:
@@ -805,10 +816,21 @@ pub const CPU = struct {
     pub fn step(self: *Self) void {
         if (self.cycles_wait > 0) {
             self.cycles_wait -= 1;
+            if (self.cycles_wait == 0) {
+                if (self.interrupt_vectoring and self.interrupt_vectoring_defers_late_nmi) {
+                    self.defer_nmi_after_vector = true;
+                }
+                self.interrupt_vectoring = false;
+                self.interrupt_vectoring_defers_late_nmi = false;
+            }
             return;
         }
 
+        const had_deferred_nmi = self.defer_nmi_after_vector;
         const cycles_taken = self.tick();
+        if (had_deferred_nmi) {
+            self.defer_nmi_after_vector = false;
+        }
         self.extra_cycles = 0;
         // We consumed 1 cycle in this step, so wait for N-1
         self.cycles_wait = cycles_taken - 1;
@@ -834,8 +856,26 @@ pub const CPU = struct {
         self.status.interrupt_disable = true;
 
         self.pc = self.bus.mem_read_u16(int.vector_addr);
+        self.interrupt_vectoring = true;
+        self.interrupt_vectoring_defers_late_nmi = int.type == .IRQ;
 
         self.cycles_wait = int.cycles;
+    }
+
+    pub fn hijackNmiVector(self: *Self) bool {
+        if (!self.interrupt_vectoring or self.cycles_wait <= 1) {
+            return false;
+        }
+
+        self.pc = self.bus.mem_read_u16(NMI.vector_addr);
+        self.interrupt_vectoring = false;
+        self.interrupt_vectoring_defers_late_nmi = false;
+        self.defer_nmi_after_vector = false;
+        return true;
+    }
+
+    pub fn shouldDeferNmi(self: Self) bool {
+        return self.defer_nmi_after_vector;
     }
 };
 

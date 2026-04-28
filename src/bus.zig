@@ -14,6 +14,8 @@ pub const Bus = struct {
     /// Last value on the CPU data bus. Returned for undriven reads (write-only
     /// registers, unallocated I/O space).
     open_bus: u8,
+    dma_start_delay: u8,
+    dma_cycles: u16,
 
     apu: *APU,
     ppu: *PPU,
@@ -27,6 +29,8 @@ pub const Bus = struct {
             .cycles = 0,
             .ram = [_]u8{0} ** RAM_SIZE,
             .open_bus = 0,
+            .dma_start_delay = 0,
+            .dma_cycles = 0,
             .rom = rom,
             .ppu = ppu,
             .apu = apu,
@@ -37,6 +41,8 @@ pub const Bus = struct {
     pub fn reset(self: *Self) void {
         self.cycles = 0;
         self.open_bus = 0;
+        self.dma_start_delay = 0;
+        self.dma_cycles = 0;
         self.ppu.reset();
         self.apu.reset();
         self.controllers.reset();
@@ -104,11 +110,9 @@ pub const Bus = struct {
 
     // https://www.nesdev.org/wiki/PPU_programmer_reference#OAMDMA_-_Sprite_DMA_($4014_write)
     fn dma_transfer(self: *Self, page: u8) void {
-        if (self.cycles % 2 == 1) {
-            self.cycles +%= 1;
-        }
-        self.cycles +%= 1;
-        self.cycles +%= 512;
+        const write_cycle = self.cycles + 3;
+        self.dma_start_delay = 3;
+        self.dma_cycles = 513 + @as(u16, @intFromBool(write_cycle % 2 == 1));
 
         const page_u16 = @as(u16, page) << 8;
         for (0..256) |x| {

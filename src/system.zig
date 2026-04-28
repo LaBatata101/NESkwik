@@ -124,22 +124,33 @@ pub const System = struct {
         self.ppu.tick();
         self.ppu.tick();
 
-        if (self.cpu.cycles_wait == 0) {
-            if (self.bus.rom.mapper_irq_active() or self.apu.irq_triggered()) {
-                self.cpu.interrupt(CPU.IRQ);
-            }
+        if (self.bus.dma_start_delay > 0) {
+            self.bus.dma_start_delay -= 1;
+        }
+        const dma_stalling = self.bus.dma_start_delay == 0 and self.bus.dma_cycles > 0;
 
-            if (self.ppu.nmi_interrupt and self.ppu.global_cycle >= self.ppu.nmi_interrupt_cycle) {
-                if (self.ppu.nmi_interrupt_delay) {
+        if (!dma_stalling and self.cpu.cycles_wait == 0 and (self.bus.rom.mapper_irq_active() or self.apu.irq_triggered())) {
+            self.cpu.interrupt(CPU.IRQ);
+        }
+
+        if (self.ppu.nmi_interrupt and self.ppu.global_cycle >= self.ppu.nmi_interrupt_cycle) {
+            if (self.ppu.nmi_interrupt_delay) {
+                if (!dma_stalling and self.cpu.cycles_wait == 0) {
                     self.ppu.nmi_interrupt_delay = false;
-                } else {
-                    self.ppu.nmi_interrupt = false;
-                    self.cpu.interrupt(CPU.NMI);
                 }
+            } else if (!dma_stalling and self.cpu.cycles_wait == 0 and !self.cpu.shouldDeferNmi()) {
+                self.ppu.nmi_interrupt = false;
+                self.cpu.interrupt(CPU.NMI);
+            } else if (!dma_stalling and self.cpu.hijackNmiVector()) {
+                self.ppu.nmi_interrupt = false;
             }
         }
 
-        self.cpu.step();
+        if (dma_stalling) {
+            self.bus.dma_cycles -= 1;
+        } else {
+            self.cpu.step();
+        }
         self.apu.step();
         self.bus.cycles += 1;
     }
