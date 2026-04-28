@@ -35,6 +35,9 @@ pub const c = @cImport({
 
 pub const NES_WIDTH = 256;
 pub const NES_HEIGHT = 240;
+pub const OVERSCAN_TOP = 8;
+pub const OVERSCAN_BOTTOM = 8;
+pub const NES_VISIBLE_HEIGHT = NES_HEIGHT - OVERSCAN_TOP - OVERSCAN_BOTTOM;
 pub const DEBUG_WIDTH = 250;
 
 test {
