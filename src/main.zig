@@ -102,7 +102,7 @@ pub fn main() !void {
             ui_state.rom_bytes = try allocator.alloc(u8, file_size);
             _ = try file.read(ui_state.rom_bytes.?);
 
-            ui_state.loadRom(rom_path, ui_state.rom_bytes.?) catch |err| switch (err) {
+            ui_state.loadRom(rom_abs_path, ui_state.rom_bytes.?) catch |err| switch (err) {
                 error.InvalidNesFormat => {
                     std.debug.print("Error: ROM format not supported!\n", .{});
                     std.process.exit(1);

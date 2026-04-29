@@ -86,7 +86,7 @@ pub const BatteryBackedRam = struct {
         const dir = std.fs.path.dirname(path) orelse @panic("Path is root directory");
         const base = std.fs.path.stem(path);
 
-        const save_path = try std.fmt.allocPrint(alloc, "{s}{}{s}.sav", .{ dir, std.fs.path.sep, base });
+        const save_path = try std.fmt.allocPrint(alloc, "{s}{c}{s}.sav", .{ dir, std.fs.path.sep, base });
         const file = try std.fs.createFileAbsolute(save_path, .{
             .read = true,
             .truncate = false,
