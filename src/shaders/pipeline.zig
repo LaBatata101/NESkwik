@@ -929,7 +929,13 @@ const ParsedPreset = struct {
 
 /// Read and parse a `.slangp` preset file.
 fn parsePresetFile(alloc: std.mem.Allocator, path: []const u8) !ParsedPreset {
-    const full_path = try std.fs.realpathAlloc(alloc, path);
+    const full_path = std.fs.realpathAlloc(alloc, path) catch blk: {
+        if (std.fs.path.isAbsolute(path))
+            break :blk try alloc.dupe(u8, path);
+        const cwd = try std.process.getCwdAlloc(alloc);
+        defer alloc.free(cwd);
+        break :blk try std.fs.path.resolve(alloc, &.{ cwd, path });
+    };
     defer alloc.free(full_path);
     const dir = try alloc.dupe(u8, std.fs.path.dirname(full_path).?);
     errdefer alloc.free(dir);
