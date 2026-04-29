@@ -245,14 +245,14 @@ test "format trace" {
         "8000  A2 01     LDX #$01                        A:01 X:02 Y:03 P:24 SP:FD",
         &try format_trace(&cpu),
     ));
-    cpu.tick();
+    _ = cpu.tick();
 
     try std.testing.expect(std.mem.eql(
         u8,
         "8002  CA        DEX                             A:01 X:01 Y:03 P:24 SP:FD",
         &try format_trace(&cpu),
     ));
-    cpu.tick();
+    _ = cpu.tick();
 
     try std.testing.expect(std.mem.eql(
         u8,
@@ -288,5 +288,5 @@ test "format mem access" {
         "8000  11 33     ORA ($33),Y = 0400 @ 0400 = AA  A:00 X:00 Y:00 P:24 SP:FD",
         &try format_trace(&cpu),
     ));
-    cpu.tick();
+    _ = cpu.tick();
 }

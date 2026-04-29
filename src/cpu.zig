@@ -536,11 +536,13 @@ pub const CPU = struct {
         self.update_zero_and_negative_flags(self.register_a);
     }
 
-    fn run_instructions(self: *Self, codes: []const u8) void {
+    fn run_instructions(self: *Self, codes: []const u8) u64 {
         const start_addr = self.pc;
+        var total_cycles: u64 = 0;
         while (self.pc < start_addr + codes.len) {
-            self.tick();
+            total_cycles += self.tick();
         }
+        return total_cycles;
     }
 
     pub fn tick(self: *Self) u8 {
@@ -892,7 +894,7 @@ test "0x00: BRK Force Interrupt" {
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x1111, 0x06);
     cpu.mem_write(0x1112, 0x80);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // The carry flag is clear indicates that we jumped to the IRQ vector, otherwise the carry flag would be set.
     try std.testing.expect(!cpu.status.carry_flag);
@@ -906,7 +908,7 @@ test "0xA9: LDA immediate load data" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x05, cpu.register_a);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -921,7 +923,7 @@ test "0xA9: LDA zero flag" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x00, cpu.register_a);
     try std.testing.expect(cpu.status.zero_flag);
@@ -935,7 +937,7 @@ test "0xAA: TAX copies register A contents to X" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(10, cpu.register_x);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -950,7 +952,7 @@ test "0xA8: TAY Transfer Accumulator to Y" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.register_y);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -966,7 +968,7 @@ test "0xBA: TSX Transfer Stack Pointer to X" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.sp = 0x05;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x05, cpu.register_x);
 }
@@ -979,7 +981,7 @@ test "0x8A: TXA Transfer X to Accumulator" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.register_x);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -991,7 +993,7 @@ test "0x8A: TXA Transfer X to Accumulator" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(0x00, cpu2.register_x);
     try std.testing.expect(cpu2.status.zero_flag);
@@ -1006,7 +1008,7 @@ test "0x98: TYA Transfer Y to Accumulator" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.register_a);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -1021,7 +1023,7 @@ test "0x9A: TXS Transfer X to Stack Pointer" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.sp);
 }
@@ -1034,7 +1036,7 @@ test "4 ops (LDA, TAX, INX,) working together" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0xC0, cpu.register_a);
     try std.testing.expectEqual(0xC1, cpu.register_x);
@@ -1050,7 +1052,7 @@ test "INX overflow" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_x);
 }
@@ -1064,7 +1066,7 @@ test "0xA5: LDA from memory" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x10, 0x55);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x55, cpu.register_a);
 }
@@ -1078,7 +1080,7 @@ test "0xC9: CMP equal values" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x10, 0x55);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.zero_flag);
 }
@@ -1092,7 +1094,7 @@ test "0xC9: CMP different values" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x10, 0x55);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.zero_flag);
 }
@@ -1105,7 +1107,7 @@ test "0x69: ADC add with carry - no overflow" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x84, cpu.register_a);
     try std.testing.expectEqual(0xc1, cpu.register_x);
@@ -1121,7 +1123,7 @@ test "0x65: ADC add with carry - overflow" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu.register_a);
     try std.testing.expectEqual(0, cpu.register_x);
@@ -1137,7 +1139,7 @@ test "0xE9: SBC Subtract with Carry - no overflow" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x9F, cpu.register_a);
     try std.testing.expect(cpu.status.carry_flag);
@@ -1154,7 +1156,7 @@ test "0xE9: SBC Subtract with Carry - overflow" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x5F, cpu.register_a);
     try std.testing.expect(cpu.status.carry_flag);
@@ -1171,7 +1173,7 @@ test "0x29: logical AND - true result" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x01, cpu.register_a);
 }
@@ -1184,7 +1186,7 @@ test "0x29: logical AND - false result" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu.register_a);
     try std.testing.expect(cpu.status.zero_flag);
@@ -1198,7 +1200,7 @@ test "0x0A: ASL Arithmetic Shift Left - carry flag set" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu.register_a);
     try std.testing.expect(cpu.status.carry_flag);
@@ -1212,7 +1214,7 @@ test "0x0A: ASL Arithmetic Shift Left - carry flag not set" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -1226,7 +1228,7 @@ test "0x06: ASL Arithmetic Shift Left - read value from memory" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(4, cpu.mem_read(0xFF));
     try std.testing.expect(!cpu.status.carry_flag);
@@ -1240,7 +1242,7 @@ test "0x4A: LSR Logical Shift Right - Accumulator" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -1251,7 +1253,7 @@ test "0x4A: LSR Logical Shift Right - Accumulator" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(1, cpu2.register_a);
     try std.testing.expect(cpu2.status.carry_flag);
@@ -1265,7 +1267,7 @@ test "0x46: LSR Logical Shift Right - read value from memory" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.mem_read(0xFF));
     try std.testing.expect(!cpu.status.carry_flag);
@@ -1276,7 +1278,7 @@ test "0x46: LSR Logical Shift Right - read value from memory" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(1, cpu2.mem_read(0xFF));
     try std.testing.expect(cpu2.status.carry_flag);
@@ -1290,7 +1292,7 @@ test "0x09: ORA Logical Inclusive OR" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0xFF, cpu.register_a);
 }
@@ -1303,7 +1305,7 @@ test "0x2A: ROL Rotate Left" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(3, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -1316,7 +1318,7 @@ test "0x2A: ROL Rotate Left" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(0, cpu2.register_a);
     try std.testing.expect(cpu2.status.carry_flag);
@@ -1329,7 +1331,7 @@ test "0x2A: ROL Rotate Left" {
     defer test_rom3.deinit();
     var bus3 = Bus.init(&test_rom3.rom, undefined, undefined);
     var cpu3 = CPU.init(&bus3);
-    cpu3.run_instructions(&instructions3);
+    _ = cpu3.run_instructions(&instructions3);
 
     try std.testing.expectEqual(0x80, cpu3.register_a);
     try std.testing.expect(!cpu3.status.carry_flag);
@@ -1345,7 +1347,7 @@ test "0x26: ROL Rotate Left - read value from memory" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(3, cpu.mem_read(0xFF));
     try std.testing.expect(!cpu.status.carry_flag);
@@ -1358,7 +1360,7 @@ test "0x26: ROL Rotate Left - read value from memory" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(0, cpu2.mem_read(0xFF));
     try std.testing.expect(cpu2.status.carry_flag);
@@ -1374,7 +1376,7 @@ test "0x6A: ROR Rotate Right" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x80, cpu.register_a);
     try std.testing.expect(cpu.status.carry_flag);
@@ -1387,7 +1389,7 @@ test "0x6A: ROR Rotate Right" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(0, cpu2.register_a);
     try std.testing.expect(cpu2.status.carry_flag);
@@ -1400,7 +1402,7 @@ test "0x6A: ROR Rotate Right" {
     defer test_rom3.deinit();
     var bus3 = Bus.init(&test_rom3.rom, undefined, undefined);
     var cpu3 = CPU.init(&bus3);
-    cpu3.run_instructions(&instructions3);
+    _ = cpu3.run_instructions(&instructions3);
 
     try std.testing.expectEqual(0x40, cpu3.register_a);
     try std.testing.expect(!cpu3.status.carry_flag);
@@ -1416,7 +1418,7 @@ test "0x66: ROR Rotate Right - Read Value from Memory" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x80, cpu.mem_read(0xFF));
     try std.testing.expect(cpu.status.carry_flag);
@@ -1429,7 +1431,7 @@ test "0x66: ROR Rotate Right - Read Value from Memory" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expectEqual(0, cpu2.mem_read(0xFF));
     try std.testing.expect(cpu2.status.carry_flag);
@@ -1442,7 +1444,7 @@ test "0x66: ROR Rotate Right - Read Value from Memory" {
     defer test_rom3.deinit();
     var bus3 = Bus.init(&test_rom3.rom, undefined, undefined);
     var cpu3 = CPU.init(&bus3);
-    cpu3.run_instructions(&instructions3);
+    _ = cpu3.run_instructions(&instructions3);
 
     try std.testing.expectEqual(0x40, cpu3.mem_read(0xFF));
     try std.testing.expect(!cpu3.status.carry_flag);
@@ -1459,7 +1461,7 @@ test "0xD0: BNE jump if not equal - skip INX instruction" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x10, 0x55);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu.register_x);
 }
@@ -1473,7 +1475,7 @@ test "0xD0: BNE jump if not equal - execute INX instruction" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x10, 0x55);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_x);
 }
@@ -1486,7 +1488,7 @@ test "0x90: BCC Branch if Carry Clear - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 2 that means we did branch, otherwise we would have the value 3.
     try std.testing.expectEqual(2, cpu.register_a);
@@ -1500,7 +1502,7 @@ test "0x90: BCC Branch if Carry Clear - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 3 that means we didn't branch, otherwise we would have the value 0.
     try std.testing.expectEqual(3, cpu.register_a);
@@ -1514,7 +1516,7 @@ test "0xB0: BCS Branch if Carry Set - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 0 that means we did branch, otherwise we would have the value 3.
     try std.testing.expectEqual(0, cpu.register_a);
@@ -1528,7 +1530,7 @@ test "0xB0: BCS Branch if Carry Set - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 3 that means we did branch, otherwise we would have the value 1.
     try std.testing.expectEqual(3, cpu.register_a);
@@ -1542,7 +1544,7 @@ test "0xF0: BEQ Branch if Equal - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 1 that means we did branch, otherwise we would have the value 3.
     try std.testing.expectEqual(1, cpu.register_a);
@@ -1556,7 +1558,7 @@ test "0xF0: BEQ Branch if Equal - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 3 that means we did branch, otherwise we would have the value 1.
     try std.testing.expectEqual(3, cpu.register_a);
@@ -1570,7 +1572,7 @@ test "0x30: BMI Branch if Minus - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 1 that means we did branch, otherwise we would have the value 4.
     try std.testing.expectEqual(1, cpu.register_a);
@@ -1584,7 +1586,7 @@ test "0x30: BMI Branch if Minus - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 4 that means we didn't branch, otherwise we would have the value 1.
     try std.testing.expectEqual(4, cpu.register_a);
@@ -1598,7 +1600,7 @@ test "0x10: BPL Branch if Positive - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 4 that means we didn't branch, otherwise we would have the value 1.
     try std.testing.expectEqual(4, cpu.register_a);
@@ -1612,7 +1614,7 @@ test "0x10: BPL Branch if Positive - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 1 that means we did branch, otherwise we would have the value 4.
     try std.testing.expectEqual(1, cpu.register_a);
@@ -1626,7 +1628,7 @@ test "0x50: BVC Branch if Overflow Clear - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 4 that means we didn't branch, otherwise we would have the value 1.
     try std.testing.expectEqual(4, cpu.register_a);
@@ -1640,7 +1642,7 @@ test "0x50: BVC Branch if Overflow Clear  - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 1 that means we did branch, otherwise we would have the value 4.
     try std.testing.expectEqual(1, cpu.register_a);
@@ -1654,7 +1656,7 @@ test "0x70: BVS Branch if Overflow Set - branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 1 that means we did branch, otherwise we would have the value 4.
     try std.testing.expectEqual(1, cpu.register_a);
@@ -1668,7 +1670,7 @@ test "0x70: BVS Branch if Overflow Set - no branch" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // if the register A contains the value 4 that means we didn't branch, otherwise we would have the value 1.
     try std.testing.expectEqual(4, cpu.register_a);
@@ -1682,7 +1684,7 @@ test "0x24: BIT test - set N,V,Z flags" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_a);
     try std.testing.expect(cpu.status.negative_flag);
@@ -1698,7 +1700,7 @@ test "0x24: BIT test - set N,V flags" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_a);
     try std.testing.expect(cpu.status.negative_flag);
@@ -1714,7 +1716,7 @@ test "0x24: BIT test - set N flags" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_a);
     try std.testing.expect(cpu.status.negative_flag);
@@ -1730,7 +1732,7 @@ test "0x18: CLC Clear Carry Flag" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.carry_flag);
 }
@@ -1743,7 +1745,7 @@ test "0xF8: SED Set Decimal Flag" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.decimal_mode);
 }
@@ -1756,7 +1758,7 @@ test "0xD8: CLD Clear Decimal Flag" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.decimal_mode);
 }
@@ -1769,7 +1771,7 @@ test "0x78: SEI Set Interrupt Disable" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.interrupt_disable);
 }
@@ -1782,7 +1784,7 @@ test "0x38: SEC Set Carry Flag" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.carry_flag);
 }
@@ -1795,7 +1797,7 @@ test "0x58: CLI Clear Interrupt Disable" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.interrupt_disable);
 }
@@ -1808,7 +1810,7 @@ test "0xB8: CLV Clear Overflow Flag" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.overflow_flag);
 }
@@ -1821,7 +1823,7 @@ test "0xA2: LDX Load X Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_x);
 }
@@ -1834,7 +1836,7 @@ test "0xA0: LDY Load Y Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_y);
 }
@@ -1847,7 +1849,7 @@ test "0xE0: CPX Compare X Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.zero_flag);
     try std.testing.expect(cpu.status.carry_flag);
@@ -1858,7 +1860,7 @@ test "0xE0: CPX Compare X Register" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expect(cpu2.status.negative_flag);
 }
@@ -1871,7 +1873,7 @@ test "0xC0: CPY Compare Y Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.zero_flag);
     try std.testing.expect(cpu.status.carry_flag);
@@ -1882,7 +1884,7 @@ test "0xC0: CPY Compare Y Register" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expect(cpu2.status.negative_flag);
 }
@@ -1895,7 +1897,7 @@ test "0xC6: DEC Decrement Memory" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.zero_flag);
     try std.testing.expect(!cpu.status.negative_flag);
@@ -1907,7 +1909,7 @@ test "0xC6: DEC Decrement Memory" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expect(!cpu2.status.zero_flag);
     try std.testing.expect(!cpu2.status.negative_flag);
@@ -1919,7 +1921,7 @@ test "0xC6: DEC Decrement Memory" {
     defer test_rom3.deinit();
     var bus3 = Bus.init(&test_rom3.rom, undefined, undefined);
     var cpu3 = CPU.init(&bus3);
-    cpu3.run_instructions(&instructions3);
+    _ = cpu3.run_instructions(&instructions3);
 
     try std.testing.expect(!cpu3.status.zero_flag);
     try std.testing.expect(cpu3.status.negative_flag);
@@ -1934,7 +1936,7 @@ test "0xCA: DEX Decrement X Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.zero_flag);
     try std.testing.expect(!cpu.status.negative_flag);
@@ -1946,7 +1948,7 @@ test "0xCA: DEX Decrement X Register" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expect(cpu2.status.zero_flag);
     try std.testing.expect(!cpu2.status.negative_flag);
@@ -1958,7 +1960,7 @@ test "0xCA: DEX Decrement X Register" {
     defer test_rom3.deinit();
     var bus3 = Bus.init(&test_rom3.rom, undefined, undefined);
     var cpu3 = CPU.init(&bus3);
-    cpu3.run_instructions(&instructions3);
+    _ = cpu3.run_instructions(&instructions3);
 
     try std.testing.expect(!cpu3.status.zero_flag);
     try std.testing.expect(cpu3.status.negative_flag);
@@ -1970,7 +1972,7 @@ test "0xCA: DEX Decrement X Register" {
     defer test_rom4.deinit();
     var bus4 = Bus.init(&test_rom4.rom, undefined, undefined);
     var cpu4 = CPU.init(&bus4);
-    cpu4.run_instructions(&instructions4);
+    _ = cpu4.run_instructions(&instructions4);
 
     try std.testing.expect(!cpu4.status.zero_flag);
     try std.testing.expect(cpu4.status.negative_flag);
@@ -1985,7 +1987,7 @@ test "0x88: DEY Decrement Y Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(!cpu.status.zero_flag);
     try std.testing.expect(!cpu.status.negative_flag);
@@ -1997,7 +1999,7 @@ test "0x88: DEY Decrement Y Register" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expect(cpu2.status.zero_flag);
     try std.testing.expect(!cpu2.status.negative_flag);
@@ -2009,7 +2011,7 @@ test "0x88: DEY Decrement Y Register" {
     defer test_rom3.deinit();
     var bus3 = Bus.init(&test_rom3.rom, undefined, undefined);
     var cpu3 = CPU.init(&bus3);
-    cpu3.run_instructions(&instructions3);
+    _ = cpu3.run_instructions(&instructions3);
 
     try std.testing.expect(!cpu3.status.zero_flag);
     try std.testing.expect(cpu3.status.negative_flag);
@@ -2024,7 +2026,7 @@ test "0x49: EOR Exclusive OR" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.zero_flag);
     try std.testing.expect(!cpu.status.negative_flag);
@@ -2035,7 +2037,7 @@ test "0x49: EOR Exclusive OR" {
     defer test_rom2.deinit();
     var bus2 = Bus.init(&test_rom2.rom, undefined, undefined);
     var cpu2 = CPU.init(&bus2);
-    cpu2.run_instructions(&instructions2);
+    _ = cpu2.run_instructions(&instructions2);
 
     try std.testing.expect(!cpu2.status.zero_flag);
     try std.testing.expect(cpu2.status.negative_flag);
@@ -2049,7 +2051,7 @@ test "0xE8: INX increments X register by 1" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_x);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -2064,7 +2066,7 @@ test "0xE6: INC Increment Memory" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_a);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -2079,7 +2081,7 @@ test "0xC8: INY Increment Y Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_y);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -2096,7 +2098,7 @@ test "0x6C: JMP Jump to address" {
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x1111, 0x07);
     cpu.mem_write(0x1112, 0x80);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x8007, cpu.pc);
     // if the register A contains the value 0x42 that means we jumped, otherwise we would have the value 0x69.
@@ -2111,7 +2113,7 @@ test "0x48: PHA Push Accumulator to Stack" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x03, cpu.stack_pop());
     try std.testing.expectEqual(0x02, cpu.stack_pop());
@@ -2126,7 +2128,7 @@ test "0x68: PLA Pop Accumulator from Stack" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x01, cpu.register_a);
 }
@@ -2139,12 +2141,12 @@ test "0x20: JSR Jump to Subroutine" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.tick();
+    _ = cpu.tick();
     try std.testing.expectEqual(0x8005, cpu.pc);
 
-    cpu.tick();
-    cpu.tick();
-    cpu.tick();
+    _ = cpu.tick();
+    _ = cpu.tick();
+    _ = cpu.tick();
     try std.testing.expectEqual(3, cpu.register_x);
 }
 
@@ -2156,7 +2158,7 @@ test "0x60: RTS Return from Subroutine" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_x);
     try std.testing.expectEqual(0x800E, cpu.pc);
@@ -2176,7 +2178,7 @@ test "0x40: RTI Return from Interrupt" {
     cpu.stack_push_u16(cpu.pc + 1);
     cpu.stack_push(@bitCast(cpu.status));
 
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.carry_flag);
     try std.testing.expect(cpu.status.negative_flag);
@@ -2191,7 +2193,7 @@ test "0x08: PHP Push Processor Status" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     const status: ProcessorStatus = @bitCast(cpu.stack_pop());
     try std.testing.expect(status.decimal_mode);
@@ -2206,7 +2208,7 @@ test "0x28: PLP Pull Processor Status" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expect(cpu.status.decimal_mode);
     try std.testing.expect(cpu.status.interrupt_disable);
@@ -2220,7 +2222,7 @@ test "0x85: STA Store Accumulator" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.mem_read(0x00FF));
 }
@@ -2233,7 +2235,7 @@ test "0x86: STX Store X Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.mem_read(0x00FF));
 }
@@ -2246,7 +2248,7 @@ test "0x84: STY Store Y Register" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x69, cpu.mem_read(0x00FF));
 }
@@ -2259,7 +2261,7 @@ test "0x0B: ANC" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x80, cpu.register_a);
     try std.testing.expect(cpu.status.carry_flag);
@@ -2275,7 +2277,7 @@ test "0x2B: ANC" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x00, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2293,7 +2295,7 @@ test "0xCB: AXS" {
     var cpu = CPU.init(&bus);
     cpu.register_a = 1;
     cpu.register_x = 3;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(252, cpu.register_x);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2310,7 +2312,7 @@ test "0x6B: ARR" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.register_a = 0b1100_0000;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(96, cpu.register_a);
     try std.testing.expect(cpu.status.carry_flag);
@@ -2324,7 +2326,7 @@ test "0x6B: ARR" {
     var cpu2 = CPU.init(&bus2);
     cpu2.pc = 0x8000;
     cpu2.register_a = 0b0000_0001;
-    cpu2.run_instructions(&instructions);
+    _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu2.register_a);
     try std.testing.expect(!cpu2.status.carry_flag);
@@ -2338,7 +2340,7 @@ test "0x6B: ARR" {
     var cpu3 = CPU.init(&bus3);
     cpu3.pc = 0x8000;
     cpu3.register_a = 0b0100_0000;
-    cpu3.run_instructions(&instructions);
+    _ = cpu3.run_instructions(&instructions);
 
     try std.testing.expectEqual(32, cpu3.register_a);
     try std.testing.expect(!cpu3.status.carry_flag);
@@ -2352,7 +2354,7 @@ test "0x6B: ARR" {
     var cpu4 = CPU.init(&bus4);
     cpu4.pc = 0x8000;
     cpu4.register_a = 0b1000_0000;
-    cpu4.run_instructions(&instructions);
+    _ = cpu4.run_instructions(&instructions);
 
     try std.testing.expectEqual(64, cpu4.register_a);
     try std.testing.expect(cpu4.status.carry_flag);
@@ -2370,7 +2372,7 @@ test "0x4B: ALR" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.register_a = 0b0000_0010;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2383,7 +2385,7 @@ test "0x4B: ALR" {
     var cpu2 = CPU.init(&bus2);
     cpu2.pc = 0x8000;
     cpu2.register_a = 0b0000_0001;
-    cpu2.run_instructions(&instructions);
+    _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu2.register_a);
     try std.testing.expect(cpu2.status.carry_flag);
@@ -2400,7 +2402,7 @@ test "0xAB: ATX" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.register_a = 2;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu.register_x);
     try std.testing.expect(!cpu.status.negative_flag);
@@ -2412,7 +2414,7 @@ test "0xAB: ATX" {
     var cpu2 = CPU.init(&bus2);
     cpu2.pc = 0x8000;
     cpu2.register_a = 1;
-    cpu2.run_instructions(&instructions);
+    _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expectEqual(2, cpu2.register_x);
     try std.testing.expect(!cpu2.status.negative_flag);
@@ -2430,7 +2432,7 @@ test "0x9F: AXA" {
     cpu.register_a = 1;
     cpu.register_x = 3;
     cpu.register_y = 0x92;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.mem_read(0x1092));
 
@@ -2442,7 +2444,7 @@ test "0x9F: AXA" {
     cpu2.register_a = 4;
     cpu2.register_x = 1;
     cpu2.register_y = 0x92;
-    cpu2.run_instructions(&instructions);
+    _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu2.mem_read(0x1092));
 }
@@ -2457,7 +2459,7 @@ test "0x87: SAX" {
     var cpu = CPU.init(&bus);
     cpu.register_x = 0x80;
     cpu.register_a = 0x80;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0x80, cpu.mem_read(0x05));
 }
@@ -2471,7 +2473,7 @@ test "0xC7: DCP" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0x69, 1);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu.mem_read(0x69));
     try std.testing.expect(cpu.status.carry_flag);
@@ -2482,7 +2484,7 @@ test "0xC7: DCP" {
     var cpu2 = CPU.init(&bus2);
     cpu2.pc = 0x8000;
     cpu2.mem_write(0x69, 0);
-    cpu2.run_instructions(&instructions);
+    _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expectEqual(255, cpu2.mem_read(0x69));
     try std.testing.expect(!cpu2.status.carry_flag);
@@ -2496,7 +2498,7 @@ test "0xE2: DOP" {
     defer test_rom.deinit();
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 }
 
 test "0xE7: ISC" {
@@ -2509,7 +2511,7 @@ test "0xE7: ISC" {
     var cpu = CPU.init(&bus);
     cpu.register_a = 1;
     cpu.mem_write(0x69, 2);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(3, cpu.mem_read(0x69));
     try std.testing.expect(cpu.status.negative_flag);
@@ -2524,7 +2526,7 @@ test "0xE7: ISC" {
     cpu2.pc = 0x8000;
     cpu2.register_a = 5;
     cpu2.mem_write(0x69, 2);
-    cpu2.run_instructions(&instructions);
+    _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expect(cpu2.status.carry_flag);
     try std.testing.expect(!cpu2.status.zero_flag);
@@ -2542,7 +2544,7 @@ test "0xBB: LAS" {
     var cpu = CPU.init(&bus);
     cpu.register_y = 0x42;
     cpu.mem_write(0x1042, 8);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(8, cpu.sp);
     try std.testing.expectEqual(8, cpu.register_a);
@@ -2560,7 +2562,7 @@ test "0xA7: LAX" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0xDF, 42);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(42, cpu.register_a);
     try std.testing.expectEqual(42, cpu.register_x);
@@ -2578,7 +2580,7 @@ test "0x27: RLA" {
     var cpu = CPU.init(&bus);
     cpu.register_a = 5;
     cpu.mem_write(0xDF, 42);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(4, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2595,7 +2597,7 @@ test "0x67: RRA" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.mem_write(0xDF, 42);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(21, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2614,7 +2616,7 @@ test "0x07: SLO" {
     var cpu = CPU.init(&bus);
     cpu.register_a = 5;
     cpu.mem_write(0xDF, 42);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(85, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2632,7 +2634,7 @@ test "0x47: SRE" {
     var cpu = CPU.init(&bus);
     cpu.register_a = 5;
     cpu.mem_write(0xDF, 42);
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(16, cpu.register_a);
     try std.testing.expect(!cpu.status.carry_flag);
@@ -2650,7 +2652,7 @@ test "0x9E: SXA" {
     var cpu = CPU.init(&bus);
     cpu.register_x = 5;
     cpu.register_y = 0x05;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.mem_read(0x1005));
 }
@@ -2665,7 +2667,7 @@ test "0x9C: SYA" {
     var cpu = CPU.init(&bus);
     cpu.register_x = 0x05;
     cpu.register_y = 5;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(1, cpu.mem_read(0x1005));
 }
@@ -2679,7 +2681,7 @@ test "0x8B: XAA" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
     cpu.register_x = 5;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(5, cpu.register_a);
     try std.testing.expect(!cpu.status.zero_flag);
@@ -2697,7 +2699,7 @@ test "0x9B: XAS" {
     cpu.register_y = 5;
     cpu.register_x = 2;
     cpu.register_a = 2;
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu.mem_read(0x1005));
     try std.testing.expectEqual(2, cpu.sp);
@@ -2724,7 +2726,7 @@ test "0xBD: LDA AbsoluteX - page cross" {
     cpu.mem_write(0x0310, 0x42);
     // Place the value to be loaded at the target address.
 
-    cpu.run_instructions(&instructions);
+    _ = cpu.run_instructions(&instructions);
 
     // Verify that the accumulator was loaded with the correct value
     // from the address in the next memory page, and flags are set correctly.
@@ -2742,9 +2744,7 @@ test "0xD0: BNE cycle count - branch not taken" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
 
-    const initial_cycles = bus.cycles;
-    cpu.run_instructions(&instructions);
-    const cycles_used = bus.cycles - initial_cycles;
+    const cycles_used = cpu.run_instructions(&instructions);
 
     // LDA immediate: 2 cycles
     // CMP immediate: 2 cycles
@@ -2761,9 +2761,7 @@ test "0xD0: BNE cycle count - branch taken, same page" {
     var bus = Bus.init(&test_rom.rom, undefined, undefined);
     var cpu = CPU.init(&bus);
 
-    const initial_cycles = bus.cycles;
-    cpu.run_instructions(&instructions);
-    const cycles_used = bus.cycles - initial_cycles;
+    const cycles_used = cpu.run_instructions(&instructions);
 
     // LDA immediate: 2 cycles
     // CMP immediate: 2 cycles
@@ -2790,14 +2788,11 @@ test "0xF0: BEQ cycle count - branch taken, page crossed backward" {
     cpu.pc = 0x8100;
 
     // Execute LDA and CMP
-    cpu.tick(); // LDA
-    cpu.tick(); // CMP
-
-    const before_branch = bus.cycles;
-    cpu.tick(); // BEQ
-    const branch_cycles = bus.cycles - before_branch;
+    _ = cpu.tick(); // LDA
+    _ = cpu.tick(); // CMP
 
     // BEQ with page cross: 2 (base) + 1 (branch taken) + 1 (page cross) = 4 cycles
+    const branch_cycles = cpu.tick(); // BEQ
     try std.testing.expectEqual(4, branch_cycles);
     try std.testing.expectEqual(0x80FE, cpu.pc);
 }
@@ -2816,8 +2811,8 @@ test "0x90: BCC cycle count - branch taken, page crossed backward" {
     cpu.status.carry_flag = false;
 
     const pc_before = cpu.pc;
-    cpu.tick();
+    const branch_cycles = cpu.tick();
 
     try std.testing.expectEqual(cpu.pc, pc_before + 2 - 4);
-    try std.testing.expectEqual(4, bus.cycles);
+    try std.testing.expectEqual(4, branch_cycles);
 }
