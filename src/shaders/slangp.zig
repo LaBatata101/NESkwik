@@ -195,6 +195,7 @@ pub const ShaderPassParams = struct {
 };
 
 pub const ShaderPass = struct {
+    id: usize,
     path: []const u8,
     params: ShaderPassParams,
 
@@ -279,7 +280,7 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
 
     const total_passes = try std.fmt.parseInt(usize, tokens[pos].value, 10);
     var passes = try alloc.alloc(ShaderPass, total_passes);
-    @memset(passes, .{ .path = "", .params = .{} });
+    @memset(passes, .{ .id = 0, .path = "", .params = .{} });
 
     var textures: Luts = .init(alloc);
     var shader_params: std.StringHashMap(TypeUnion) = .init(alloc);
@@ -325,6 +326,7 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
                 }
 
                 const pass_id = try get_field_pass_id(field);
+                passes[pass_id].id = pass_id;
                 if (std.mem.startsWith(u8, field, "shader")) {
                     passes[pass_id].path = value_tok.value;
                 } else if (std.mem.startsWith(u8, field, "filter_linear")) {

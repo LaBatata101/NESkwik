@@ -8,6 +8,8 @@ const builtin = @import("builtin");
 const c = @import("../root.zig").c;
 const slangp = @import("slangp.zig");
 const parser = @import("parser.zig");
+const ShaderCache = @import("cache.zig").ShaderCache;
+const SpirvPair = @import("cache.zig").SpirvPair;
 const ThreadPool = @import("../utils/pool.zig");
 const sdlError = @import("../utils/sdl.zig").sdlError;
 const vulkan = @import("../utils/vulkan.zig");
@@ -658,6 +660,10 @@ const CompilePassResult = struct {
     params: []Param, // caller owns
     alias: ?[]const u8, // caller owns
     texture_format: c.SDL_GPUTextureFormat,
+    reflection: struct {
+        vertex: ShaderReflection,
+        fragment: ShaderReflection,
+    },
 };
 
 const Param = struct {
@@ -669,14 +675,44 @@ const Param = struct {
     step: ?f32,
 };
 
+/// Returns SPIR-V for both stages, consulting the cache when available.
+fn getOrCompileSpirv(
+    alloc: std.mem.Allocator,
+    vk_version: c_uint,
+    shader: *const parser.ParsedShader,
+    shader_cache: *ShaderCache,
+    pass_path: []const u8,
+    pass_id: usize,
+) !SpirvPair {
+    const key = ShaderCache.computeKey(
+        @intCast(vk_version),
+        shader.version,
+        shader.vertex,
+        shader.fragment,
+    );
+
+    if (shader_cache.lookup(alloc, key)) |pair| {
+        std.log.info("Loading shader pass {} from cache", .{pass_id});
+        return pair;
+    }
+
+    std.log.info("Compiling shader pass {}: {s}", .{ pass_id, pass_path });
+    const vert = try compileShader(alloc, vk_version, shader.version, shader.vertex, .Vertex);
+    const frag = try compileShader(alloc, vk_version, shader.version, shader.fragment, .Fragment);
+
+    try shader_cache.store(key, vert, frag);
+
+    return .{ .vert = vert, .frag = frag };
+}
+
 fn compileAndCreatePipeline(
     alloc: std.mem.Allocator,
     device: ?*c.SDL_GPUDevice,
     vk_version: c_uint,
     path: []const u8,
+    pass_id: usize,
     texture_format: c.SDL_GPUTextureFormat,
-    vert_reflection_out: *ShaderReflection,
-    frag_reflection_out: *ShaderReflection,
+    shader_cache: *ShaderCache,
 ) !CompilePassResult {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -686,18 +722,16 @@ fn compileAndCreatePipeline(
     var shader = try parser.parseShader(alloc, std.fs.path.dirname(path).?, raw_source);
     defer shader.deinit(alloc);
 
-    const vert_spirv = try compileShader(alloc, vk_version, shader.version, shader.vertex, .Vertex);
-    defer alloc.free(vert_spirv);
-    const frag_spirv = try compileShader(alloc, vk_version, shader.version, shader.fragment, .Fragment);
-    defer alloc.free(frag_spirv);
+    const spirv = try getOrCompileSpirv(alloc, vk_version, &shader, shader_cache, path, pass_id);
+    defer spirv.deinit(alloc);
 
-    vert_reflection_out.* = try reflectShaderInfo(alloc, vert_spirv);
-    frag_reflection_out.* = try reflectShaderInfo(alloc, frag_spirv);
+    const vert_reflection = try reflectShaderInfo(alloc, spirv.vert);
+    const frag_reflection = try reflectShaderInfo(alloc, spirv.frag);
 
     // Collect shader parameters defined via `#pragma parameter`
     var params = std.ArrayList(Param).empty;
     if (shader.config) |config| {
-        for (vert_reflection_out.descriptor_sets.items) |set_info| {
+        for (vert_reflection.descriptor_sets.items) |set_info| {
             for (set_info.bindings.items) |binding| {
                 switch (binding.binding_type) {
                     .push_params, .UBO => |layout| {
@@ -725,8 +759,8 @@ fn compileAndCreatePipeline(
         }
     }
 
-    const vert_shader = createGPUShader(device, vert_spirv, c.SDL_GPU_SHADERSTAGE_VERTEX, vert_reflection_out);
-    const frag_shader = createGPUShader(device, frag_spirv, c.SDL_GPU_SHADERSTAGE_FRAGMENT, frag_reflection_out);
+    const vert_shader = createGPUShader(device, spirv.vert, c.SDL_GPU_SHADERSTAGE_VERTEX, &vert_reflection);
+    const frag_shader = createGPUShader(device, spirv.frag, c.SDL_GPU_SHADERSTAGE_FRAGMENT, &frag_reflection);
     defer {
         c.SDL_ReleaseGPUShader(device, vert_shader);
         c.SDL_ReleaseGPUShader(device, frag_shader);
@@ -770,6 +804,10 @@ fn compileAndCreatePipeline(
         .params = try params.toOwnedSlice(alloc),
         .alias = alias,
         .texture_format = format,
+        .reflection = .{
+            .fragment = frag_reflection,
+            .vertex = vert_reflection,
+        },
     };
 }
 
@@ -779,18 +817,18 @@ const WorkerArgs = struct {
     dir: []const u8,
     pass: *slangp.ShaderPass,
     device: ?*c.SDL_GPUDevice,
-    pass_id: usize,
     vk_version: c_uint,
     swapchain_format: c.SDL_GPUTextureFormat,
     initial_values: *const std.StringHashMap(slangp.TypeUnion),
     mutex: *std.Thread.Mutex,
     had_error: *bool,
     compile_progress: *std.atomic.Value(u32),
+    shader_cache: *ShaderCache,
 };
 
 fn compilePassWorker(args: WorkerArgs) void {
     compilePassWorkerInner(args) catch |err| {
-        std.log.err("Failed to compile shader pass {}: {s}", .{ args.pass_id, @errorName(err) });
+        std.log.err("Failed to compile shader pass {}: {s}", .{ args.pass.id, @errorName(err) });
         args.mutex.lock();
         args.had_error.* = true;
         args.mutex.unlock();
@@ -800,7 +838,6 @@ fn compilePassWorker(args: WorkerArgs) void {
 fn compilePassWorkerInner(args: WorkerArgs) !void {
     const pass_path = try std.fs.path.resolve(args.alloc, &.{ args.dir, args.pass.path });
     defer args.alloc.free(pass_path);
-    std.log.info("Compiling shader pass {}: {s}", .{ args.pass_id, args.pass.path });
 
     const target_format: c.SDL_GPUTextureFormat = if (args.pass.params.float_framebuffer orelse false)
         c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
@@ -809,16 +846,14 @@ fn compilePassWorkerInner(args: WorkerArgs) !void {
     else
         args.swapchain_format;
 
-    var vert_reflection: ShaderReflection = undefined;
-    var frag_reflection: ShaderReflection = undefined;
     const result = try compileAndCreatePipeline(
         args.alloc,
         args.device,
         args.vk_version,
         pass_path,
+        args.pass.id,
         target_format,
-        &vert_reflection,
-        &frag_reflection,
+        args.shader_cache,
     );
     defer args.alloc.free(result.params);
 
@@ -881,15 +916,15 @@ fn compilePassWorkerInner(args: WorkerArgs) !void {
         }
     }
 
-    args.preset.passes[args.pass_id] = .{
+    args.preset.passes[args.pass.id] = .{
         .initialized = true,
-        .id = args.pass_id,
+        .id = args.pass.id,
         .pipeline = result.pipeline,
         .sampler = sampler,
         .output_texture = null,
         .fb_feedback = null,
-        .vertex_reflection = vert_reflection,
-        .fragment_reflection = frag_reflection,
+        .vertex_reflection = result.reflection.vertex,
+        .fragment_reflection = result.reflection.fragment,
         .scale_params = .{
             .scale_type = args.pass.params.scale_type,
             .scale_type_x = args.pass.params.scale_type_x,
@@ -957,6 +992,7 @@ fn compilePreset(
     device: ?*c.SDL_GPUDevice,
     swapchain_format: c.SDL_GPUTextureFormat,
     progress: *std.atomic.Value(u32),
+    shader_cache: *ShaderCache,
 ) !LoadedPreset {
     const dir = parsed.dir;
     const shader_config = &parsed.shader_config;
@@ -1082,20 +1118,20 @@ fn compilePreset(
     var mutex: std.Thread.Mutex = .{};
     var wg: std.Thread.WaitGroup = .{};
     var had_error: bool = false;
-    for (shader_config.passes, 0..) |*pass, i| {
+    for (shader_config.passes) |*pass| {
         pool.spawnWg(&wg, compilePassWorker, .{WorkerArgs{
             .alloc = alloc,
             .preset = &preset,
             .dir = dir,
             .pass = pass,
             .device = device,
-            .pass_id = i,
             .vk_version = vk_version,
             .swapchain_format = swapchain_format,
             .initial_values = &shader_config.shader_params_initial_values,
             .mutex = &mutex,
             .had_error = &had_error,
             .compile_progress = progress,
+            .shader_cache = shader_cache,
         }});
     }
     wg.wait();
@@ -1112,10 +1148,11 @@ fn loadPresetFile(
     device: ?*c.SDL_GPUDevice,
     swapchain_format: c.SDL_GPUTextureFormat,
     progress: *std.atomic.Value(u32),
+    shader_cache: *ShaderCache,
 ) !LoadedPreset {
     var parsed = try parsePresetFile(alloc, path);
     defer parsed.deinit(alloc);
-    return compilePreset(alloc, &parsed, vk_version, device, swapchain_format, progress);
+    return compilePreset(alloc, &parsed, vk_version, device, swapchain_format, progress, shader_cache);
 }
 
 fn prepareUniformPayload(
@@ -1430,6 +1467,7 @@ pub const ShaderPipeline = struct {
 
     preset: ?LoadedPreset = null,
     preset_path: ?[]u8 = null,
+    cache: ShaderCache,
 
     // Async compile state
     compile_progress: std.atomic.Value(u32) = .init(0),
@@ -1507,6 +1545,7 @@ pub const ShaderPipeline = struct {
             .pass_feedback = .init(alloc),
             .texture_aliases = .init(alloc),
             .frame_history = .empty,
+            .cache = try ShaderCache.init(alloc),
         };
         return self;
     }
@@ -1533,6 +1572,7 @@ pub const ShaderPipeline = struct {
         if (self.preset_path) |path| self.alloc.free(path);
         if (self.black_input_texture) |t| c.SDL_ReleaseGPUTexture(self.device, t);
         c.SDL_ReleaseGPUBuffer(self.device, self.vertex_buffer);
+        self.cache.deinit();
         self.alloc.destroy(self);
     }
 
@@ -1550,6 +1590,7 @@ pub const ShaderPipeline = struct {
             self.device,
             swapchain_format,
             &dummy_progress,
+            self.cache,
         );
         self.preset_path = try self.alloc.dupe(u8, path);
 
@@ -1864,6 +1905,7 @@ pub const ShaderPipeline = struct {
             self.device,
             ctx.swapchain_format,
             &self.compile_progress,
+            &self.cache,
         )) |preset| {
             self.compile_mutex.lock();
             defer self.compile_mutex.unlock();
