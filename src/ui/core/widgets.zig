@@ -692,6 +692,7 @@ pub const MenuItem = struct {
         label: []const u8,
         shortcut: ?[]const u8 = null,
         padding: clay.Padding = .{ .left = 8, .right = 8, .top = 6, .bottom = 6 },
+        enabled: bool = true,
     };
     const Self = @This();
 
@@ -709,7 +710,7 @@ pub const MenuItem = struct {
             break :b element_id;
         } else clay.openElement();
 
-        const is_hovered = clay.hovered();
+        const is_hovered = params.enabled and clay.hovered();
         clay.configureOpenElement(.{
             .layout = .{
                 .sizing = .{ .w = .grow, .h = .fit },
@@ -721,7 +722,7 @@ pub const MenuItem = struct {
             .corner_radius = .all(4),
         });
 
-        const text_col = if (is_hovered) Color.white else Color.black;
+        const text_col = if (!params.enabled) Color.gray else if (is_hovered) Color.white else Color.black;
 
         _ = Label.start(.{ .text = params.label, .font_size = 14, .color = text_col });
 
@@ -744,6 +745,7 @@ pub const MenuItem = struct {
     }
 
     pub fn clicked(self: *const Self, ctx: *UIContext) bool {
+        if (!self.params.enabled) return false;
         const id = self.id orelse return false;
         const is_hovered = clay.pointerOver(id);
         return is_hovered and ctx.frame.mouse_released;
