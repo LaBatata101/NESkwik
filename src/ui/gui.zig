@@ -226,10 +226,25 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
     const root = ui.column(.{});
     {
         if (!ui.isWindowFullscreen()) {
-            const menubar = ui.menuBar(.{});
+            const menubar = ui.menuBar(.{
+                .bg_color = theme.bg_panel,
+                .border_color = theme.border_dim,
+            });
             {
-                const sys_menu = ui.dropdownMenu(.{ .label = "System" });
-                if (ui.menuItem(.{ .label = "Open" }).clicked(ui.main_window.ctx)) {
+                const sys_menu = ui.dropdownMenu(.{
+                    .label = "System",
+                    .bg_color = theme.bg_panel,
+                    .hover_color = theme.bg_hover,
+                    .text_color = theme.text_secondary,
+                    .list_bg_color = theme.bg_section,
+                    .list_border_color = theme.border,
+                });
+                if (ui.menuItem(.{
+                    .label = "Open",
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                }).clicked(ui.main_window.ctx)) {
                     const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
                         @panic("Failed to allocate");
                     defer ui.main_window.ctx.frameAlloc().free(default_location);
@@ -246,12 +261,30 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 }
                 sys_menu.end();
 
-                const emulation_menu = ui.dropdownMenu(.{ .label = "Emulation" });
-                if (ui.menuItem(.{ .label = "Debug", .enabled = ui_state.emulation_running }).clicked(ui.main_window.ctx)) {
+                const emulation_menu = ui.dropdownMenu(.{
+                    .label = "Emulation",
+                    .bg_color = theme.bg_panel,
+                    .hover_color = theme.bg_hover,
+                    .text_color = theme.text_secondary,
+                    .list_bg_color = theme.bg_section,
+                    .list_border_color = theme.border,
+                });
+                if (ui.menuItem(.{
+                    .label = "Debug",
+                    .enabled = ui_state.emulation_running,
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                }).clicked(ui.main_window.ctx)) {
                     ui_state.render_debug_ui = !ui_state.render_debug_ui;
                 }
 
-                if (ui.menuItem(.{ .label = "Settings" }).clicked(ui.main_window.ctx)) {
+                if (ui.menuItem(.{
+                    .label = "Settings",
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                }).clicked(ui.main_window.ctx)) {
                     ui.createWindow(
                         "Settings",
                         580,
@@ -282,8 +315,44 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
 }
 
 fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
-    _ = ui_state; // autofix
-    _ = ui.spacer(.{ .sizing = .grow });
+    const root = ui.column(.{
+        .sizing = .grow,
+        .bg_color = theme.bg_base,
+        .child_alignment = .{ .x = .center, .y = .top },
+    });
+    {
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        if (ui.button(.{
+            .text = "Open ROM",
+            .font_size = 15,
+            .bg_color = theme.accent_blue,
+            .text_color = Color.white,
+            .padding = .{ .left = 28, .right = 28, .top = 10, .bottom = 10 },
+            .corner_radius = 6,
+            .elevation = 0,
+        }).clicked(ui.main_window.ctx)) {
+            const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
+                @panic("Failed to allocate");
+            defer ui.main_window.ctx.frameAlloc().free(default_location);
+            c.SDL_ShowOpenFileDialog(
+                dialog_callback,
+                clay.anytypeToAnyopaquePtr(ui_state),
+                ui.main_window.ptr,
+                &dialog_filter_list,
+                dialog_filter_list.len,
+                default_location.ptr,
+                false,
+            );
+        }
+
+        _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(14) } });
+
+        _ = ui.label(.{ .text = "or use System > Open", .font_size = 13, .color = theme.text_secondary });
+
+        _ = ui.spacer(.{ .sizing = .grow });
+    }
+    root.end();
 }
 
 pub const EmulationSpeed = enum {

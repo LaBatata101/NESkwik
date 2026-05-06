@@ -599,6 +599,11 @@ pub const DropdownMenu = struct {
         id: ?[]const u8 = null,
         label: []const u8,
         width: f32 = 200,
+        bg_color: Color = Color.white,
+        hover_color: Color = Color.lightGray,
+        text_color: Color = Color.black,
+        list_bg_color: Color = Color.white,
+        list_border_color: Color = Color.gray,
     };
     const Self = @This();
 
@@ -617,7 +622,7 @@ pub const DropdownMenu = struct {
         const state = ctx.getOrCreateWidgetState(element_id, .{ .dropdown_menu = .{ .is_open = false } });
 
         const is_hovered = clay.hovered();
-        const bg = if (state.dropdown_menu.is_open or is_hovered) Color.lightGray else Color.white;
+        const bg = if (state.dropdown_menu.is_open or is_hovered) params.hover_color else params.bg_color;
 
         const menu_list_id = clay.ElementId.localIDI("dropdown_list", element_id.id);
         const is_list_hovered = if (state.dropdown_menu.is_open) clay.pointerOver(menu_list_id) else false;
@@ -628,7 +633,7 @@ pub const DropdownMenu = struct {
             .corner_radius = .all(4),
         });
 
-        _ = Label.start(.{ .text = params.label, .font_size = 14 });
+        _ = Label.start(.{ .text = params.label, .font_size = 14, .color = params.text_color });
         clay.closeElement();
 
         if (is_hovered and ctx.frame.mouse_pressed) {
@@ -654,9 +659,9 @@ pub const DropdownMenu = struct {
                     .padding = .all(4),
                     .child_gap = 2,
                 },
-                .background_color = Color.white.toClay(),
+                .background_color = params.list_bg_color.toClay(),
                 .corner_radius = .all(4),
-                .border = .{ .width = .outside(1), .color = Color.gray.toClay() },
+                .border = .{ .width = .outside(1), .color = params.list_border_color.toClay() },
                 .floating = .{
                     .attach_to = .to_element_with_id,
                     .parentId = element_id.id, // Attach to the button we just drew
@@ -693,6 +698,9 @@ pub const MenuItem = struct {
         shortcut: ?[]const u8 = null,
         padding: clay.Padding = .{ .left = 8, .right = 8, .top = 6, .bottom = 6 },
         enabled: bool = true,
+        bg_color: Color = Color.white,
+        hover_color: Color = Color.blue,
+        text_color: Color = Color.black,
     };
     const Self = @This();
 
@@ -718,11 +726,11 @@ pub const MenuItem = struct {
                 .child_alignment = .{ .y = .center },
                 .direction = .left_to_right,
             },
-            .background_color = if (is_hovered) Color.blue.toClay() else Color.white.toClay(),
+            .background_color = if (is_hovered) params.hover_color.toClay() else params.bg_color.toClay(),
             .corner_radius = .all(4),
         });
 
-        const text_col = if (!params.enabled) Color.gray else if (is_hovered) Color.white else Color.black;
+        const text_col = if (!params.enabled) Color.gray else if (is_hovered) Color.white else params.text_color;
 
         _ = Label.start(.{ .text = params.label, .font_size = 14, .color = text_col });
 
