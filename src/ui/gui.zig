@@ -18,6 +18,7 @@ const OVERSCAN_TOP = ness.OVERSCAN_TOP;
 const OVERSCAN_BOTTOM = ness.OVERSCAN_BOTTOM;
 const NES_VISIBLE_HEIGHT = ness.NES_VISIBLE_HEIGHT;
 const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
+const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 
 pub const UIState = struct {
     alloc: std.mem.Allocator,
@@ -246,7 +247,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 sys_menu.end();
 
                 const emulation_menu = ui.dropdownMenu(.{ .label = "Emulation" });
-                if (ui.menuItem(.{ .label = "Debug" }).clicked(ui.main_window.ctx) and ui_state.emulation_running) {
+                if (ui.menuItem(.{ .label = "Debug", .enabled = ui_state.emulation_running }).clicked(ui.main_window.ctx)) {
                     ui_state.render_debug_ui = !ui_state.render_debug_ui;
                 }
 
@@ -270,7 +271,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
         } else {
             _ = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-                .pixels = ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..],
+                .pixels = ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES],
                 .w = NES_WIDTH,
                 .h = NES_VISIBLE_HEIGHT,
                 .aspect_ratio = ui_state.settings.aspect_ratio,
@@ -780,7 +781,7 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
 
     if (ui_state.emulation_running) {
         const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..], NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
+        drawShaderPreview(ui, ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES], NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
         center.end();
     }
 }
@@ -998,7 +999,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
             else => ui_state.settings.aspect_ratio,
         };
         const preview_pixels: []const u8 = if (ui_state.emulation_running)
-            ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..]
+            ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES]
         else
             &black_pixel;
         const px_w: u32 = if (ui_state.emulation_running) NES_WIDTH else 1;
