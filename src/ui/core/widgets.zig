@@ -597,6 +597,7 @@ pub const Canvas = struct {
         h: u32 = 0,
         fg_color: ?Color = null,
         bg_color: ?Color = null,
+        corner_radius: clay.CornerRadius = .{},
         aspect_ratio: utils.AspectRatio = .none,
         /// When set, the canvas uses the named pipeline's last output texture
         /// instead of uploading `pixels`. Falls back to `pixels` if the
@@ -618,6 +619,7 @@ pub const Canvas = struct {
 
         clay.configureOpenElement(.{
             .layout = .{ .sizing = params.sizing },
+            .corner_radius = params.corner_radius,
             .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(custom_data) },
         });
         clay.closeElement();

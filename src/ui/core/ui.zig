@@ -1007,6 +1007,166 @@ pub const Renderer = struct {
         self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 6;
     }
 
+    fn hasCornerRadius(corner_radius: clay.CornerRadius) bool {
+        return corner_radius.top_left > 0.0 or
+            corner_radius.top_right > 0.0 or
+            corner_radius.bottom_left > 0.0 or
+            corner_radius.bottom_right > 0.0;
+    }
+
+    fn appendTexturedVertex(
+        self: *Self,
+        rect: c.SDL_FRect,
+        color: c.SDL_FColor,
+        uv: c.SDL_FRect,
+        px: f32,
+        py: f32,
+    ) u32 {
+        const idx: u32 = @intCast(self.vertices.items.len);
+        const u = uv.x + uv.w * ((px - rect.x) / rect.w);
+        const v = uv.y + uv.h * ((py - rect.y) / rect.h);
+        self.vertices.append(self.allocator, .{
+            .position = .{ .x = px, .y = py },
+            .color = color,
+            .tex_coord = .{ .x = u, .y = v },
+        }) catch @panic("Failed to allocate");
+        return idx;
+    }
+
+    fn pushRoundedTexturedRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, corner_radius: clay.CornerRadius, uv_: ?c.SDL_FRect) void {
+        if (!hasCornerRadius(corner_radius)) {
+            self.pushRect(rect, color, uv_);
+            return;
+        }
+
+        const uv = uv_ orelse c.SDL_FRect{ .x = 0, .y = 0, .w = 1, .h = 1 };
+        var radius = corner_radius;
+        const max_radius = @min(rect.w, rect.h) / 2.0;
+        radius.top_left = @min(@max(radius.top_left, 0.0), max_radius);
+        radius.top_right = @min(@max(radius.top_right, 0.0), max_radius);
+        radius.bottom_left = @min(@max(radius.bottom_left, 0.0), max_radius);
+        radius.bottom_right = @min(@max(radius.bottom_right, 0.0), max_radius);
+
+        const ScalePair = struct {
+            fn apply(a: *f32, b: *f32, max_sum: f32) void {
+                const sum = a.* + b.*;
+                if (sum > max_sum and sum > 0.0) {
+                    const scale = max_sum / sum;
+                    a.* *= scale;
+                    b.* *= scale;
+                }
+            }
+        };
+        ScalePair.apply(&radius.top_left, &radius.top_right, rect.w);
+        ScalePair.apply(&radius.bottom_left, &radius.bottom_right, rect.w);
+        ScalePair.apply(&radius.top_left, &radius.bottom_left, rect.h);
+        ScalePair.apply(&radius.top_right, &radius.bottom_right, rect.h);
+
+        const center_idx = self.appendTexturedVertex(
+            rect,
+            color,
+            uv,
+            rect.x + rect.w / 2.0,
+            rect.y + rect.h / 2.0,
+        );
+
+        const Boundary = struct {
+            fn add(
+                renderer: *Self,
+                center: u32,
+                source_rect: c.SDL_FRect,
+                vertex_color: c.SDL_FColor,
+                source_uv: c.SDL_FRect,
+                px: f32,
+                py: f32,
+                first: *u32,
+                previous: *?u32,
+                previous_pos: *?clay.Vector2,
+                count: *usize,
+            ) void {
+                if (previous_pos.*) |pos| {
+                    if (@abs(pos.x - px) < 0.001 and @abs(pos.y - py) < 0.001) return;
+                }
+
+                const idx = renderer.appendTexturedVertex(source_rect, vertex_color, source_uv, px, py);
+                if (count.* == 0) first.* = idx;
+                if (previous.*) |prev| {
+                    renderer.indices.appendSlice(renderer.allocator, &[_]u32{ center, prev, idx }) catch @panic("Failed to allocate");
+                    renderer.draw_calls.items[renderer.draw_calls.items.len - 1].index_count += 3;
+                }
+                previous.* = idx;
+                previous_pos.* = .{ .x = px, .y = py };
+                count.* += 1;
+            }
+
+            fn arc(
+                renderer: *Self,
+                center: u32,
+                source_rect: c.SDL_FRect,
+                vertex_color: c.SDL_FColor,
+                source_uv: c.SDL_FRect,
+                cx: f32,
+                cy: f32,
+                r: f32,
+                start_angle: f32,
+                first_step: usize,
+                last_step: usize,
+                first: *u32,
+                previous: *?u32,
+                previous_pos: *?clay.Vector2,
+                count: *usize,
+            ) void {
+                if (r <= 0.0 or first_step > last_step) return;
+                const segments: usize = 12;
+                const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(segments));
+                var i = first_step;
+                while (i <= last_step) : (i += 1) {
+                    const angle = start_angle + @as(f32, @floatFromInt(i)) * step;
+                    add(
+                        renderer,
+                        center,
+                        source_rect,
+                        vertex_color,
+                        source_uv,
+                        cx + @cos(angle) * r,
+                        cy + @sin(angle) * r,
+                        first,
+                        previous,
+                        previous_pos,
+                        count,
+                    );
+                }
+            }
+        };
+
+        var first_idx: u32 = 0;
+        var prev_idx: ?u32 = null;
+        var prev_pos: ?clay.Vector2 = null;
+        var boundary_count: usize = 0;
+
+        const x = rect.x;
+        const y = rect.y;
+        const w = rect.w;
+        const h = rect.h;
+
+        Boundary.add(self, center_idx, rect, color, uv, x + radius.top_left, y, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.add(self, center_idx, rect, color, uv, x + w - radius.top_right, y, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.top_right, y + radius.top_right, radius.top_right, -std.math.pi / 2.0, 1, 12, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.add(self, center_idx, rect, color, uv, x + w, y + h - radius.bottom_right, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.bottom_right, y + h - radius.bottom_right, radius.bottom_right, 0.0, 1, 12, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.add(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h - radius.bottom_left, radius.bottom_left, std.math.pi / 2.0, 1, 12, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.add(self, center_idx, rect, color, uv, x, y + radius.top_left, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + radius.top_left, y + radius.top_left, radius.top_left, std.math.pi, 1, 11, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+
+        if (boundary_count >= 3) {
+            if (prev_idx) |prev| {
+                self.indices.appendSlice(self.allocator, &[_]u32{ center_idx, prev, first_idx }) catch @panic("Failed to allocate");
+                self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 3;
+            }
+        }
+    }
+
     fn pushRoundedBorder(self: *Self, box: clay.BoundingBox, border: clay.BorderRenderData) void {
         const w = border.width;
         // If no visible border, return early
@@ -2010,9 +2170,10 @@ pub const UI = struct {
                                     canvas_.params.aspect_ratio,
                                 );
                                 window.renderer.setTexture(tex);
-                                window.renderer.pushRect(
+                                window.renderer.pushRoundedTexturedRect(
                                     .{ .x = vp.x, .y = vp.y, .w = vp.w, .h = vp.h },
                                     .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+                                    canvas_.params.corner_radius,
                                     null,
                                 );
                                 window.renderer.flush();
@@ -2090,12 +2251,12 @@ pub const UI = struct {
                 else
                     .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
                 window.renderer.setTexture(null);
-                window.renderer.pushRect(.{
+                window.renderer.pushRoundedTexturedRect(.{
                     .x = cmd.bounding_box.x,
                     .y = cmd.bounding_box.y,
                     .w = cmd.bounding_box.width,
                     .h = cmd.bounding_box.height,
-                }, bg_color_sdl, null);
+                }, bg_color_sdl, canvas_.params.corner_radius, null);
 
                 // Border-shader preview composite: stretch border output to fill the
                 // preview area, then overlay the NES frame using the canvas aspect
@@ -2105,12 +2266,12 @@ pub const UI = struct {
                         if (self.border_shader_pipeline) |pl| {
                             if (pl.getLastOutputTexture()) |border_tex| {
                                 window.renderer.setTexture(border_tex);
-                                window.renderer.pushRect(.{
+                                window.renderer.pushRoundedTexturedRect(.{
                                     .x = cmd.bounding_box.x,
                                     .y = cmd.bounding_box.y,
                                     .w = cmd.bounding_box.width,
                                     .h = cmd.bounding_box.height,
-                                }, .{ .r = 1, .g = 1, .b = 1, .a = 1 }, null);
+                                }, .{ .r = 1, .g = 1, .b = 1, .a = 1 }, canvas_.params.corner_radius, null);
                                 const content_vp = utils.calculateViewport(
                                     cmd.bounding_box.x,
                                     cmd.bounding_box.y,
@@ -2119,9 +2280,10 @@ pub const UI = struct {
                                     canvas_.params.aspect_ratio,
                                 );
                                 window.renderer.setTexture(texture);
-                                window.renderer.pushRect(
+                                window.renderer.pushRoundedTexturedRect(
                                     .{ .x = content_vp.x, .y = content_vp.y, .w = content_vp.w, .h = content_vp.h },
                                     .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+                                    canvas_.params.corner_radius,
                                     null,
                                 );
                                 window.renderer.flush();
@@ -2189,7 +2351,7 @@ pub const UI = struct {
                         break :blk fg_color.toSDL();
                     } else .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
                     window.renderer.setTexture(texture);
-                    window.renderer.pushRect(dest, color, null);
+                    window.renderer.pushRoundedTexturedRect(dest, color, canvas_.params.corner_radius, null);
                     window.renderer.flush();
                 }
             },
