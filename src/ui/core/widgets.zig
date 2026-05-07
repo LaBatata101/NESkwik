@@ -114,7 +114,7 @@ pub const Label = struct {
             .wrap_mode = params.wrap_mode,
             .alignment = params.alignment,
         };
-        _ = clay.textDynamic(params.text, text_config);
+        clay.textDynamic(params.text, text_config);
         return .{ .params = params };
     }
 };

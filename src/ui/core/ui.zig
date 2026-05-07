@@ -1621,7 +1621,7 @@ pub const UI = struct {
 
     pub fn endFrame(self: *Self) void {
         self.border_shader_rendered_this_frame = false;
-        const render_commands = clay.endLayout();
+        const render_commands = clay.endLayout(self.current_window.ctx.dt);
         self.renderCommands(self.main_window, render_commands);
 
         // If the settings window is open and the border shader has never rendered
@@ -1648,7 +1648,7 @@ pub const UI = struct {
                 draw_fn(self, window.user_data);
             }
 
-            self.renderCommands(window.inner, clay.endLayout());
+            self.renderCommands(window.inner, clay.endLayout(self.current_window.ctx.dt));
         }
 
         clay.setCurrentContext(self.main_window.ctx.clay_ctx);

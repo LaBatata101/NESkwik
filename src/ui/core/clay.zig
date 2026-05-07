@@ -18,14 +18,17 @@ pub const cdefs = struct {
     pub extern fn Clay_MinMemorySize() u32;
     pub extern fn Clay_CreateArenaWithCapacityAndMemory(capacity: usize, memory: ?*anyopaque) Arena;
     pub extern fn Clay_SetPointerState(position: Vector2, pointerDown: bool) void;
+    pub extern fn Clay_GetPointerState() PointerData;
     pub extern fn Clay_Initialize(arena: Arena, layoutDimensions: Dimensions, errorHandler: ErrorHandler) *Context;
     pub extern fn Clay_GetCurrentContext() *Context;
     pub extern fn Clay_SetCurrentContext(context: *Context) void;
     pub extern fn Clay_UpdateScrollContainers(enableDragScrolling: bool, scrollDelta: Vector2, deltaTime: f32) void;
     pub extern fn Clay_GetScrollOffset() Vector2;
     pub extern fn Clay_SetLayoutDimensions(dimensions: Dimensions) void;
+    pub extern fn Clay_GetLayoutDimensions() Dimensions;
     pub extern fn Clay_BeginLayout() void;
-    pub extern fn Clay_EndLayout() ClayArray(RenderCommand);
+    pub extern fn Clay_EndLayout(deltaTime: f32) ClayArray(RenderCommand);
+    pub extern fn Clay_GetOpenElementId() u32;
     pub extern fn Clay_GetElementId(idString: String) ElementId;
     pub extern fn Clay_GetElementIdWithIndex(idString: String, index: u32) ElementId;
     pub extern fn Clay_Hovered() bool;
@@ -44,18 +47,17 @@ pub const cdefs = struct {
     pub extern fn Clay_GetMaxMeasureTextCacheWordCount() i32;
     pub extern fn Clay_SetMaxMeasureTextCacheWordCount(maxMeasureTextCacheWordCount: i32) void;
     pub extern fn Clay_ResetMeasureTextCache() void;
+    pub extern fn Clay_EaseOut(arguments: TransitionCallbackArguments) bool;
     pub extern fn Clay__ConfigureOpenElement(config: ElementDeclarationNoId) void;
     pub extern fn Clay__ConfigureOpenElementPtr(config: *ElementDeclaration) void;
-    // TODO: investigate uses
-    pub extern fn Clay__OpenElement() ElementId;
+    pub extern fn Clay__OpenElement() void;
     pub extern fn Clay__OpenElementWithId(id: ElementId) void;
     pub extern fn Clay__CloseElement() void;
-    pub extern fn Clay__StoreTextElementConfig(config: TextElementConfig) *TextElementConfig;
     pub extern fn Clay__HashString(key: String, seed: u32) ElementId;
     pub extern fn Clay__HashStringWithOffset(key: String, offset: u32, seed: u32) ElementId;
-    pub extern fn Clay__OpenTextElement(text: String, textConfig: *TextElementConfig) ElementId;
-    pub extern fn Clay__GetParentElementId() u32;
+    pub extern fn Clay__OpenTextElement(text: String, textConfig: TextElementConfig) void;
     pub extern fn Clay__GetOpenLayoutElement() ?*LayoutElement;
+    pub extern fn Clay__GetParentElement() ?*LayoutElement;
 };
 
 pub const EnumBackingType = u8;
@@ -120,27 +122,12 @@ const BooleanWarnings = extern struct {
     maxRenderCommandsExceeded: bool,
     maxTextMeasureCacheExceeded: bool,
     textMeasurementFunctionNotSet: bool,
+    hashMapCapacityExceeded: bool,
 };
 
 const Warning = extern struct {
     baseMessage: String,
     dynamicMessage: String,
-};
-
-const ElementConfigUnion = extern union {
-    textElementConfig: *TextElementConfig,
-    aspectRatioElementConfig: *AspectRatioElementConfig,
-    imageElementConfig: *ImageElementConfig,
-    floatingElementConfig: *FloatingElementConfig,
-    customElementConfig: *CustomElementConfig,
-    clipElementConfig: *ClipElementConfig,
-    borderElementConfig: *BorderElementConfig,
-    sharedElementConfig: *SharedElementConfig,
-};
-
-const ElementConfig = extern struct {
-    type: ElementConfigType,
-    config: ElementConfigUnion,
 };
 
 const WrappedTextLine = extern struct {
@@ -151,7 +138,6 @@ const WrappedTextLine = extern struct {
 const TextElementData = extern struct {
     text: String,
     preferredDimensions: Dimensions,
-    elementIndex: i32,
     wrappedLines: ClayArraySlice(WrappedTextLine),
 };
 
@@ -161,22 +147,27 @@ const LayoutElementChildren = extern struct {
 };
 
 const LayoutElement = extern struct {
-    childrenOrTextContent: extern union {
-        children: LayoutElementChildren,
-        textElementData: *TextElementData,
-    },
+    children: LayoutElementChildren,
     dimensions: Dimensions,
     minDimensions: Dimensions,
-    layoutConfig: *LayoutConfig,
-    elementConfigs: ClayArraySlice(ElementConfig),
+    data: extern union {
+        config: ElementDeclaration,
+        text: extern struct {
+            textConfig: TextElementConfig,
+            textElementData: TextElementData,
+        },
+    },
     id: u32,
     floatingChildrenCount: u16,
+    isTextElement: bool,
+    exiting: bool,
 };
 
 const LayoutElementTreeNode = extern struct {
     layoutElement: *LayoutElement,
     position: Vector2,
     nextChildOffset: Vector2,
+    parentMovedThisFramed: bool,
 };
 
 const LayoutElementTreeRoot = extern struct {
@@ -187,20 +178,19 @@ const LayoutElementTreeRoot = extern struct {
     pointerOffset: Vector2,
 };
 
-const DebugElementData = extern struct {
-    collision: bool,
-    collapsed: bool,
-};
-
 const LayoutElementHashMapItem = extern struct {
     boundingBox: BoundingBox,
     elementId: ElementId,
     layoutElement: *LayoutElement,
-    onHoverFunction: ?*const fn (ElementId, PointerData, isize) callconv(.c) void,
-    hoverFunctionUserData: isize,
+    onHoverFunction: ?*const fn (ElementId, PointerData, ?*anyopaque) callconv(.c) void,
+    hoverFunctionUserData: ?*anyopaque,
     nextIndex: i32,
     generation: u32,
-    debugData: *DebugElementData,
+    appearedThisFrame: bool,
+    debugData: extern struct {
+        collision: bool,
+        collapsed: bool,
+    },
 };
 
 const MeasureTextCacheItem = extern struct {
@@ -240,7 +230,10 @@ const ScrollContainerDataInternal = extern struct {
 pub const Context = extern struct {
     maxElementCount: i32,
     maxMeasureTextCacheWordCount: i32,
+    exitingElementsLength: i32,
+    exitingElementsChildrenLength: i32,
     warningsEnabled: bool,
+    rootResizedLastFrame: bool,
     errorHandler: ErrorHandler,
     booleanWarnings: BooleanWarnings,
     warnings: ClayArray(Warning),
@@ -264,21 +257,8 @@ pub const Context = extern struct {
     openLayoutElementStack: ClayArray(i32),
     layoutElementChildren: ClayArray(i32),
     layoutElementChildrenBuffer: ClayArray(i32),
-    textElementData: ClayArray(TextElementData),
-    aspectRatioElementIndexes: ClayArray(i32),
     reusableElementIndexBuffer: ClayArray(i32),
     layoutElementClipElementIds: ClayArray(i32),
-    // Configs
-    layoutConfigs: ClayArray(LayoutConfig),
-    elementConfigs: ClayArray(ElementConfig),
-    textElementConfigs: ClayArray(TextElementConfig),
-    aspectRatioElementConfigs: ClayArray(AspectRatioElementConfig),
-    imageElementConfigs: ClayArray(ImageElementConfig),
-    floatingElementConfigs: ClayArray(FloatingElementConfig),
-    clipElementConfigs: ClayArray(ClipElementConfig),
-    customElementConfigs: ClayArray(CustomElementConfig),
-    borderElementConfigs: ClayArray(BorderElementConfig),
-    sharedElementConfigs: ClayArray(SharedElementConfig),
     // Misc Data Structures
     layoutElementIdStrings: ClayArray(String),
     wrappedTextLines: ClayArray(WrappedTextLine),
@@ -286,6 +266,7 @@ pub const Context = extern struct {
     layoutElementTreeRoots: ClayArray(LayoutElementTreeRoot),
     layoutElementsHashMapInternal: ClayArray(LayoutElementHashMapItem),
     layoutElementsHashMap: ClayArray(i32),
+    layoutElementsHashMapFreeList: ClayArray(i32),
     measureTextHashMapInternal: ClayArray(MeasureTextCacheItem),
     measureTextHashMapInternalFreeList: ClayArray(i32),
     measureTextHashMap: ClayArray(i32),
@@ -294,9 +275,9 @@ pub const Context = extern struct {
     openClipElementStack: ClayArray(i32),
     pointerOverIds: ClayArray(ElementId),
     scrollContainerDatas: ClayArray(ScrollContainerDataInternal),
+    transitionDatas: ClayArray(u8), // Clay__TransitionDataInternalArray (opaque)
     treeNodeVisited: ClayArray(bool),
     dynamicStringData: ClayArray(u8), // Clay__charArray
-    debugElementData: ClayArray(DebugElementData),
 };
 
 /// Clay Arena is a memory arena structure used by Clay to manage its internal allocations
@@ -542,8 +523,12 @@ pub const RenderCommandType = enum(EnumBackingType) {
     scissor_start = 5,
     /// End clipping - resume rendering elements without restriction
     scissor_end = 6,
+    /// Begin performing a color overlay on all subsequent render commands
+    overlay_color_start = 7,
+    /// Disable any previously active color overlay
+    overlay_color_end = 8,
     /// Custom implementation based on the render command's customData
-    custom = 7,
+    custom = 9,
 };
 pub const PointerDataInteractionState = enum(EnumBackingType) {
     /// A mouse click or touch occurred this frame
@@ -577,6 +562,10 @@ pub const ErrorType = enum(EnumBackingType) {
     percentage_over_1 = 6,
     /// Internal Clay error (please report this)
     internal_error = 7,
+    /// Clay__OpenElement was called more times than Clay__CloseElement
+    unbalanced_open_close = 8,
+    /// Clay ran out of capacity in its internal hash map for storing element IDs
+    hash_map_capacity_exceeded = 9,
 };
 pub const ErrorData = extern struct {
     error_type: ErrorType,
@@ -633,15 +622,15 @@ pub const ElementId = extern struct {
     }
 
     /// Creates a local element ID from a string
-    /// Local IDs are scoped to the current parent element
+    /// Local IDs are scoped to the currently open element
     pub fn localID(string: []const u8) ElementId {
-        return cdefs.Clay__HashString(.fromSlice(string), cdefs.Clay__GetParentElementId());
+        return cdefs.Clay__HashString(.fromSlice(string), cdefs.Clay_GetOpenElementId());
     }
 
     /// Creates a local element ID from a string with index
-    /// Local IDs are scoped to the current parent element
+    /// Local IDs are scoped to the currently open element
     pub fn localIDI(string: []const u8, index: u32) ElementId {
-        return cdefs.Clay__HashStringWithOffset(.fromSlice(string), index, cdefs.Clay__GetParentElementId());
+        return cdefs.Clay__HashStringWithOffset(.fromSlice(string), index, cdefs.Clay_GetOpenElementId());
     }
 
     /// Creates a global element ID from a source location (@src())
@@ -829,6 +818,11 @@ pub const ClipRenderData = extern struct {
     /// Whether to clip/scroll vertically
     vertical: bool,
 };
+/// Render command data for overlay color commands
+pub const OverlayColorRenderData = extern struct {
+    /// The color to blend over all subsequent elements (RGBA, 0-255)
+    color: Color,
+};
 pub const BorderRenderData = extern struct {
     /// Color of all borders
     color: Color,
@@ -843,7 +837,8 @@ pub const RenderData = extern union {
     image: ImageRenderData,
     custom: CustomRenderData,
     border: BorderRenderData,
-    scroll: ClipRenderData,
+    clip: ClipRenderData,
+    overlay_color: OverlayColorRenderData,
 };
 /// Configuration for custom elements
 pub const CustomElementConfig = extern struct {
@@ -881,32 +876,99 @@ pub const ClipElementConfig = extern struct {
     // Offsets the x,y positions of all child elements.
     child_offset: Vector2 = .{ .x = 0, .y = 0 },
 };
-/// Shared configuration properties for multiple element types
-pub const SharedElementConfig = extern struct {
-    /// Background color of the element
+
+/// Snapshot of an element's visual properties used for transition interpolation
+pub const TransitionData = extern struct {
+    bounding_box: BoundingBox,
     background_color: Color,
-    /// Corner rounding of the element
-    corner_radius: CornerRadius,
-    /// Transparent pointer passed to render commands
-    user_data: ?*anyopaque,
+    overlay_color: Color,
+    border_color: Color,
+    border_width: BorderWidth,
 };
-/// Element configuration type identifiers
-pub const ElementConfigType = enum(EnumBackingType) {
+
+pub const TransitionState = enum(EnumBackingType) {
+    idle = 0,
+    entering = 1,
+    transitioning = 2,
+    exiting = 3,
+};
+
+/// Bitmask of element properties that can be animated during a transition
+pub const TransitionProperty = enum(u32) {
     none = 0,
-    border = 1,
-    floating = 2,
-    scroll = 3,
-    image = 4,
-    text = 5,
-    custom = 6,
-    shared = 7,
+    x = 1,
+    y = 2,
+    position = 3,
+    width = 4,
+    height = 8,
+    dimensions = 12,
+    bounding_box = 15,
+    background_color = 16,
+    overlay_color = 32,
+    corner_radius = 64,
+    border_color = 128,
+    border_width = 256,
+    border = 384,
+    _,
 };
+
+pub const TransitionCallbackArguments = extern struct {
+    transition_state: TransitionState,
+    initial: TransitionData,
+    current: *TransitionData,
+    target: TransitionData,
+    elapsed_time: f32,
+    duration: f32,
+    properties: TransitionProperty,
+};
+
+pub const TransitionEnterTriggerType = enum(EnumBackingType) {
+    skip_on_first_parent_frame = 0,
+    trigger_on_first_parent_frame = 1,
+};
+
+pub const TransitionExitTriggerType = enum(EnumBackingType) {
+    skip_when_parent_exits = 0,
+    trigger_when_parent_exits = 1,
+};
+
+pub const TransitionInteractionHandlingType = enum(EnumBackingType) {
+    disable_interactions_while_transitioning_position = 0,
+    allow_interactions_while_transitioning_position = 1,
+};
+
+pub const ExitTransitionSiblingOrdering = enum(EnumBackingType) {
+    underneath_siblings = 0,
+    natural_order = 1,
+    above_siblings = 2,
+};
+
+/// Controls settings related to element enter/exit transitions
+pub const TransitionElementConfig = extern struct {
+    handler: ?*const fn (TransitionCallbackArguments) callconv(.c) bool = null,
+    duration: f32 = 0,
+    properties: TransitionProperty = .none,
+    interaction_handling: TransitionInteractionHandlingType = .disable_interactions_while_transitioning_position,
+    enter: extern struct {
+        set_initial_state: ?*const fn (TransitionData, TransitionProperty) callconv(.c) TransitionData = null,
+        trigger: TransitionEnterTriggerType = .skip_on_first_parent_frame,
+    } = .{},
+    exit: extern struct {
+        set_final_state: ?*const fn (TransitionData, TransitionProperty) callconv(.c) TransitionData = null,
+        trigger: TransitionExitTriggerType = .skip_when_parent_exits,
+        sibling_ordering: ExitTransitionSiblingOrdering = .underneath_siblings,
+    } = .{},
+};
+
 pub const ElementDeclarationNoId = extern struct {
     layout: LayoutConfig = .{},
     /// Controls the background color of the resulting element.
     /// By convention specified as 0-255, but interpretation is up to the renderer.
     /// If no other config is specified, `.background_color` will generate a `RECTANGLE` render command, otherwise it will be passed as a property to `IMAGE` or `CUSTOM` render commands.
     background_color: Color = .{ 0, 0, 0, 0 },
+    /// Perform an image-editing style color overlay on this element and all its children.
+    /// Equivalent to glsl mix(elementColor, overlayColor.rgb, overlayColor.a).
+    overlay_color: Color = .{ 0, 0, 0, 0 },
     /// Controls the "radius", or corner rounding of elements, including rectangles, borders and images.
     corner_radius: CornerRadius = .{},
     // Controls settings related to aspect ratio scaling.
@@ -922,6 +984,8 @@ pub const ElementDeclarationNoId = extern struct {
     clip: ClipElementConfig = .{},
     /// Controls settings related to element borders, and will generate BORDER render command
     border: BorderElementConfig = .{},
+    /// Controls enter/exit transition animations for this element
+    transition: TransitionElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     user_data: ?*anyopaque = null,
 };
@@ -943,6 +1007,9 @@ pub const ElementDeclaration = extern struct {
     /// By convention specified as 0-255, but interpretation is up to the renderer.
     /// If no other config is specified, `.background_color` will generate a `RECTANGLE` render command, otherwise it will be passed as a property to `IMAGE` or `CUSTOM` render commands.
     background_color: Color = .{ 0, 0, 0, 0 },
+    /// Perform an image-editing style color overlay on this element and all its children.
+    /// Equivalent to glsl mix(elementColor, overlayColor.rgb, overlayColor.a).
+    overlay_color: Color = .{ 0, 0, 0, 0 },
     /// Controls the "radius", or corner rounding of elements, including rectangles, borders and images.
     corner_radius: CornerRadius = .{},
     // Controls settings related to aspect ratio scaling.
@@ -958,6 +1025,8 @@ pub const ElementDeclaration = extern struct {
     clip: ClipElementConfig = .{},
     /// Controls settings related to element borders, and will generate BORDER render command
     border: BorderElementConfig = .{},
+    /// Controls enter/exit transition animations for this element
+    transition: TransitionElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     user_data: ?*anyopaque = null,
 };
@@ -1015,6 +1084,8 @@ pub const minMemorySize = cdefs.Clay_MinMemorySize;
 /// Sets mouse/touch position for hover detection and scrolling
 /// Must be called before updateScrollContainers() and every frame to enable hover/click detection
 pub const setPointerState = cdefs.Clay_SetPointerState;
+/// Returns the current pointer state (position and interaction state) set via setPointerState
+pub const getPointerState = cdefs.Clay_GetPointerState;
 /// Initializes Clay with a memory arena and screen dimensions
 /// Returns a context pointer that can be used with setCurrentContext() for multi-instance support
 ///
@@ -1046,7 +1117,19 @@ pub const updateScrollContainers = cdefs.Clay_UpdateScrollContainers;
 /// Sets layout size (typically window dimensions)
 /// Should be called whenever the window is resized
 pub const setLayoutDimensions = cdefs.Clay_SetLayoutDimensions;
-pub const openElement = cdefs.Clay__OpenElement;
+// Returns the current dimensions set by `setLayoutDimensions`.
+pub const getLayoutDimensions = cdefs.Clay_GetLayoutDimensions;
+/// Opens a new element and returns its auto-generated ID.
+/// Use openElementWithId() when you need to specify an explicit ID.
+pub fn openElement() ElementId {
+    cdefs.Clay__OpenElement();
+    return .{
+        .id = cdefs.Clay_GetOpenElementId(),
+        .offset = 0,
+        .base_id = 0,
+        .string_id = .fromComptimeSlice(""),
+    };
+}
 pub const openElementWithId = cdefs.Clay__OpenElementWithId;
 pub const closeElement = cdefs.Clay__CloseElement;
 pub const configureOpenElement = cdefs.Clay__ConfigureOpenElement;
@@ -1063,12 +1146,10 @@ pub const beginLayout = cdefs.Clay_BeginLayout;
 /// const commands = endLayout();
 /// // Now render the commands with your graphics API
 /// ```
-pub fn endLayout() []RenderCommand {
-    const commands = cdefs.Clay_EndLayout();
+pub fn endLayout(delta_time: f32) []RenderCommand {
+    const commands = cdefs.Clay_EndLayout(delta_time);
     return commands.internal_array[0..@intCast(commands.length)];
 }
-
-pub const getParentElementId = cdefs.Clay__GetParentElementId;
 
 /// Gets an element ID with a numeric index - useful for loops
 /// Generally only used for dynamic strings when ElementId.IDI() can't be used
@@ -1131,6 +1212,8 @@ pub const setMaxMeasureTextCacheWordCount = cdefs.Clay_SetMaxMeasureTextCacheWor
 /// Refreshes text measurement cache
 /// Call when fonts associated with fontids are changed
 pub const resetMeasureTextCache = cdefs.Clay_ResetMeasureTextCache;
+/// Built-in "Ease Out" transition handler — pass as `TransitionElementConfig.handler`
+pub const easeOut = cdefs.Clay_EaseOut;
 /// Registers a hover callback for the current element
 /// `T` must be a type of the same size as a pointer or be of type `void`
 ///
@@ -1246,26 +1329,24 @@ pub fn createArenaWithCapacityAndMemory(buffer: []u8) Arena {
     return cdefs.Clay_CreateArenaWithCapacityAndMemory(@intCast(buffer.len), buffer.ptr);
 }
 
-/// Creates a text element with the given string literal and configuration
-///
-/// see `textDynamic` for runtime known strings
+/// Creates a text element with the given string and configuration
 ///
 /// Example:
 /// ```
 /// text("Hello World", .{ .font_size = 24, .color = .{255, 0, 0, 255} });
 /// ```
-pub fn text(string: []const u8, config: TextElementConfig) ElementId { //TODO: re-evaluate the value of having a comptime and runtime version of this
-    return cdefs.Clay__OpenTextElement(.fromSlice(string), cdefs.Clay__StoreTextElementConfig(config));
+pub fn text(string: []const u8, config: TextElementConfig) void {
+    cdefs.Clay__OpenTextElement(.fromSlice(string), config);
 }
 
-/// Creates a text element with the given string and configuration
+/// Creates a text element with the given runtime string and configuration
 ///
 /// Example:
 /// ```
-/// text(foor_text, .{ .font_size = 24, .color = .{255, 0, 0, 255} });
+/// textDynamic(some_string, .{ .font_size = 24, .color = .{255, 0, 0, 255} });
 /// ```
-pub fn textDynamic(string: []const u8, config: TextElementConfig) ElementId {
-    return cdefs.Clay__OpenTextElement(.fromSlice(string), cdefs.Clay__StoreTextElementConfig(config));
+pub fn textDynamic(string: []const u8, config: TextElementConfig) void {
+    cdefs.Clay__OpenTextElement(.fromSlice(string), config);
 }
 
 /// Gets an element's ID from a string
