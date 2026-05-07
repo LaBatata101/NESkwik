@@ -89,6 +89,73 @@ pub const Container = struct {
     }
 };
 
+pub const Grid = struct {
+    id: clay.ElementId,
+    ctx: *UIContext,
+    container: Container,
+    params: Params,
+    items_per_row: usize,
+    item_count: usize = 0,
+    active_row: ?Container = null,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        item_width: f32,
+        available_width: ?f32 = null,
+        gap: u16 = 0,
+        sizing: clay.Sizing = .grow,
+        padding: clay.Padding = .{},
+        bg_color: ?Color = null,
+        child_alignment: clay.ChildAlignment = .{ .x = .left, .y = .top },
+    };
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        const available_width = params.available_width orelse ctx.clay_ctx.layoutDimensions.w;
+        const gap: f32 = @floatFromInt(params.gap);
+        const usable_width = @max(0, available_width);
+        const raw_count = @floor((usable_width + gap) / (params.item_width + gap));
+        const items_per_row = @max(1, @as(usize, @intFromFloat(raw_count)));
+        const container = Container.start(.{
+            .direction = .column,
+            .sizing = params.sizing,
+            .padding = params.padding,
+            .gap = params.gap,
+            .bg_color = params.bg_color,
+            .child_alignment = params.child_alignment,
+        });
+        return .{
+            .id = if (params.id) |id| clay.ElementId.ID(id) else container.id,
+            .ctx = ctx,
+            .container = container,
+            .params = params,
+            .items_per_row = items_per_row,
+        };
+    }
+
+    pub fn row_item(self: *Self, params: Container.Params) void {
+        if (self.item_count % self.items_per_row == 0) {
+            if (self.active_row) |*active| active.end();
+
+            self.active_row = Container.start(.{
+                .direction = .row,
+                .sizing = .{ .w = .grow, .h = .fit },
+                .gap = params.gap,
+                .child_alignment = params.child_alignment,
+            });
+        }
+        self.item_count += 1;
+    }
+
+    pub fn end(self: *Self) void {
+        if (self.active_row) |*active| {
+            active.end();
+            self.active_row = null;
+        }
+        self.container.end();
+    }
+};
+
 pub const Label = struct {
     params: Params,
 

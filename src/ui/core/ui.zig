@@ -2398,6 +2398,10 @@ pub const UI = struct {
         return self.current_window.ctx.allocWidget(widgets.Container, .start(p));
     }
 
+    pub fn grid(self: *Self, params: widgets.Grid.Params) *widgets.Grid {
+        return self.current_window.ctx.allocWidget(widgets.Grid, .start(self.current_window.ctx, params));
+    }
+
     pub fn label(self: *Self, params: widgets.Label.Params) *widgets.Label {
         return self.current_window.ctx.allocWidget(widgets.Label, .start(params));
     }
