@@ -49,6 +49,7 @@ pub const Container = struct {
         gap: u16 = 0,
         sizing: clay.Sizing = .grow,
         bg_color: ?Color = null,
+        hover_bg_color: ?Color = null,
         corner_radius: f32 = 0,
         border_width: u16 = 0,
         border_color: ?Color = null,
@@ -65,6 +66,8 @@ pub const Container = struct {
 
         const layout_dir: clay.LayoutDirection = if (params.direction == .row) .left_to_right else .top_to_bottom;
 
+        const is_hovered = params.hover_bg_color != null and clay.hovered();
+        const effective_bg = if (is_hovered) params.hover_bg_color else params.bg_color;
         clay.configureOpenElement(.{
             .layout = .{
                 .sizing = params.sizing,
@@ -73,7 +76,7 @@ pub const Container = struct {
                 .child_alignment = params.child_alignment,
                 .direction = layout_dir,
             },
-            .background_color = if (params.bg_color) |color| color.toClay() else clay.Color{ 0, 0, 0, 0 },
+            .background_color = if (effective_bg) |color| color.toClay() else clay.Color{ 0, 0, 0, 0 },
             .corner_radius = .all(params.corner_radius),
             .border = if (params.border_color) |border_color| .{
                 .color = border_color.toClay(),
@@ -91,7 +94,6 @@ pub const Container = struct {
 
 pub const Grid = struct {
     id: clay.ElementId,
-    ctx: *UIContext,
     container: Container,
     params: Params,
     items_per_row: usize,
@@ -99,24 +101,41 @@ pub const Grid = struct {
     active_row: ?Container = null,
 
     pub const Params = struct {
-        id: ?[]const u8 = null,
-        item_width: f32,
-        available_width: ?f32 = null,
+        id: []const u8,
         gap: u16 = 0,
         sizing: clay.Sizing = .grow,
         padding: clay.Padding = .{},
         bg_color: ?Color = null,
         child_alignment: clay.ChildAlignment = .{ .x = .left, .y = .top },
     };
+
+    pub const Item = struct {
+        pub fn end(_: Item) void {
+            clay.closeElement();
+        }
+    };
+
     const Self = @This();
 
-    pub fn start(ctx: *UIContext, params: Params) Self {
-        const available_width = params.available_width orelse ctx.clay_ctx.layoutDimensions.w;
-        const gap: f32 = @floatFromInt(params.gap);
-        const usable_width = @max(0, available_width);
-        const raw_count = @floor((usable_width + gap) / (params.item_width + gap));
-        const items_per_row = @max(1, @as(usize, @intFromFloat(raw_count)));
+    pub fn start(params: Params) Self {
+        const grid_id = clay.ElementId.ID(params.id);
+        const first_item_id = clay.ElementId.IDI(params.id, 0);
+
+        const padding_w: f32 = @floatFromInt(params.padding.left + params.padding.right);
+        const available: f32 = clay.getLayoutDimensions().w - padding_w;
+
+        // Derive column count from the first item's measured width last frame.
+        // Defaults to 1 column on the first frame until a measurement exists.
+        const item_data = clay.getElementData(first_item_id);
+        const items_per_row: usize = if (item_data.found and item_data.bounding_box.width > 0) blk: {
+            const gap: f32 = @floatFromInt(params.gap);
+            break :blk @max(1, @as(usize, @intFromFloat(
+                @floor((available + gap) / (item_data.bounding_box.width + gap)),
+            )));
+        } else 1;
+
         const container = Container.start(.{
+            .id = params.id,
             .direction = .column,
             .sizing = params.sizing,
             .padding = params.padding,
@@ -124,27 +143,39 @@ pub const Grid = struct {
             .bg_color = params.bg_color,
             .child_alignment = params.child_alignment,
         });
+
         return .{
-            .id = if (params.id) |id| clay.ElementId.ID(id) else container.id,
-            .ctx = ctx,
+            .id = grid_id,
             .container = container,
             .params = params,
             .items_per_row = items_per_row,
         };
     }
 
-    pub fn row_item(self: *Self, params: Container.Params) void {
+    pub fn item(self: *Self) Item {
         if (self.item_count % self.items_per_row == 0) {
             if (self.active_row) |*active| active.end();
-
             self.active_row = Container.start(.{
                 .direction = .row,
                 .sizing = .{ .w = .grow, .h = .fit },
-                .gap = params.gap,
-                .child_alignment = params.child_alignment,
+                .gap = self.params.gap,
+                .child_alignment = .{ .x = .left, .y = .top },
             });
         }
+
+        const index = self.item_count;
         self.item_count += 1;
+
+        // Tag the first item with a stable ID so its width can be measured next frame.
+        if (index == 0) {
+            clay.openElementWithId(clay.ElementId.IDI(self.params.id, 0));
+        } else {
+            _ = clay.openElement();
+        }
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fit, .h = .fit } },
+        });
+        return .{};
     }
 
     pub fn end(self: *Self) void {

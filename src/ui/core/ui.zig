@@ -2561,7 +2561,7 @@ pub const UI = struct {
     }
 
     pub fn grid(self: *Self, params: widgets.Grid.Params) *widgets.Grid {
-        return self.current_window.ctx.allocWidget(widgets.Grid, .start(self.current_window.ctx, params));
+        return self.current_window.ctx.allocWidget(widgets.Grid, .start(params));
     }
 
     pub fn label(self: *Self, params: widgets.Label.Params) *widgets.Label {
