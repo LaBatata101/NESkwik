@@ -8,14 +8,14 @@ const ui_core = @import("core/ui.zig");
 const UI = ui_core.UI;
 const Key = ui_core.Key;
 const clay = @import("core/clay.zig");
-const Rom = @import("../rom.zig").Rom;
 const utils = @import("core/utils.zig");
 const theme = @import("common.zig").theme;
 const widgets = @import("core/widgets.zig");
 const Color = @import("core/color.zig").Color;
-const System = @import("../system.zig").System;
-const ControllerButton = @import("../controller.zig").ControllerButton;
 const pipeline = @import("../shaders/pipeline.zig");
+const bindings = @import("bindings.zig");
+const settings = @import("settings.zig");
+const state = @import("state.zig");
 const ness = @import("../root.zig");
 const NES_WIDTH = ness.NES_WIDTH;
 const NES_HEIGHT = ness.NES_HEIGHT;
@@ -25,389 +25,14 @@ const NES_VISIBLE_HEIGHT = ness.NES_VISIBLE_HEIGHT;
 const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
 const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 
-const NES_CONTROLLER_IMG = @embedFile("nes_controller_img");
-
-const ControllerPlayer = enum {
-    one,
-    two,
-
-    fn displayName(self: @This()) []const u8 {
-        return switch (self) {
-            .one => "Player 1",
-            .two => "Player 2",
-        };
-    }
-};
-
-const ControllerAction = enum {
-    up,
-    down,
-    left,
-    right,
-    select,
-    start,
-    b,
-    a,
-
-    fn displayName(self: @This()) []const u8 {
-        return switch (self) {
-            .up => "Up",
-            .down => "Down",
-            .left => "Left",
-            .right => "Right",
-            .select => "Select",
-            .start => "Start",
-            .b => "B",
-            .a => "A",
-        };
-    }
-
-    fn button(self: @This()) ControllerButton {
-        return switch (self) {
-            .up => .{ .UP = true },
-            .down => .{ .DOWN = true },
-            .left => .{ .LEFT = true },
-            .right => .{ .RIGHT = true },
-            .select => .{ .SELECT = true },
-            .start => .{ .START = true },
-            .b => .{ .BUTTON_B = true },
-            .a => .{ .BUTTON_A = true },
-        };
-    }
-};
-
-const ControllerPlayerBindings = struct {
-    up: Key,
-    down: Key,
-    left: Key,
-    right: Key,
-    select: Key,
-    start: Key,
-    b: Key,
-    a: Key,
-
-    fn defaults(player: ControllerPlayer) @This() {
-        return switch (player) {
-            .one => .{
-                .up = .UP,
-                .down = .DOWN,
-                .left = .LEFT,
-                .right = .RIGHT,
-                .select = .SPACE,
-                .start = .RETURN,
-                .b = .X,
-                .a = .Z,
-            },
-            .two => .{
-                .up = .W,
-                .down = .S,
-                .left = .A,
-                .right = .D,
-                .select = .U,
-                .start = .P,
-                .b = .O,
-                .a = .I,
-            },
-        };
-    }
-
-    fn get(self: @This(), action: ControllerAction) Key {
-        return switch (action) {
-            .up => self.up,
-            .down => self.down,
-            .left => self.left,
-            .right => self.right,
-            .select => self.select,
-            .start => self.start,
-            .b => self.b,
-            .a => self.a,
-        };
-    }
-
-    fn set(self: *@This(), action: ControllerAction, key: Key) void {
-        switch (action) {
-            .up => self.up = key,
-            .down => self.down = key,
-            .left => self.left = key,
-            .right => self.right = key,
-            .select => self.select = key,
-            .start => self.start = key,
-            .b => self.b = key,
-            .a => self.a = key,
-        }
-    }
-};
-
-const ControllerKeyBindings = struct {
-    player1: ControllerPlayerBindings = ControllerPlayerBindings.defaults(.one),
-    player2: ControllerPlayerBindings = ControllerPlayerBindings.defaults(.two),
-
-    fn forPlayer(self: *@This(), player: ControllerPlayer) *ControllerPlayerBindings {
-        return switch (player) {
-            .one => &self.player1,
-            .two => &self.player2,
-        };
-    }
-
-    fn forPlayerConst(self: *const @This(), player: ControllerPlayer) *const ControllerPlayerBindings {
-        return switch (player) {
-            .one => &self.player1,
-            .two => &self.player2,
-        };
-    }
-};
-
-const ControllerBindingTarget = struct {
-    player: ControllerPlayer,
-    action: ControllerAction,
-};
-
-pub const GeneralAction = enum {
-    quit,
-    toggle_step_mode,
-    reset,
-    run_tick,
-    run_frame,
-    toggle_fullscreen,
-
-    fn displayName(self: @This()) []const u8 {
-        return switch (self) {
-            .quit => "Quit",
-            .toggle_step_mode => "Toggle Step Mode",
-            .reset => "Reset",
-            .run_tick => "Run Tick",
-            .run_frame => "Run Frame",
-            .toggle_fullscreen => "Toggle Fullscreen",
-        };
-    }
-};
-
-const GeneralKeyBindings = struct {
-    quit: Key = .ESCAPE,
-    toggle_step_mode: Key = .F9,
-    reset: Key = .R,
-    run_tick: Key = .F10,
-    run_frame: Key = .F11,
-    toggle_fullscreen: Key = .F,
-
-    fn get(self: @This(), action: GeneralAction) Key {
-        return switch (action) {
-            .quit => self.quit,
-            .toggle_step_mode => self.toggle_step_mode,
-            .reset => self.reset,
-            .run_tick => self.run_tick,
-            .run_frame => self.run_frame,
-            .toggle_fullscreen => self.toggle_fullscreen,
-        };
-    }
-
-    fn set(self: *@This(), action: GeneralAction, key: Key) void {
-        switch (action) {
-            .quit => self.quit = key,
-            .toggle_step_mode => self.toggle_step_mode = key,
-            .reset => self.reset = key,
-            .run_tick => self.run_tick = key,
-            .run_frame => self.run_frame = key,
-            .toggle_fullscreen => self.toggle_fullscreen = key,
-        }
-    }
-};
-
-pub const UIState = struct {
-    alloc: std.mem.Allocator,
-    selected_rom_filepath: ?[]const u8 = null,
-    /// Whether to load the selected ROM.
-    should_load_rom: bool = false,
-    /// Wheter to skip drawing the home screen.
-    render_home_ui: bool = true,
-    render_debug_ui: bool = false,
-    emulation_running: bool = false,
-
-    rom_bytes: ?[]u8 = null,
-    rom: ?Rom = null,
-    system: ?System = null,
-
-    history: game_history.GameHistory = undefined,
-    current_rom_path: ?[]u8 = null,
-    game_start_time_ms: i64 = 0,
-
-    settings: EmulatorSettings = .{},
-    controller_img: LoadedImage,
-
-    const Self = @This();
-    const LoadedImage = struct {
-        raw: [*c]c.SDL_Surface,
-
-        fn w(self: *const @This()) u32 {
-            return @intCast(self.raw.*.w);
-        }
-        fn h(self: *const @This()) u32 {
-            return @intCast(self.raw.*.h);
-        }
-        fn format(self: *const @This()) c.SDL_PixelFormat {
-            return self.raw.*.format;
-        }
-        fn pixels(self: *const @This()) []const u8 {
-            const len: usize = @as(usize, @intCast(self.raw.*.pitch)) * @as(usize, @intCast(self.raw.*.h));
-            const ptr: [*]const u8 = @ptrCast(self.raw.*.pixels);
-            return ptr[0..len];
-        }
-    };
-
-    const EmulatorSettings = struct {
-        aspect_ratio: utils.AspectRatio = .@"4_3",
-        /// Path to the active shader preset (owned by this struct).
-        shader_preset_path: ?[]u8 = null,
-        /// Set to true to trigger loading the shader preset on the next frame.
-        should_load_shader: bool = false,
-        /// Set to true to trigger clearing the shader preset on the next frame.
-        should_clear_shader: bool = false,
-        /// True while an async shader compile is in progress.
-        shader_loading: bool = false,
-        /// Last shader load error message to display in the settings window (owned).
-        shader_error: ?[]u8 = null,
-        /// Path to the active border shader preset (owned by this struct).
-        border_shader_preset_path: ?[]u8 = null,
-        /// Set to true to trigger loading the border shader preset on the next frame.
-        should_load_border_shader: bool = false,
-        /// Set to true to trigger clearing the border shader preset on the next frame.
-        should_clear_border_shader: bool = false,
-        /// True while an async border shader compile is in progress.
-        border_shader_loading: bool = false,
-        /// Last border shader load error message (owned).
-        border_shader_error: ?[]u8 = null,
-        /// Currently selected category in the settings sidebar.
-        selected_category: SettingsCategory = .general,
-        hide_mouse_on_inactivity: bool = false,
-        emulation_speed: EmulationSpeed = .normal,
-        selected_controller_player: ControllerPlayer = .one,
-        controller_bindings: ControllerKeyBindings = .{},
-        capture_binding: ?ControllerBindingTarget = null,
-        general_bindings: GeneralKeyBindings = .{},
-        capture_general_binding: ?GeneralAction = null,
-    };
-
-    pub fn init(alloc: std.mem.Allocator) Self {
-        var hist = game_history.GameHistory.init(alloc);
-        hist.load();
-
-        const img_bytes = c.SDL_IOFromConstMem(NES_CONTROLLER_IMG, NES_CONTROLLER_IMG.len);
-        const surface = c.SDL_LoadPNG_IO(img_bytes, true);
-
-        return .{ .alloc = alloc, .history = hist, .controller_img = .{ .raw = surface } };
-    }
-
-    pub fn deinit(self: *Self) void {
-        // Save before freeing the system.
-        if (self.emulation_running) self.saveCurrentGame();
-        self.history.deinit();
-
-        if (self.current_rom_path) |p| self.alloc.free(p);
-        if (self.selected_rom_filepath) |filepath| self.alloc.free(filepath);
-        if (self.rom_bytes) |rom_bytes| self.alloc.free(rom_bytes);
-        if (self.settings.shader_preset_path) |path| self.alloc.free(path);
-        if (self.settings.shader_error) |msg| self.alloc.free(msg);
-        if (self.settings.border_shader_preset_path) |path| self.alloc.free(path);
-        if (self.settings.border_shader_error) |msg| self.alloc.free(msg);
-        c.SDL_DestroySurface(self.controller_img.raw);
-
-        if (self.emulation_running) { // TODO: add flag to check if a ROM was loaded
-            self.rom.?.deinit();
-            self.system.?.deinit();
-        }
-    }
-
-    pub fn loadRom(self: *Self, path: []const u8, bytes: []u8) !void {
-        // Save previous game's progress before replacing it.
-        if (self.emulation_running) self.saveCurrentGame();
-
-        if (self.rom) |*rom| rom.deinit();
-        if (self.system) |*system| system.deinit();
-
-        self.rom = try Rom.init(self.alloc, path, bytes);
-        self.system = try System.init(self.alloc, &self.rom.?, .{});
-        self.applyControllerBindings();
-        self.system.?.reset();
-        self.emulation_running = true;
-        self.render_home_ui = false;
-
-        if (self.current_rom_path) |p| self.alloc.free(p);
-        self.current_rom_path = self.alloc.dupe(u8, path) catch null;
-        self.game_start_time_ms = std.time.milliTimestamp();
-    }
-
-    fn saveCurrentGame(self: *Self) void {
-        const path = self.current_rom_path orelse return;
-        const name = std.fs.path.stem(path);
-
-        const elapsed_ms = std.time.milliTimestamp() - self.game_start_time_ms;
-        const elapsed_secs: u64 = if (elapsed_ms > 0) @intCast(@divFloor(elapsed_ms, 1000)) else 0;
-
-        var existing_secs: u64 = 0;
-        for (self.history.entries.items) |entry| {
-            if (std.mem.eql(u8, entry.rom_path, path)) {
-                existing_secs = entry.play_time_secs;
-                break;
-            }
-        }
-
-        const pixels = self.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES];
-        self.history.save(name, path, existing_secs + elapsed_secs, pixels);
-
-        // Reset so back-to-back saves (loadRom then deinit) don't double-count.
-        self.game_start_time_ms = std.time.milliTimestamp();
-    }
-
-    pub fn setSelectedRom(self: *Self, filepath: []const u8) void {
-        if (self.selected_rom_filepath) |path| self.alloc.free(path);
-        self.selected_rom_filepath = self.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
-        self.should_load_rom = true;
-    }
-
-    pub fn getSelectedRom(self: *Self) []const u8 {
-        self.should_load_rom = false;
-        return self.selected_rom_filepath.?;
-    }
-
-    fn applyControllerBindings(self: *Self) void {
-        if (self.system) |*system| {
-            applyBindingsToKeymap(&system.keymap1, self.settings.controller_bindings.player1);
-            applyBindingsToKeymap(&system.keymap2, self.settings.controller_bindings.player2);
-        }
-    }
-
-    pub fn generalBinding(self: *const Self, action: GeneralAction) Key {
-        return self.settings.general_bindings.get(action);
-    }
-};
-
-fn applyBindingsToKeymap(
-    keymap: *std.AutoHashMap(Key, ControllerButton),
-    bindings: ControllerPlayerBindings,
-) void {
-    keymap.clearRetainingCapacity();
-    putControllerBinding(keymap, bindings.up, .up);
-    putControllerBinding(keymap, bindings.down, .down);
-    putControllerBinding(keymap, bindings.left, .left);
-    putControllerBinding(keymap, bindings.right, .right);
-    putControllerBinding(keymap, bindings.select, .select);
-    putControllerBinding(keymap, bindings.start, .start);
-    putControllerBinding(keymap, bindings.b, .b);
-    putControllerBinding(keymap, bindings.a, .a);
-}
-
-fn putControllerBinding(
-    keymap: *std.AutoHashMap(Key, ControllerButton),
-    key: Key,
-    action: ControllerAction,
-) void {
-    const entry = keymap.getOrPut(key) catch @panic("Failed to update controller binding");
-    if (entry.found_existing) {
-        entry.value_ptr.insert(action.button());
-    } else {
-        entry.value_ptr.* = action.button();
-    }
-}
+const ControllerPlayer = bindings.ControllerPlayer;
+const ControllerAction = bindings.ControllerAction;
+const ControllerBindingTarget = bindings.ControllerBindingTarget;
+pub const GeneralAction = bindings.GeneralAction;
+const ParamTarget = settings.ParamTarget;
+const SettingsCategory = state.SettingsCategory;
+pub const UIState = state.UIState;
+pub const EmulationSpeed = settings.EmulationSpeed;
 
 const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
     .{ .name = "NES ROMs", .pattern = "nes" },
@@ -433,6 +58,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 // Clear the bad path so it doesn't show as "active".
                 ui_state.alloc.free(path);
                 ui_state.settings.shader_preset_path = null;
+                settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
             };
             if (ui_state.settings.shader_error == null) {
                 ui_state.settings.shader_loading = true;
@@ -451,7 +77,11 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
     // Poll an in-progress async shader compile.
     if (ui_state.settings.shader_loading) {
         switch (ui.pollShaderLoad()) {
-            .idle, .done => ui_state.settings.shader_loading = false,
+            .idle => ui_state.settings.shader_loading = false,
+            .done => {
+                ui_state.settings.shader_loading = false;
+                ui_state.applyShaderParamSettings(ui, .main);
+            },
             .compiling => {},
             .failed => |msg| {
                 ui_state.settings.shader_loading = false;
@@ -460,6 +90,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 if (ui_state.settings.shader_preset_path) |path| {
                     ui_state.alloc.free(path);
                     ui_state.settings.shader_preset_path = null;
+                    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
                 }
             },
         }
@@ -482,6 +113,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 ) catch null;
                 ui_state.alloc.free(path);
                 ui_state.settings.border_shader_preset_path = null;
+                settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
             };
             if (ui_state.settings.border_shader_error == null) {
                 ui_state.settings.border_shader_loading = true;
@@ -500,7 +132,11 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
     // Poll an in-progress async border shader compile.
     if (ui_state.settings.border_shader_loading) {
         switch (ui.pollBorderShaderLoad()) {
-            .idle, .done => ui_state.settings.border_shader_loading = false,
+            .idle => ui_state.settings.border_shader_loading = false,
+            .done => {
+                ui_state.settings.border_shader_loading = false;
+                ui_state.applyShaderParamSettings(ui, .border);
+            },
             .compiling => {},
             .failed => |msg| {
                 ui_state.settings.border_shader_loading = false;
@@ -509,6 +145,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 if (ui_state.settings.border_shader_preset_path) |path| {
                     ui_state.alloc.free(path);
                     ui_state.settings.border_shader_preset_path = null;
+                    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
                 }
             },
         }
@@ -579,7 +216,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     ui.createWindow(
                         "Settings",
                         680,
-                        580,
+                        640,
                         .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(ui_state) },
                     );
                 }
@@ -824,50 +461,6 @@ fn formatPlayTime(secs: u64, alloc: std.mem.Allocator) []const u8 {
     return std.fmt.allocPrint(alloc, "{d}h {d}m", .{ hours, mins_rem }) catch "?";
 }
 
-pub const EmulationSpeed = enum {
-    half,
-    normal,
-    double,
-    triple,
-    quadruple,
-
-    pub fn label(self: @This()) []const u8 {
-        return switch (self) {
-            .half => "0.5x",
-            .normal => "1x",
-            .double => "2x",
-            .triple => "3x",
-            .quadruple => "4x",
-        };
-    }
-
-    pub fn multiplier(self: @This()) f32 {
-        return switch (self) {
-            .half => 0.5,
-            .normal => 1.0,
-            .double => 2.0,
-            .triple => 3.0,
-            .quadruple => 4.0,
-        };
-    }
-};
-
-const SettingsCategory = enum {
-    general,
-    video,
-    shader,
-    controls,
-
-    fn displayName(self: @This()) []const u8 {
-        return switch (self) {
-            .general => "General",
-            .video => "Video",
-            .shader => "Shader",
-            .controls => "Controls",
-        };
-    }
-};
-
 const nav_active_bg = Color.rgb(28, 110, 90);
 const nav_active_text = Color.rgb(210, 240, 232);
 const nav_hover_bg = Color.rgb(35, 42, 52);
@@ -882,17 +475,64 @@ fn drawSettingsWindowUI(ui: *UI, user_data: ?*anyopaque) void {
     });
     {
         drawSettingsSidebar(ui, ui_state);
+        _ = ui.separator(.{ .direction = .vertical, .color = theme.border_dim });
 
-        // Thin vertical divider
-        const divider = ui.column(.{
-            .sizing = .{ .w = .fixed(1), .h = .grow },
-            .bg_color = theme.border_dim,
+        const body = ui.column(.{
+            .sizing = .{ .w = .grow, .h = .grow },
+            .child_alignment = .{ .x = .left, .y = .top },
         });
-        divider.end();
-
-        drawSettingsContent(ui, ui_state);
+        {
+            drawSettingsContent(ui, ui_state);
+            drawSettingsFooter(ui, ui_state);
+        }
+        body.end();
     }
     root.end();
+}
+
+fn drawSettingsFooter(ui: *UI, ui_state: *UIState) void {
+    const has_changes = ui_state.hasSettingsChanges();
+
+    const footer = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .bg_color = theme.bg_panel,
+        .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
+        .gap = 8,
+        .child_alignment = .{ .x = .right, .y = .center },
+    });
+    {
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        if (ui.button(.{
+            .text = "Cancel",
+            .font_size = 15,
+            .text_color = theme.text_primary,
+            .bg_color = theme.bg_hover,
+            .hover_color = theme.border,
+            .padding = .{ .left = 14, .right = 14, .top = 7, .bottom = 7 },
+            .corner_radius = 3,
+            .elevation = 0,
+        }).clicked(ui.current_window.ctx)) {
+            ui_state.restoreSavedSettings();
+            ui.closeCurrentWindow();
+        }
+
+        if (ui.button(.{
+            .text = "Save",
+            .font_size = 15,
+            .enabled = has_changes,
+            .text_color = if (has_changes) Color.white else theme.text_secondary,
+            .bg_color = if (has_changes) theme.accent_blue else theme.bg_hover,
+            .hover_color = if (has_changes) theme.accent_blue.lighten(0.12) else theme.bg_hover,
+            .padding = .{ .left = 16, .right = 16, .top = 7, .bottom = 7 },
+            .corner_radius = 3,
+            .elevation = 0,
+        }).clicked(ui.current_window.ctx)) {
+            ui_state.saveSettings();
+            ui.closeCurrentWindow();
+        }
+    }
+    footer.end();
 }
 
 fn drawSettingsSidebar(ui: *UI, ui_state: *UIState) void {
@@ -998,9 +638,12 @@ fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
                 .color = theme.text_primary,
             });
             _ = ui.spacer(.{ .sizing = .grow });
-            ui_state.settings.hide_mouse_on_inactivity = ui
+            const hide_mouse_on_inactivity = ui
                 .toggle(.{ .value = ui_state.settings.hide_mouse_on_inactivity, .size = 22 })
                 .value();
+            if (ui_state.settings.hide_mouse_on_inactivity != hide_mouse_on_inactivity) {
+                ui_state.settings.hide_mouse_on_inactivity = hide_mouse_on_inactivity;
+            }
         }
         row.end();
 
@@ -1073,7 +716,10 @@ fn updateControllerBindingCapture(ui: *UI, ui_state: *UIState) void {
     const key = ui.getPressedKey() orelse return;
     if (key == .UNKNOWN) return;
 
-    ui_state.settings.controller_bindings.forPlayer(target.player).set(target.action, key);
+    const player_bindings = ui_state.settings.controller_bindings.forPlayer(target.player);
+    if (player_bindings.get(target.action) != key) {
+        player_bindings.set(target.action, key);
+    }
     ui_state.settings.capture_binding = null;
     ui_state.applyControllerBindings();
 }
@@ -1083,7 +729,9 @@ fn updateGeneralBindingCapture(ui: *UI, ui_state: *UIState) void {
     const key = ui.getPressedKey() orelse return;
     if (key == .UNKNOWN) return;
 
-    ui_state.settings.general_bindings.set(action, key);
+    if (ui_state.settings.general_bindings.get(action) != key) {
+        ui_state.settings.general_bindings.set(action, key);
+    }
     ui_state.settings.capture_general_binding = null;
 }
 
@@ -1254,7 +902,10 @@ fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
             },
         });
 
-        ui_state.settings.emulation_speed = speed_opts.selected();
+        const selected_speed = speed_opts.selected();
+        if (ui_state.settings.emulation_speed != selected_speed) {
+            ui_state.settings.emulation_speed = selected_speed;
+        }
     }
     row.end();
 }
@@ -1296,7 +947,10 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
             },
         });
 
-        ui_state.settings.aspect_ratio = aspect_ratio_opts.selected();
+        const selected_aspect_ratio = aspect_ratio_opts.selected();
+        if (ui_state.settings.aspect_ratio != selected_aspect_ratio) {
+            ui_state.settings.aspect_ratio = selected_aspect_ratio;
+        }
     }
     row.end();
 }
@@ -1332,7 +986,7 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
 
         const param_infos = ui.getShaderParamInfos();
         if (!ui_state.settings.shader_loading and param_infos.len > 0) {
-            drawShaderParamsSection(ui, "Parameters", param_infos, .main);
+            drawShaderParamsSection(ui, ui_state, "Parameters", param_infos, .main);
         }
         section.end();
     }
@@ -1357,20 +1011,16 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
 
         const border_param_infos = ui.getBorderShaderParamInfos();
         if (!ui_state.settings.border_shader_loading and border_param_infos.len > 0) {
-            drawShaderParamsSection(ui, "Border Parameters", border_param_infos, .border);
+            drawShaderParamsSection(ui, ui_state, "Border Parameters", border_param_infos, .border);
         }
 
         section.end();
     }
 }
 
-const ParamTarget = enum {
-    main,
-    border,
-};
-
 fn drawShaderParamsSection(
     ui: *UI,
+    ui_state: *UIState,
     title: []const u8,
     param_infos: []const pipeline.ParamInfo,
     target: ParamTarget,
@@ -1391,7 +1041,7 @@ fn drawShaderParamsSection(
         });
         {
             for (param_infos) |info| {
-                drawParamRow(ui, info, target);
+                drawParamRow(ui, ui_state, info, target);
             }
         }
         scroll.end();
@@ -1507,6 +1157,7 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
                 ui_state.alloc.free(path);
                 ui_state.settings.shader_preset_path = null;
             }
+            settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
             ui_state.settings.should_clear_shader = true;
         }
     }
@@ -1547,7 +1198,7 @@ fn setParamValue(ui: *UI, target: ParamTarget, name: []const u8, value: f32) voi
     }
 }
 
-fn drawParamRow(ui: *UI, info: pipeline.ParamInfo, target: ParamTarget) void {
+fn drawParamRow(ui: *UI, ui_state: *UIState, info: pipeline.ParamInfo, target: ParamTarget) void {
     const alloc = ui.current_window.ctx.frameAlloc();
 
     // Section title: min == max == 0 (and step == 0 or null).
@@ -1602,7 +1253,10 @@ fn drawParamRow(ui: *UI, info: pipeline.ParamInfo, target: ParamTarget) void {
                 .size = 18,
             });
             const new_val: f32 = if (tog.value()) 1.0 else 0.0;
-            if (new_val != current) setParamValue(ui, target, info.name, new_val);
+            if (new_val != current) {
+                setParamValue(ui, target, info.name, new_val);
+                ui_state.setShaderParamSetting(target, info.name, new_val);
+            }
         } else {
             // Format value label: derive precision from step size.
             const decimals: usize = if (info.step) |s| (if (s >= 1.0) 0 else if (s >= 0.1) 1 else 2) else 2;
@@ -1634,7 +1288,10 @@ fn drawParamRow(ui: *UI, info: pipeline.ParamInfo, target: ParamTarget) void {
             .corner_radius = 2,
         });
         const new_val = drag.value();
-        if (new_val != current) setParamValue(ui, target, info.name, new_val);
+        if (new_val != current) {
+            setParamValue(ui, target, info.name, new_val);
+            ui_state.setShaderParamSetting(target, info.name, new_val);
+        }
     }
 }
 
@@ -1661,6 +1318,7 @@ fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u
         ui_state.alloc.free(old_path);
     }
     ui_state.settings.shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
     ui_state.settings.should_load_shader = true;
 }
 
@@ -1719,6 +1377,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
                 ui_state.alloc.free(path);
                 ui_state.settings.border_shader_preset_path = null;
             }
+            settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
             ui_state.settings.should_clear_border_shader = true;
         }
     }
@@ -1775,6 +1434,7 @@ fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]
         ui_state.alloc.free(old_path);
     }
     ui_state.settings.border_shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
     ui_state.settings.should_load_border_shader = true;
 }
 

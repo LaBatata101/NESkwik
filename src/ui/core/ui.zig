@@ -1476,6 +1476,7 @@ pub const UI = struct {
     last_title_update: u64 = 0,
 
     quit: bool = false,
+    pending_close_window: ?*Window = null,
     fps_manager: FPSManager,
 
     shader_pipeline: ?*pipeline.ShaderPipeline = null,
@@ -1776,6 +1777,16 @@ pub const UI = struct {
         clay.setCurrentContext(previous_clay_ctx);
     }
 
+    pub fn closeCurrentWindow(self: *Self) void {
+        var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+        event.type = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        event.window.type = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        event.window.timestamp = c.SDL_GetTicksNS();
+        event.window.windowID = self.current_window.id();
+
+        sdlError(c.SDL_PushEvent(&event));
+    }
+
     pub fn beginFrame(self: *Self) void {
         self.main_window.ctx.reset();
         for (self.secondary_windows.items) |window| {
@@ -1797,6 +1808,7 @@ pub const UI = struct {
         while (c.SDL_PollEvent(&event)) {
             self.handleEvent(&event);
         }
+        self.processPendingWindowClose();
 
         self.main_window.update();
 
@@ -1893,10 +1905,8 @@ pub const UI = struct {
                 if (self.current_window.id() == self.main_window.id()) {
                     self.quit = true;
                 } else {
-                    const window = self.secondary_windows.pop() orelse unreachable;
-                    window.deinit(self.allocator, self.gpu_device);
-
-                    self.current_window = self.main_window;
+                    const secondary_window = self.secondary_windows.pop() orelse unreachable;
+                    self.pending_close_window = secondary_window.inner;
                 }
             },
             c.SDL_EVENT_WINDOW_RESIZED => {
@@ -1938,6 +1948,24 @@ pub const UI = struct {
             sdlError(c.SDL_StartTextInput(self.current_window.ptr));
         } else {
             sdlError(c.SDL_StopTextInput(self.current_window.ptr));
+        }
+    }
+
+    fn processPendingWindowClose(self: *Self) void {
+        const window = self.pending_close_window orelse return;
+
+        var mouse_x: f32 = 0;
+        var mouse_y: f32 = 0;
+        // Make sure we have no mouse events to be prossed, otherwise the program crashes when closing the window.
+        if (c.SDL_GetMouseState(&mouse_x, &mouse_y) != 0) {
+            return;
+        }
+
+        self.pending_close_window = null;
+        window.deinit(self.allocator, self.gpu_device);
+
+        if (window.id() != self.main_window.id()) {
+            self.current_window = self.main_window;
         }
     }
 
