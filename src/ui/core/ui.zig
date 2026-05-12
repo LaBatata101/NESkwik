@@ -2564,6 +2564,10 @@ pub const UI = struct {
         return self.current_window.ctx.allocWidget(widgets.Grid, .start(params));
     }
 
+    pub fn float(self: *Self, params: widgets.Float.Params) *widgets.Float {
+        return self.current_window.ctx.allocWidget(widgets.Float, .start(params));
+    }
+
     pub fn label(self: *Self, params: widgets.Label.Params) *widgets.Label {
         return self.current_window.ctx.allocWidget(widgets.Label, .start(params));
     }

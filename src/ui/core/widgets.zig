@@ -187,6 +187,48 @@ pub const Grid = struct {
     }
 };
 
+pub const Float = struct {
+    id: clay.ElementId,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        offset: clay.Vector2 = .{ .x = 0, .y = 0 },
+        expand: clay.Dimensions = .{ .w = 0, .h = 0 },
+        parentId: u32 = 0,
+        z_index: i16 = 0,
+        attach_points: clay.FloatingAttachPoints = .{ .element = .left_top, .parent = .left_top },
+        pointer_capture_mode: clay.PointerCaptureMode = .capture,
+        attach_to: clay.FloatingAttachToElement = .to_none,
+        clip_to: clay.FloatingClipToElement = .to_none,
+    };
+    const Self = @This();
+
+    pub fn start(params: Params) Self {
+        const element_id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
+
+        clay.configureOpenElement(.{ .floating = .{
+            .offset = params.offset,
+            .expand = params.expand,
+            .parentId = params.parentId,
+            .z_index = params.z_index,
+            .attach_points = params.attach_points,
+            .pointer_capture_mode = params.pointer_capture_mode,
+            .attach_to = params.attach_to,
+            .clip_to = params.clip_to,
+        } });
+
+        return .{ .id = element_id };
+    }
+
+    pub fn end(_: *const Self) void {
+        clay.closeElement();
+    }
+};
+
 pub const Label = struct {
     params: Params,
 
