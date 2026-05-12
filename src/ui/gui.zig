@@ -338,6 +338,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 .w = NES_WIDTH,
                 .h = NES_VISIBLE_HEIGHT,
                 .aspect_ratio = ui_state.settings.aspect_ratio,
+                .bg_color = Color.black,
             });
         }
     }

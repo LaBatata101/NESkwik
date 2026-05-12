@@ -2245,11 +2245,10 @@ pub const UI = struct {
                 _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, tb);
 
-                // Always push a black background rect to cover the canvas area.
                 const bg_color_sdl: c.SDL_FColor = if (canvas_.params.bg_color) |bg|
                     bg.toSDL()
                 else
-                    .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+                    .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 }; // TODO: make it transparent or not?
                 window.renderer.setTexture(null);
                 window.renderer.pushRoundedTexturedRect(.{
                     .x = cmd.bounding_box.x,
