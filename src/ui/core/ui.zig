@@ -611,6 +611,30 @@ pub const Key = enum(u16) {
     pub fn count() u16 {
         return 512;
     }
+
+    pub fn keyName(self: @This()) []const u8 {
+        return switch (self) {
+            .RETURN => "Enter",
+            .ESCAPE => "Esc",
+            .BACKSPACE => "Back",
+            .SPACE => "Space",
+            .LEFT => "Left",
+            .RIGHT => "Right",
+            .UP => "Up",
+            .DOWN => "Down",
+            .N_0 => "0",
+            .N_1 => "1",
+            .N_2 => "2",
+            .N_3 => "3",
+            .N_4 => "4",
+            .N_5 => "5",
+            .N_6 => "6",
+            .N_7 => "7",
+            .N_8 => "8",
+            .N_9 => "9",
+            else => @tagName(self),
+        };
+    }
 };
 
 const KeyData = struct {

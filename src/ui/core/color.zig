@@ -58,13 +58,13 @@ pub const Color = struct {
         };
     }
 
-    /// Create a semi-transparent version of this color
-    pub fn withAlpha(self: Color, alpha: u8) Color {
+    /// Create a semi-transparent version of this color (alpha: 0.0 = transparent, 1.0 = opaque)
+    pub fn withAlpha(self: Color, alpha: f32) Color {
         return .{
             .r = self.r,
             .g = self.g,
             .b = self.b,
-            .a = alpha,
+            .a = @intFromFloat(@round(alpha * 255.0)),
         };
     }
 };

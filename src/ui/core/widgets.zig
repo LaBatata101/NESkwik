@@ -619,7 +619,7 @@ pub const ScrollContainer = struct {
                         .background_color = if (is_dragging or is_hovered)
                             params.scrollbar_color.toClay()
                         else
-                            params.scrollbar_color.withAlpha(140).toClay(),
+                            params.scrollbar_color.withAlpha(0.55).toClay(),
                         .corner_radius = .all(3),
                     });
                     clay.closeElement();

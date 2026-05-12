@@ -4,7 +4,9 @@ const game_history = @import("../game_history.zig");
 const debug = @import("debug.zig");
 const c = @import("../root.zig").c;
 const sdlError = @import("../utils/sdl.zig").sdlError;
-const UI = @import("core/ui.zig").UI;
+const ui_core = @import("core/ui.zig");
+const UI = ui_core.UI;
+const Key = ui_core.Key;
 const clay = @import("core/clay.zig");
 const Rom = @import("../rom.zig").Rom;
 const utils = @import("core/utils.zig");
@@ -12,6 +14,7 @@ const theme = @import("common.zig").theme;
 const widgets = @import("core/widgets.zig");
 const Color = @import("core/color.zig").Color;
 const System = @import("../system.zig").System;
+const ControllerButton = @import("../controller.zig").ControllerButton;
 const pipeline = @import("../shaders/pipeline.zig");
 const ness = @import("../root.zig");
 const NES_WIDTH = ness.NES_WIDTH;
@@ -21,6 +24,194 @@ const OVERSCAN_BOTTOM = ness.OVERSCAN_BOTTOM;
 const NES_VISIBLE_HEIGHT = ness.NES_VISIBLE_HEIGHT;
 const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
 const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
+
+const NES_CONTROLLER_IMG = @embedFile("nes_controller_img");
+
+const ControllerPlayer = enum {
+    one,
+    two,
+
+    fn displayName(self: @This()) []const u8 {
+        return switch (self) {
+            .one => "Player 1",
+            .two => "Player 2",
+        };
+    }
+};
+
+const ControllerAction = enum {
+    up,
+    down,
+    left,
+    right,
+    select,
+    start,
+    b,
+    a,
+
+    fn displayName(self: @This()) []const u8 {
+        return switch (self) {
+            .up => "Up",
+            .down => "Down",
+            .left => "Left",
+            .right => "Right",
+            .select => "Select",
+            .start => "Start",
+            .b => "B",
+            .a => "A",
+        };
+    }
+
+    fn button(self: @This()) ControllerButton {
+        return switch (self) {
+            .up => .{ .UP = true },
+            .down => .{ .DOWN = true },
+            .left => .{ .LEFT = true },
+            .right => .{ .RIGHT = true },
+            .select => .{ .SELECT = true },
+            .start => .{ .START = true },
+            .b => .{ .BUTTON_B = true },
+            .a => .{ .BUTTON_A = true },
+        };
+    }
+};
+
+const ControllerPlayerBindings = struct {
+    up: Key,
+    down: Key,
+    left: Key,
+    right: Key,
+    select: Key,
+    start: Key,
+    b: Key,
+    a: Key,
+
+    fn defaults(player: ControllerPlayer) @This() {
+        return switch (player) {
+            .one => .{
+                .up = .UP,
+                .down = .DOWN,
+                .left = .LEFT,
+                .right = .RIGHT,
+                .select = .SPACE,
+                .start = .RETURN,
+                .b = .X,
+                .a = .Z,
+            },
+            .two => .{
+                .up = .W,
+                .down = .S,
+                .left = .A,
+                .right = .D,
+                .select = .U,
+                .start = .P,
+                .b = .O,
+                .a = .I,
+            },
+        };
+    }
+
+    fn get(self: @This(), action: ControllerAction) Key {
+        return switch (action) {
+            .up => self.up,
+            .down => self.down,
+            .left => self.left,
+            .right => self.right,
+            .select => self.select,
+            .start => self.start,
+            .b => self.b,
+            .a => self.a,
+        };
+    }
+
+    fn set(self: *@This(), action: ControllerAction, key: Key) void {
+        switch (action) {
+            .up => self.up = key,
+            .down => self.down = key,
+            .left => self.left = key,
+            .right => self.right = key,
+            .select => self.select = key,
+            .start => self.start = key,
+            .b => self.b = key,
+            .a => self.a = key,
+        }
+    }
+};
+
+const ControllerKeyBindings = struct {
+    player1: ControllerPlayerBindings = ControllerPlayerBindings.defaults(.one),
+    player2: ControllerPlayerBindings = ControllerPlayerBindings.defaults(.two),
+
+    fn forPlayer(self: *@This(), player: ControllerPlayer) *ControllerPlayerBindings {
+        return switch (player) {
+            .one => &self.player1,
+            .two => &self.player2,
+        };
+    }
+
+    fn forPlayerConst(self: *const @This(), player: ControllerPlayer) *const ControllerPlayerBindings {
+        return switch (player) {
+            .one => &self.player1,
+            .two => &self.player2,
+        };
+    }
+};
+
+const ControllerBindingTarget = struct {
+    player: ControllerPlayer,
+    action: ControllerAction,
+};
+
+pub const GeneralAction = enum {
+    quit,
+    toggle_step_mode,
+    reset,
+    run_tick,
+    run_frame,
+    toggle_fullscreen,
+
+    fn displayName(self: @This()) []const u8 {
+        return switch (self) {
+            .quit => "Quit",
+            .toggle_step_mode => "Toggle Step Mode",
+            .reset => "Reset",
+            .run_tick => "Run Tick",
+            .run_frame => "Run Frame",
+            .toggle_fullscreen => "Toggle Fullscreen",
+        };
+    }
+};
+
+const GeneralKeyBindings = struct {
+    quit: Key = .ESCAPE,
+    toggle_step_mode: Key = .F9,
+    reset: Key = .R,
+    run_tick: Key = .F10,
+    run_frame: Key = .F11,
+    toggle_fullscreen: Key = .F,
+
+    fn get(self: @This(), action: GeneralAction) Key {
+        return switch (action) {
+            .quit => self.quit,
+            .toggle_step_mode => self.toggle_step_mode,
+            .reset => self.reset,
+            .run_tick => self.run_tick,
+            .run_frame => self.run_frame,
+            .toggle_fullscreen => self.toggle_fullscreen,
+        };
+    }
+
+    fn set(self: *@This(), action: GeneralAction, key: Key) void {
+        switch (action) {
+            .quit => self.quit = key,
+            .toggle_step_mode => self.toggle_step_mode = key,
+            .reset => self.reset = key,
+            .run_tick => self.run_tick = key,
+            .run_frame => self.run_frame = key,
+            .toggle_fullscreen => self.toggle_fullscreen = key,
+        }
+    }
+};
 
 pub const UIState = struct {
     alloc: std.mem.Allocator,
@@ -41,8 +232,28 @@ pub const UIState = struct {
     game_start_time_ms: i64 = 0,
 
     settings: EmulatorSettings = .{},
+    controller_img: LoadedImage,
 
     const Self = @This();
+    const LoadedImage = struct {
+        raw: [*c]c.SDL_Surface,
+
+        fn w(self: *const @This()) u32 {
+            return @intCast(self.raw.*.w);
+        }
+        fn h(self: *const @This()) u32 {
+            return @intCast(self.raw.*.h);
+        }
+        fn format(self: *const @This()) c.SDL_PixelFormat {
+            return self.raw.*.format;
+        }
+        fn pixels(self: *const @This()) []const u8 {
+            const len: usize = @as(usize, @intCast(self.raw.*.pitch)) * @as(usize, @intCast(self.raw.*.h));
+            const ptr: [*]const u8 = @ptrCast(self.raw.*.pixels);
+            return ptr[0..len];
+        }
+    };
+
     const EmulatorSettings = struct {
         aspect_ratio: utils.AspectRatio = .@"4_3",
         /// Path to the active shader preset (owned by this struct).
@@ -69,12 +280,21 @@ pub const UIState = struct {
         selected_category: SettingsCategory = .general,
         hide_mouse_on_inactivity: bool = false,
         emulation_speed: EmulationSpeed = .normal,
+        selected_controller_player: ControllerPlayer = .one,
+        controller_bindings: ControllerKeyBindings = .{},
+        capture_binding: ?ControllerBindingTarget = null,
+        general_bindings: GeneralKeyBindings = .{},
+        capture_general_binding: ?GeneralAction = null,
     };
 
     pub fn init(alloc: std.mem.Allocator) Self {
         var hist = game_history.GameHistory.init(alloc);
         hist.load();
-        return .{ .alloc = alloc, .history = hist };
+
+        const img_bytes = c.SDL_IOFromConstMem(NES_CONTROLLER_IMG, NES_CONTROLLER_IMG.len);
+        const surface = c.SDL_LoadPNG_IO(img_bytes, true);
+
+        return .{ .alloc = alloc, .history = hist, .controller_img = .{ .raw = surface } };
     }
 
     pub fn deinit(self: *Self) void {
@@ -89,6 +309,7 @@ pub const UIState = struct {
         if (self.settings.shader_error) |msg| self.alloc.free(msg);
         if (self.settings.border_shader_preset_path) |path| self.alloc.free(path);
         if (self.settings.border_shader_error) |msg| self.alloc.free(msg);
+        c.SDL_DestroySurface(self.controller_img.raw);
 
         if (self.emulation_running) { // TODO: add flag to check if a ROM was loaded
             self.rom.?.deinit();
@@ -105,6 +326,7 @@ pub const UIState = struct {
 
         self.rom = try Rom.init(self.alloc, path, bytes);
         self.system = try System.init(self.alloc, &self.rom.?, .{});
+        self.applyControllerBindings();
         self.system.?.reset();
         self.emulation_running = true;
         self.render_home_ui = false;
@@ -146,7 +368,46 @@ pub const UIState = struct {
         self.should_load_rom = false;
         return self.selected_rom_filepath.?;
     }
+
+    fn applyControllerBindings(self: *Self) void {
+        if (self.system) |*system| {
+            applyBindingsToKeymap(&system.keymap1, self.settings.controller_bindings.player1);
+            applyBindingsToKeymap(&system.keymap2, self.settings.controller_bindings.player2);
+        }
+    }
+
+    pub fn generalBinding(self: *const Self, action: GeneralAction) Key {
+        return self.settings.general_bindings.get(action);
+    }
 };
+
+fn applyBindingsToKeymap(
+    keymap: *std.AutoHashMap(Key, ControllerButton),
+    bindings: ControllerPlayerBindings,
+) void {
+    keymap.clearRetainingCapacity();
+    putControllerBinding(keymap, bindings.up, .up);
+    putControllerBinding(keymap, bindings.down, .down);
+    putControllerBinding(keymap, bindings.left, .left);
+    putControllerBinding(keymap, bindings.right, .right);
+    putControllerBinding(keymap, bindings.select, .select);
+    putControllerBinding(keymap, bindings.start, .start);
+    putControllerBinding(keymap, bindings.b, .b);
+    putControllerBinding(keymap, bindings.a, .a);
+}
+
+fn putControllerBinding(
+    keymap: *std.AutoHashMap(Key, ControllerButton),
+    key: Key,
+    action: ControllerAction,
+) void {
+    const entry = keymap.getOrPut(key) catch @panic("Failed to update controller binding");
+    if (entry.found_existing) {
+        entry.value_ptr.insert(action.button());
+    } else {
+        entry.value_ptr.* = action.button();
+    }
+}
 
 const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
     .{ .name = "NES ROMs", .pattern = "nes" },
@@ -317,8 +578,8 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 }).clicked(ui.main_window.ctx)) {
                     ui.createWindow(
                         "Settings",
+                        680,
                         580,
-                        480,
                         .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(ui_state) },
                     );
                 }
@@ -595,12 +856,14 @@ const SettingsCategory = enum {
     general,
     video,
     shader,
+    controls,
 
     fn displayName(self: @This()) []const u8 {
         return switch (self) {
             .general => "General",
             .video => "Video",
             .shader => "Shader",
+            .controls => "Controls",
         };
     }
 };
@@ -641,9 +904,8 @@ fn drawSettingsSidebar(ui: *UI, ui_state: *UIState) void {
         .child_alignment = .{ .x = .left, .y = .top },
     });
     {
-        const categories = [_]SettingsCategory{ .general, .video, .shader };
-        for (categories) |category| {
-            drawSidebarItem(ui, ui_state, category);
+        inline for (@typeInfo(SettingsCategory).@"enum".fields) |category| {
+            drawSidebarItem(ui, ui_state, @field(SettingsCategory, category.name));
         }
     }
     sidebar.end();
@@ -653,7 +915,7 @@ fn drawSidebarItem(ui: *UI, ui_state: *UIState, category: SettingsCategory) void
     const is_active = ui_state.settings.selected_category == category;
     if (ui.button(.{
         .text = category.displayName(),
-        .font_size = 16,
+        .font_size = 19,
         .text_color = if (is_active) nav_active_text else theme.text_secondary,
         .bg_color = if (is_active) nav_active_bg else theme.bg_base,
         .hover_color = if (is_active) nav_active_bg else nav_hover_bg,
@@ -683,6 +945,7 @@ fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
                 .general => drawSettingsGeneralContent(ui, ui_state),
                 .video => drawSettingsVideoContent(ui, ui_state),
                 .shader => drawSettingsShaderContent(ui, ui_state),
+                .controls => drawSettingsControlsContent(ui, ui_state),
             }
         }
 
@@ -694,16 +957,16 @@ fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
 fn drawContentSectionHeader(ui: *UI, title: []const u8) void {
     _ = ui.label(.{
         .text = title,
-        .font_size = 13,
+        .font_size = 14,
         .color = theme.accent_green,
     });
 }
 
-fn drawContentSection(ui: *UI) *widgets.Container {
+fn drawContentSection(ui: *UI, params: struct { padding: ?clay.Padding = null }) *widgets.Container {
     return ui.column(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .bg_color = theme.bg_section,
-        .padding = .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
+        .padding = if (params.padding) |padding| padding else .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
         .gap = 12,
         .border_width = 1,
         .border_color = theme.border_dim,
@@ -715,7 +978,7 @@ fn drawContentSection(ui: *UI) *widgets.Container {
 fn drawSettingsVideoContent(ui: *UI, ui_state: *UIState) void {
     drawContentSectionHeader(ui, "Display");
     {
-        const section = drawContentSection(ui);
+        const section = drawContentSection(ui, .{});
         drawAspectRatioRow(ui, ui_state);
         section.end();
     }
@@ -723,7 +986,7 @@ fn drawSettingsVideoContent(ui: *UI, ui_state: *UIState) void {
 
 fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
     drawContentSectionHeader(ui, "General");
-    const section = drawContentSection(ui);
+    const section = drawContentSection(ui, .{});
     {
         const row = ui.row(.{
             .sizing = .{ .w = .grow, .h = .fit },
@@ -744,6 +1007,215 @@ fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
         drawEmulationSpeedRow(ui, ui_state);
     }
     section.end();
+}
+
+fn drawSettingsControlsContent(ui: *UI, ui_state: *UIState) void {
+    drawContentSectionHeader(ui, "Controls");
+    const controller_keymap_section = drawContentSection(ui, .{});
+    {
+        updateControllerBindingCapture(ui, ui_state);
+        updateGeneralBindingCapture(ui, ui_state);
+        drawControllerPlayerSelector(ui, ui_state);
+        drawControllerBindingOverlay(ui, ui_state);
+    }
+    controller_keymap_section.end();
+
+    drawContentSectionHeader(ui, "General");
+    const general_keymap_section = drawContentSection(ui, .{
+        .padding = .{ .left = 14, .right = 5, .top = 12, .bottom = 12 },
+    });
+    {
+        const scroll = ui.scrollArea(.{
+            .sizing = .{ .h = .fixed(200), .w = .grow },
+            .gap = 12,
+        });
+        {
+            inline for (@typeInfo(GeneralAction).@"enum".fields) |action_field| {
+                drawGeneralBindingRow(ui, ui_state, @field(GeneralAction, action_field.name));
+            }
+        }
+        scroll.end();
+    }
+    general_keymap_section.end();
+}
+
+fn drawControllerPlayerSelector(ui: *UI, ui_state: *UIState) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .fit, .h = .fit },
+        .gap = 6,
+        .child_alignment = .{ .y = .center },
+    });
+    {
+        inline for (@typeInfo(ControllerPlayer).@"enum".fields) |player_field| {
+            const player = @field(ControllerPlayer, player_field.name);
+            const is_selected = ui_state.settings.selected_controller_player == player;
+            if (ui.button(.{
+                .text = player.displayName(),
+                .font_size = 14,
+                .text_color = if (is_selected) nav_active_text else theme.text_secondary,
+                .bg_color = if (is_selected) nav_active_bg else theme.bg_hover,
+                .hover_color = if (is_selected) nav_active_bg else nav_hover_bg,
+                .padding = .{ .left = 10, .right = 10, .top = 6, .bottom = 6 },
+                .corner_radius = 3,
+                .elevation = 0,
+            }).clicked(ui.current_window.ctx)) {
+                ui_state.settings.selected_controller_player = player;
+                ui_state.settings.capture_binding = null;
+                ui_state.settings.capture_general_binding = null;
+            }
+        }
+    }
+    row.end();
+}
+
+fn updateControllerBindingCapture(ui: *UI, ui_state: *UIState) void {
+    const target = ui_state.settings.capture_binding orelse return;
+    const key = ui.getPressedKey() orelse return;
+    if (key == .UNKNOWN) return;
+
+    ui_state.settings.controller_bindings.forPlayer(target.player).set(target.action, key);
+    ui_state.settings.capture_binding = null;
+    ui_state.applyControllerBindings();
+}
+
+fn updateGeneralBindingCapture(ui: *UI, ui_state: *UIState) void {
+    const action = ui_state.settings.capture_general_binding orelse return;
+    const key = ui.getPressedKey() orelse return;
+    if (key == .UNKNOWN) return;
+
+    ui_state.settings.general_bindings.set(action, key);
+    ui_state.settings.capture_general_binding = null;
+}
+
+fn drawControllerBindingOverlay(ui: *UI, ui_state: *UIState) void {
+    const img_w = ui_state.controller_img.w();
+    const img_h = ui_state.controller_img.h();
+    const display_w: f32 = @min(500.0, @as(f32, @floatFromInt(img_w)));
+    const display_h = display_w * @as(f32, @floatFromInt(img_h)) / @as(f32, @floatFromInt(img_w));
+
+    const root = ui.column(.{
+        .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
+    });
+    _ = ui.canvas(.{
+        .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
+        .pixel_format = ui_state.controller_img.format(),
+        .pixels = ui_state.controller_img.pixels(),
+        .w = img_w,
+        .h = img_h,
+    });
+
+    const player = ui_state.settings.selected_controller_player;
+    inline for (@typeInfo(ControllerAction).@"enum".fields) |action_field| {
+        const action = @field(ControllerAction, action_field.name);
+        drawControllerBindingField(ui, ui_state, root.id, player, action);
+    }
+
+    root.end();
+}
+
+fn drawControllerBindingField(
+    ui: *UI,
+    ui_state: *UIState,
+    parent_id: clay.ElementId,
+    player: ControllerPlayer,
+    action: ControllerAction,
+) void {
+    const position = controllerBindingPosition(action);
+    const target = ControllerBindingTarget{ .player = player, .action = action };
+    const is_capturing = isControllerBindingTarget(ui_state.settings.capture_binding, target);
+    const key = ui_state.settings.controller_bindings.forPlayerConst(player).get(action);
+    const label = if (is_capturing) "Press key" else key.keyName();
+
+    const float = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .attach_points = .{ .element = .center_center, .parent = .left_top },
+        .offset = .{ .x = position.x, .y = position.y },
+        .z_index = 20,
+    });
+    {
+        const btn = ui.button(.{
+            .sizing = .{ .w = .fitMinMax(.{ .min = 50, .max = 55 }), .h = .fit },
+            .padding = .all(4),
+            .bg_color = if (is_capturing) theme.bg_active.withAlpha(0.85) else theme.bg_panel,
+            .corner_radius = 0,
+            .border = .{ .color = (if (is_capturing) theme.border_selected else theme.border).toClay(), .width = .outside(1) },
+            .text = label,
+            .font_size = 14,
+            .tooltip = if (action == .select)
+                .{ .text = "Select", .text_size = 16 }
+            else if (action == .start)
+                .{ .text = "Start", .text_size = 16 }
+            else
+                null,
+        });
+        if (btn.clicked(ui.current_window.ctx)) {
+            ui_state.settings.capture_binding = target;
+            ui_state.settings.capture_general_binding = null;
+        }
+    }
+    float.end();
+}
+
+fn isControllerBindingTarget(current: ?ControllerBindingTarget, target: ControllerBindingTarget) bool {
+    const active = current orelse return false;
+    return active.player == target.player and active.action == target.action;
+}
+
+fn controllerBindingPosition(action: ControllerAction) clay.Vector2 {
+    return switch (action) {
+        .up => .{ .x = 95, .y = 45 },
+        .down => .{ .x = 95, .y = 195 },
+        .left => .{ .x = 10, .y = 120 },
+        .right => .{ .x = 180, .y = 120 },
+        .select => .{ .x = 205, .y = 180 },
+        .start => .{ .x = 275, .y = 180 },
+        .b => .{ .x = 360, .y = 210 },
+        .a => .{ .x = 430, .y = 210 },
+    };
+}
+
+fn drawGeneralBindingRow(ui: *UI, ui_state: *UIState, action: GeneralAction) void {
+    const is_capturing = isGeneralBindingTarget(ui_state.settings.capture_general_binding, action);
+    const key = ui_state.settings.general_bindings.get(action);
+    const label = if (is_capturing) "Press key" else key.keyName();
+
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 10,
+    });
+    {
+        _ = ui.label(.{
+            .text = action.displayName(),
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_primary,
+        });
+
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        const btn = ui.button(.{
+            .sizing = .{ .w = .fitMinMax(.{ .min = 95, .max = 130 }), .h = .fit },
+            .padding = .{ .left = 10, .right = 10, .top = 6, .bottom = 6 },
+            .bg_color = if (is_capturing) theme.bg_active else theme.bg_panel,
+            .hover_color = if (is_capturing) theme.bg_active else theme.bg_hover,
+            .text_color = if (is_capturing) theme.text_accent else theme.text_primary,
+            .corner_radius = 0,
+            .border = .{ .color = (if (is_capturing) theme.border_selected else theme.border).toClay(), .width = .outside(1) },
+            .text = label,
+            .font_size = 16,
+        });
+        if (btn.clicked(ui.current_window.ctx)) {
+            ui_state.settings.capture_general_binding = action;
+            ui_state.settings.capture_binding = null;
+        }
+    }
+    row.end();
+}
+
+fn isGeneralBindingTarget(current: ?GeneralAction, action: GeneralAction) bool {
+    const active = current orelse return false;
+    return active == action;
 }
 
 fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
@@ -832,7 +1304,7 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
 fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
     drawContentSectionHeader(ui, "Shader");
     {
-        const section = drawContentSection(ui);
+        const section = drawContentSection(ui, .{});
         drawShaderPresetRow(ui, ui_state);
         if (ui_state.settings.shader_loading) {
             const progress = ui.getShaderProgress();
@@ -867,7 +1339,7 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
 
     drawContentSectionHeader(ui, "Border Shader");
     {
-        const section = drawContentSection(ui);
+        const section = drawContentSection(ui, .{});
         drawBorderShaderPresetRow(ui, ui_state);
         if (ui_state.settings.border_shader_loading) {
             _ = ui.label(.{
@@ -914,8 +1386,6 @@ fn drawShaderParamsSection(
     });
     {
         const scroll = ui.scrollArea(.{
-            .sizing = .grow,
-            .vertical = true,
             .padding = .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
             .gap = 12,
         });

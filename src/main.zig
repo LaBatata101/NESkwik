@@ -125,19 +125,23 @@ pub fn main() !void {
         gui.drawGUI(ui, &ui_state);
 
         if (ui_state.emulation_running) {
-            ui_state.system.?.sync_controllers(ui);
-            if (ui.isKeyPressed(.ESCAPE)) ui.quit = true;
-            if (ui.isKeyPressed(.F9)) step_mode = !step_mode;
-            if (ui.isKeyPressed(.R)) ui_state.system.?.reset();
-            if (step_mode and ui.isKeyPressed(.F10)) ui_state.system.?.tick();
-            if (step_mode and ui.isKeyPressed(.F11)) ui_state.system.?.run_frame();
-            if (ui.isKeyPressed(.F)) {
-                if (ui.isWindowFullscreen()) {
-                    ui.setWindowFullscreen(false);
-                } else {
-                    ui.setWindowFullscreen(true);
+            const main_window_active = ui.current_window == ui.main_window;
+            if (main_window_active) {
+                ui_state.system.?.sync_controllers(ui);
+                if (ui.isKeyPressed(ui_state.generalBinding(.quit))) ui.quit = true;
+                if (ui.isKeyPressed(ui_state.generalBinding(.toggle_step_mode))) step_mode = !step_mode;
+                if (ui.isKeyPressed(ui_state.generalBinding(.reset))) ui_state.system.?.reset();
+                if (step_mode and ui.isKeyPressed(ui_state.generalBinding(.run_tick))) ui_state.system.?.tick();
+                if (step_mode and ui.isKeyPressed(ui_state.generalBinding(.run_frame))) ui_state.system.?.run_frame();
+                if (ui.isKeyPressed(ui_state.generalBinding(.toggle_fullscreen))) {
+                    if (ui.isWindowFullscreen()) {
+                        ui.setWindowFullscreen(false);
+                    } else {
+                        ui.setWindowFullscreen(true);
+                    }
                 }
             }
+
             if (ui.mouseMotion()) {
                 last_mouse_activity_time = c.SDL_GetTicks();
                 if (is_cursor_hidden) {

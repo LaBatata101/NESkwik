@@ -75,7 +75,8 @@ pub fn build(b: *std.Build) void {
         mod.linkSystemLibrary("vulkan", .{});
     }
 
-    mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("fonts/PixeloidSans.ttf") });
+    mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("resources/fonts/PixeloidSans.ttf") });
+    mod.addAnonymousImport("nes_controller_img", .{ .root_source_file = b.path("resources/images/nes-controller.png") });
 
     const exe = b.addExecutable(.{
         .name = "ness",

@@ -6,13 +6,13 @@ pub const theme = struct {
     pub const bg_panel = Color.rgb(24, 27, 32);
     pub const bg_section = Color.rgb(30, 34, 41);
     pub const bg_hover = Color.rgb(38, 43, 52);
-    pub const bg_active = Color.rgb(44, 100, 220).withAlpha(40);
-    pub const bg_selected = Color.rgb(44, 100, 220).withAlpha(60);
+    pub const bg_active = Color.rgb(44, 100, 220).withAlpha(0.16);
+    pub const bg_selected = Color.rgb(44, 100, 220).withAlpha(0.24);
 
     pub const border = Color.rgb(45, 50, 62);
     pub const border_dim = Color.rgb(35, 40, 50);
-    pub const border_selected = Color.rgb(60, 130, 240).withAlpha(160);
-    pub const border_open = Color.rgb(60, 130, 240).withAlpha(160);
+    pub const border_selected = Color.rgb(60, 130, 240).withAlpha(0.63);
+    pub const border_open = Color.rgb(60, 130, 240).withAlpha(0.63);
 
     pub const text_primary = Color.rgb(220, 225, 235); // main text
     pub const text_secondary = Color.rgb(140, 150, 170); // dim labels

@@ -169,7 +169,7 @@ fn drawDisassemblyRow(
         _ = ui.label(.{
             .text = mnemonic,
             .font_size = theme.CODE_FONT,
-            .color = if (is_current) theme.text_primary else theme.text_primary.withAlpha(180),
+            .color = if (is_current) theme.text_primary else theme.text_primary.withAlpha(0.71),
         });
 
         if (operand.len > 0) {
@@ -281,9 +281,9 @@ fn drawRegisterBadge(ui: *UI, label: []const u8, value: []const u8, accent: Colo
 }
 
 fn drawFlagBadge(ui: *UI, name: []const u8, active: bool) void {
-    const bg = if (active) theme.accent_blue.withAlpha(60) else theme.bg_section;
+    const bg = if (active) theme.accent_blue.withAlpha(0.24) else theme.bg_section;
     const txt = if (active) theme.text_primary else theme.text_muted;
-    const bdr = if (active) theme.accent_blue.withAlpha(120) else theme.border_dim;
+    const bdr = if (active) theme.accent_blue.withAlpha(0.47) else theme.border_dim;
 
     const pill = ui.row(.{
         .sizing = .{ .w = .fixed(26), .h = .fixed(22) },
