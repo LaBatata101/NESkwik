@@ -610,11 +610,13 @@ pub const ScrollContainer = struct {
                     clay.configureOpenElement(.{
                         .layout = .{ .sizing = .{ .w = .fixed(6), .h = .fixed(scroll_bar_height) } },
                         .floating = .{
-                            .attach_to = .to_parent,
+                            .attach_to = .to_element_with_id,
+                            .parentId = element_id.id,
                             .attach_points = .{ .element = .right_top, .parent = .right_top },
                             .offset = .{ .x = -2, .y = scroll_bar_y },
                             .z_index = 10,
                             .pointer_capture_mode = .passthrough,
+                            .clip_to = .to_attached_parent,
                         },
                         .background_color = if (is_dragging or is_hovered)
                             params.scrollbar_color.toClay()
