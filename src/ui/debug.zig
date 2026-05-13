@@ -468,7 +468,7 @@ fn drawPalettePanel(ui: *UI, ui_state: *UIState) void {
 
 fn drawPaletteGroup(
     ui: *UI,
-    palette_ram: anytype,
+    palette_ram: [32]u8,
     label: []const u8,
     is_sprite: bool,
 ) void {
@@ -535,7 +535,7 @@ fn drawPaletteGroup(
 }
 
 /// Resolves a palette colour from palette RAM, handling sprite mirror addresses.
-inline fn resolveColor(palette_ram: anytype, i: usize, is_sprite: bool) Color {
+inline fn resolveColor(palette_ram: [32]u8, i: usize, is_sprite: bool) Color {
     if (!is_sprite) {
         const idx = palette_ram[i];
         return SYSTEM_PALETTE[idx & 0x3F];
