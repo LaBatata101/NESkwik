@@ -57,6 +57,8 @@ const SettingsConfig = struct {
     emulation_speed: EmulationSpeed = .normal,
     controller_bindings: bindings.ControllerKeyBindings = .{},
     general_bindings: bindings.GeneralKeyBindings = .{},
+    gamepad_bindings: bindings.GamepadKeyBindings = .{},
+    gamepad_deadzone: u8 = 25,
 };
 
 pub fn getSettingsDir(alloc: std.mem.Allocator) std.fs.GetAppDataDirError![]u8 {
@@ -139,6 +141,8 @@ pub fn save(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: Emulato
         .emulation_speed = settings.emulation_speed,
         .controller_bindings = settings.controller_bindings,
         .general_bindings = settings.general_bindings,
+        .gamepad_bindings = settings.gamepad_bindings,
+        .gamepad_deadzone = settings.gamepad_deadzone,
     }, .{
         .whitespace = .indent_2,
         .emit_null_optional_fields = false,
@@ -155,6 +159,8 @@ fn applyConfig(alloc: std.mem.Allocator, settings: *EmulatorSettings, config: Se
     settings.emulation_speed = config.emulation_speed;
     settings.controller_bindings = config.controller_bindings;
     settings.general_bindings = config.general_bindings;
+    settings.gamepad_bindings = config.gamepad_bindings;
+    settings.gamepad_deadzone = config.gamepad_deadzone;
 
     try replaceOptionalOwnedString(alloc, &settings.shader_preset_path, config.shader_preset_path);
     try replaceShaderParamSettings(alloc, &settings.shader_params, config.shader_params);

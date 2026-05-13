@@ -7,6 +7,11 @@ const CPU = @import("cpu.zig").CPU;
 const PPU = @import("ppu.zig").PPU;
 const APU = @import("apu/apu.zig").APU;
 const Keys = @import("ui/core/ui.zig").Key;
+const UI = @import("ui/core/ui.zig").UI;
+const UIState = @import("ui/gui.zig").UIState;
+const ControllerPlayer = @import("ui/bindings.zig").ControllerPlayer;
+const GamepadKeyBindings = @import("ui/bindings.zig").GamepadKeyBindings;
+const GamepadPlayerBindings = @import("ui/bindings.zig").GamepadPlayerBindings;
 const SDLAudioOut = @import("sdl_audio.zig").SDLAudioOut;
 const ControllerButton = @import("controller.zig").ControllerButton;
 const trace = @import("trace.zig").trace;
@@ -209,13 +214,22 @@ pub const System = struct {
         return &self.ppu.frame_buffer.data;
     }
 
-    pub fn sync_controllers(self: *Self, ui: anytype) void {
+    pub fn sync_controllers(self: *Self, ui: *UI, ui_state: *UIState) void {
         self.bus.controllers.cntrl1_status = .{};
         var it1 = self.keymap1.iterator();
         while (it1.next()) |entry| {
             if (ui.isKeyDown(entry.key_ptr.*)) {
                 self.bus.controllers.cntrl1_status.insert(entry.value_ptr.*);
             }
+        }
+        if (ui.getGamepadCount() > 0) {
+            syncGamepadButtons(
+                ui,
+                .one,
+                ui_state.settings.gamepad_bindings.forPlayerConst(.one),
+                &self.bus.controllers.cntrl1_status,
+                ui_state.settings.gamepad_deadzone,
+            );
         }
 
         self.bus.controllers.cntrl2_status = .{};
@@ -225,5 +239,35 @@ pub const System = struct {
                 self.bus.controllers.cntrl2_status.insert(entry.value_ptr.*);
             }
         }
+
+        if (ui.getGamepadCount() > 1) {
+            syncGamepadButtons(
+                ui,
+                .two,
+                ui_state.settings.gamepad_bindings.forPlayerConst(.two),
+                &self.bus.controllers.cntrl2_status,
+                ui_state.settings.gamepad_deadzone,
+            );
+        }
     }
 };
+
+fn syncGamepadButtons(ui: *UI, gamepad_idx: ControllerPlayer, bindings: *const GamepadPlayerBindings, status: *ControllerButton, deadzone: u8) void {
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.a)) status.insert(.{ .BUTTON_A = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.b)) status.insert(.{ .BUTTON_B = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.start)) status.insert(.{ .START = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.select)) status.insert(.{ .SELECT = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.up)) status.insert(.{ .UP = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.down)) status.insert(.{ .DOWN = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.left)) status.insert(.{ .LEFT = true });
+    if (ui.isGamepadButtonDown(gamepad_idx, bindings.right)) status.insert(.{ .RIGHT = true });
+
+    // Left analog stick as D-pad
+    const threshold: i16 = @intCast(@as(u32, deadzone) * 32767 / 100);
+    const lx = ui.getGamepadAxis(gamepad_idx, c.SDL_GAMEPAD_AXIS_LEFTX);
+    const ly = ui.getGamepadAxis(gamepad_idx, c.SDL_GAMEPAD_AXIS_LEFTY);
+    if (lx < -threshold) status.insert(.{ .LEFT = true });
+    if (lx > threshold) status.insert(.{ .RIGHT = true });
+    if (ly < -threshold) status.insert(.{ .UP = true });
+    if (ly > threshold) status.insert(.{ .DOWN = true });
+}

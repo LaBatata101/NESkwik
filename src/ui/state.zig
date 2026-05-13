@@ -3,6 +3,7 @@ const std = @import("std");
 const game_history = @import("../game_history.zig");
 const c = @import("../root.zig").c;
 const Key = @import("core/ui.zig").Key;
+const UI = @import("core/ui.zig").UI;
 const Rom = @import("../rom.zig").Rom;
 const utils = @import("core/utils.zig");
 const System = @import("../system.zig").System;
@@ -22,6 +23,7 @@ const ControllerKeyBindings = bindings.ControllerKeyBindings;
 const ControllerBindingTarget = bindings.ControllerBindingTarget;
 const GeneralAction = bindings.GeneralAction;
 const GeneralKeyBindings = bindings.GeneralKeyBindings;
+const GamepadKeyBindings = bindings.GamepadKeyBindings;
 const ParamTarget = settings.ParamTarget;
 const ShaderParamSetting = settings.ShaderParamSetting;
 const EmulationSpeed = settings.EmulationSpeed;
@@ -120,6 +122,9 @@ pub const UIState = struct {
         capture_binding: ?ControllerBindingTarget = null,
         general_bindings: GeneralKeyBindings = .{},
         capture_general_binding: ?GeneralAction = null,
+        gamepad_bindings: GamepadKeyBindings = .{},
+        capture_gamepad_binding: ?ControllerBindingTarget = null,
+        gamepad_deadzone: u8 = 25,
     };
 
     pub fn init(alloc: std.mem.Allocator) Self {
@@ -218,7 +223,8 @@ pub const UIState = struct {
 
     pub fn applyControllerBindings(self: *Self) void {
         if (self.system) |*system| {
-            bindings.applyControllerBindings(system, self.settings.controller_bindings);
+            bindings.applyBindingsToKeymap(&system.keymap1, self.settings.controller_bindings.player1);
+            bindings.applyBindingsToKeymap(&system.keymap2, self.settings.controller_bindings.player2);
         }
     }
 
@@ -272,7 +278,7 @@ pub const UIState = struct {
         self.saved_settings = snapshot;
     }
 
-    pub fn applyShaderParamSettings(self: *const Self, ui: anytype, target: ParamTarget) void {
+    pub fn applyShaderParamSettings(self: *const Self, ui: *UI, target: ParamTarget) void {
         const items = switch (target) {
             .main => self.settings.shader_params.items,
             .border => self.settings.border_shader_params.items,
@@ -309,6 +315,8 @@ fn clonePersistedSettings(
         .emulation_speed = source.emulation_speed,
         .controller_bindings = source.controller_bindings,
         .general_bindings = source.general_bindings,
+        .gamepad_bindings = source.gamepad_bindings,
+        .gamepad_deadzone = source.gamepad_deadzone,
     };
     errdefer deinitEmulatorSettings(alloc, &result);
 
@@ -375,7 +383,9 @@ fn isSettingsEqual(a: UIState.EmulatorSettings, b: UIState.EmulatorSettings) boo
         a.hide_mouse_on_inactivity == b.hide_mouse_on_inactivity and
         a.emulation_speed == b.emulation_speed and
         std.meta.eql(a.controller_bindings, b.controller_bindings) and
-        std.meta.eql(a.general_bindings, b.general_bindings);
+        std.meta.eql(a.general_bindings, b.general_bindings) and
+        std.meta.eql(a.gamepad_bindings, b.gamepad_bindings) and
+        a.gamepad_deadzone == b.gamepad_deadzone;
 }
 
 fn optionalStringsEqual(a: ?[]const u8, b: ?[]const u8) bool {

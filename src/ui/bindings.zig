@@ -1,8 +1,87 @@
 const std = @import("std");
 
 const ControllerButton = @import("../controller.zig").ControllerButton;
-const System = @import("../system.zig").System;
 const Key = @import("core/ui.zig").Key;
+
+pub const GamepadButton = enum {
+    south,
+    east,
+    west,
+    north,
+    back,
+    guide,
+    start,
+    left_stick,
+    right_stick,
+    left_shoulder,
+    right_shoulder,
+    dpad_up,
+    dpad_down,
+    dpad_left,
+    dpad_right,
+
+    pub fn displayName(self: @This()) []const u8 {
+        return switch (self) {
+            .south => "A",
+            .east => "B",
+            .west => "X",
+            .north => "Y",
+            .back => "Back",
+            .guide => "Home",
+            .start => "Start",
+            .left_stick => "L3",
+            .right_stick => "R3",
+            .left_shoulder => "LB",
+            .right_shoulder => "RB",
+            .dpad_up => "D-Up",
+            .dpad_down => "D-Down",
+            .dpad_left => "D-Left",
+            .dpad_right => "D-Right",
+        };
+    }
+};
+
+pub const GamepadPlayerBindings = struct {
+    up: GamepadButton = .dpad_up,
+    down: GamepadButton = .dpad_down,
+    left: GamepadButton = .dpad_left,
+    right: GamepadButton = .dpad_right,
+    select: GamepadButton = .back,
+    start: GamepadButton = .start,
+    b: GamepadButton = .east,
+    a: GamepadButton = .south,
+
+    pub fn get(self: @This(), action: ControllerAction) GamepadButton {
+        return switch (action) {
+            inline else => |act| @field(self, @tagName(act)),
+        };
+    }
+
+    pub fn set(self: *@This(), action: ControllerAction, btn: GamepadButton) void {
+        switch (action) {
+            inline else => |act| @field(self, @tagName(act)) = btn,
+        }
+    }
+};
+
+pub const GamepadKeyBindings = struct {
+    player1: GamepadPlayerBindings = .{},
+    player2: GamepadPlayerBindings = .{},
+
+    pub fn forPlayer(self: *@This(), player: ControllerPlayer) *GamepadPlayerBindings {
+        return switch (player) {
+            .one => &self.player1,
+            .two => &self.player2,
+        };
+    }
+
+    pub fn forPlayerConst(self: *const @This(), player: ControllerPlayer) *const GamepadPlayerBindings {
+        return switch (player) {
+            .one => &self.player1,
+            .two => &self.player2,
+        };
+    }
+};
 
 pub const ControllerPlayer = enum {
     one,
@@ -12,6 +91,13 @@ pub const ControllerPlayer = enum {
         return switch (self) {
             .one => "Player 1",
             .two => "Player 2",
+        };
+    }
+
+    pub fn value(self: @This()) usize {
+        return switch (self) {
+            .one => 0,
+            .two => 1,
         };
     }
 };
@@ -166,31 +252,19 @@ pub const GeneralKeyBindings = struct {
     }
 };
 
-pub fn applyControllerBindings(system: *System, controller_bindings: ControllerKeyBindings) void {
-    applyBindingsToKeymap(&system.keymap1, controller_bindings.player1);
-    applyBindingsToKeymap(&system.keymap2, controller_bindings.player2);
-}
-
-fn applyBindingsToKeymap(
+pub fn applyBindingsToKeymap(
     keymap: *std.AutoHashMap(Key, ControllerButton),
-    controller_bindings: ControllerPlayerBindings,
+    player_bindings: ControllerPlayerBindings,
 ) void {
     keymap.clearRetainingCapacity();
     inline for (@typeInfo(ControllerAction).@"enum".fields) |f| {
         const action = @field(ControllerAction, f.name);
-        putControllerBinding(keymap, controller_bindings.get(action), action);
-    }
-}
-
-fn putControllerBinding(
-    keymap: *std.AutoHashMap(Key, ControllerButton),
-    key: Key,
-    action: ControllerAction,
-) void {
-    const entry = keymap.getOrPut(key) catch @panic("Failed to update controller binding");
-    if (entry.found_existing) {
-        entry.value_ptr.insert(action.button());
-    } else {
-        entry.value_ptr.* = action.button();
+        const key = player_bindings.get(action);
+        const entry = keymap.getOrPut(key) catch @panic("Failed to update controller binding");
+        if (entry.found_existing) {
+            entry.value_ptr.insert(action.button());
+        } else {
+            entry.value_ptr.* = action.button();
+        }
     }
 }

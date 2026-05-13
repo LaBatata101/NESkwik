@@ -296,7 +296,7 @@ const LoadedPreset = struct {
     /// Parameter name -> bytes of the f32 value.
     param_data: std.StringHashMap([]u8),
     /// Ordered list of parameter metadata for UI display.
-    param_meta: std.ArrayListUnmanaged(ParamInfo) = .empty,
+    param_meta: std.ArrayList(ParamInfo) = .empty,
     luts: std.StringHashMap(Lut),
 
     fn deinit(self: *LoadedPreset, alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {

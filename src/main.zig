@@ -16,7 +16,7 @@ const SCALE = 3;
 const CURSOR_HIDE_DELAY_MS = 3000;
 
 fn init_sdl_systems() void {
-    sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO));
+    sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD));
     sdlError(c.TTF_Init());
 }
 
@@ -127,7 +127,7 @@ pub fn main() !void {
         if (ui_state.emulation_running) {
             const main_window_active = ui.current_window == ui.main_window;
             if (main_window_active) {
-                ui_state.system.?.sync_controllers(ui);
+                ui_state.system.?.sync_controllers(ui, &ui_state);
                 if (ui.isKeyPressed(ui_state.generalBinding(.quit))) ui.quit = true;
                 if (ui.isKeyPressed(ui_state.generalBinding(.toggle_step_mode))) step_mode = !step_mode;
                 if (ui.isKeyPressed(ui_state.generalBinding(.reset))) ui_state.system.?.reset();

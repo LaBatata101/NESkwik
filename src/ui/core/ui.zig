@@ -10,6 +10,8 @@ const FPSManager = @import("../../render.zig").FPSManager;
 const shaders = @import("shaders.zig");
 const utils = @import("utils.zig");
 const pipeline = @import("../../shaders/pipeline.zig");
+const GamepadButton = @import("../bindings.zig").GamepadButton;
+const ControllerPlayer = @import("../bindings.zig").ControllerPlayer;
 
 const PIXELOID_FONT = @embedFile("pixeloid_font");
 
@@ -653,6 +655,53 @@ const KeyEventType = enum {
     down,
     released,
     none,
+};
+
+const GAMEPAD_BUTTON_COUNT = 15;
+
+const GamepadButtonData = struct {
+    event: KeyEventType,
+    duration: f32,
+    duration_prev: f32,
+
+    const default_state: GamepadButtonData = .{
+        .event = .none,
+        .duration = -1.0,
+        .duration_prev = -1.0,
+    };
+};
+
+const GamepadState = struct {
+    handle: *c.SDL_Gamepad,
+    buttons: [GAMEPAD_BUTTON_COUNT]GamepadButtonData,
+
+    fn init(handle: *c.SDL_Gamepad) GamepadState {
+        return .{
+            .handle = handle,
+            .buttons = [_]GamepadButtonData{GamepadButtonData.default_state} ** GAMEPAD_BUTTON_COUNT,
+        };
+    }
+
+    fn addButtonEvent(self: *GamepadState, btn_idx: u8, event: KeyEventType) void {
+        if (btn_idx < GAMEPAD_BUTTON_COUNT) {
+            self.buttons[btn_idx].event = event;
+        }
+    }
+
+    fn update(self: *GamepadState, dt: f32) void {
+        for (&self.buttons) |*btn| {
+            btn.duration_prev = btn.duration;
+            if (btn.event == .down) {
+                if (btn.duration < 0.0) {
+                    btn.duration = 0.0;
+                } else {
+                    btn.duration += dt;
+                }
+            } else {
+                btn.duration = -1.0;
+            }
+        }
+    }
 };
 
 pub const InputContext = struct {
@@ -1484,6 +1533,8 @@ pub const UI = struct {
     pending_shader_render: ?PendingShaderRender = null,
     border_shader_rendered_this_frame: bool = false,
 
+    gamepads: std.ArrayList(GamepadState) = .empty,
+
     const PendingShaderRender = struct {
         texture: ?*c.SDL_GPUTexture,
         src_w: u32,
@@ -1496,6 +1547,8 @@ pub const UI = struct {
         /// These must be rendered AFTER the shader blit so they appear on top.
         overlay_draw_call_start: usize,
     };
+
+    pub const PressedGamepadButton = struct { gamepad_idx: usize, btn: GamepadButton };
 
     const Self = @This();
     const CLAY_ERROR_HANDLER = clay.ErrorHandler{ .error_handler_function = handleClayError };
@@ -1590,10 +1643,27 @@ pub const UI = struct {
             .border_shader_pipeline = border_shader_pipeline,
         };
 
+        // Open any gamepads already connected at startup.
+        var gp_count: c_int = 0;
+        const gp_ids = c.SDL_GetGamepads(&gp_count);
+        if (gp_ids != null) {
+            var i: c_int = 0;
+            while (i < gp_count) : (i += 1) {
+                const gp = c.SDL_OpenGamepad(gp_ids[@intCast(i)]);
+                if (gp) |p| {
+                    gui.gamepads.append(allocator, GamepadState.init(p)) catch {};
+                }
+            }
+            c.SDL_free(gp_ids);
+        }
+
         return gui;
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.gamepads.items) |state| c.SDL_CloseGamepad(state.handle);
+        self.gamepads.deinit(self.allocator);
+
         self.main_window.deinit(self.allocator, self.gpu_device);
 
         for (self.secondary_windows.items) |window| {
@@ -1811,6 +1881,7 @@ pub const UI = struct {
         self.processPendingWindowClose();
 
         self.main_window.update();
+        self.updateGamepadStates(self.main_window.ctx.dt);
 
         clay.beginLayout();
     }
@@ -1870,6 +1941,40 @@ pub const UI = struct {
         return self.current_window.ctx.mouseMotion();
     }
 
+    pub fn getGamepadCount(self: *const Self) usize {
+        return self.gamepads.items.len;
+    }
+
+    pub fn isGamepadButtonDown(self: *const Self, gamepad_idx: ControllerPlayer, btn: GamepadButton) bool {
+        return self.gamepads.items[gamepad_idx.value()].buttons[@intFromEnum(btn)].event == .down;
+    }
+
+    pub fn getPressedGamepadButton(self: *const Self) ?PressedGamepadButton {
+        for (self.gamepads.items, 0..) |*state, i| {
+            for (state.buttons, 0..) |btn, b| {
+                if (btn.event == .down and btn.duration == 0.0) {
+                    return .{ .gamepad_idx = i, .btn = @enumFromInt(b) };
+                }
+            }
+        }
+        return null;
+    }
+
+    fn updateGamepadStates(self: *Self, dt: f32) void {
+        for (self.gamepads.items) |*state| state.update(dt);
+    }
+
+    pub fn getGamepadAxis(self: *const Self, gamepad_idx: ControllerPlayer, axis: c.SDL_GamepadAxis) i16 {
+        return c.SDL_GetGamepadAxis(self.gamepads.items[gamepad_idx.value()].handle, axis);
+    }
+
+    pub fn getConnectedGamepadName(self: *const Self, index: usize) ?[]const u8 {
+        if (index >= self.gamepads.items.len) return null;
+        const name = c.SDL_GetGamepadName(self.gamepads.items[index].handle);
+        if (name == null) return null;
+        return std.mem.span(name);
+    }
+
     fn handleEvent(self: *Self, event: *c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_QUIT, c.SDL_EVENT_TERMINATING => {
@@ -1888,6 +1993,46 @@ pub const UI = struct {
                     }
                 }
 
+                return;
+            },
+            c.SDL_EVENT_GAMEPAD_ADDED => {
+                const which = event.gdevice.which;
+                for (self.gamepads.items) |*state| {
+                    if (c.SDL_GetGamepadID(state.handle) == which) return;
+                }
+                const gp = c.SDL_OpenGamepad(which);
+                if (gp) |p| self.gamepads.append(self.allocator, GamepadState.init(p)) catch {};
+                return;
+            },
+            c.SDL_EVENT_GAMEPAD_REMOVED => {
+                const removed_id = event.gdevice.which;
+                for (self.gamepads.items, 0..) |*state, i| {
+                    if (c.SDL_GetGamepadID(state.handle) == removed_id) {
+                        c.SDL_CloseGamepad(state.handle);
+                        _ = self.gamepads.swapRemove(i);
+                        break;
+                    }
+                }
+                return;
+            },
+            c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+                const which = event.gbutton.which;
+                for (self.gamepads.items) |*state| {
+                    if (c.SDL_GetGamepadID(state.handle) == which) {
+                        state.addButtonEvent(event.gbutton.button, .down);
+                        break;
+                    }
+                }
+                return;
+            },
+            c.SDL_EVENT_GAMEPAD_BUTTON_UP => {
+                const which = event.gbutton.which;
+                for (self.gamepads.items) |*state| {
+                    if (c.SDL_GetGamepadID(state.handle) == which) {
+                        state.addButtonEvent(event.gbutton.button, .released);
+                        break;
+                    }
+                }
                 return;
             },
             else => {},

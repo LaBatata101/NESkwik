@@ -29,6 +29,7 @@ const ControllerPlayer = bindings.ControllerPlayer;
 const ControllerAction = bindings.ControllerAction;
 const ControllerBindingTarget = bindings.ControllerBindingTarget;
 pub const GeneralAction = bindings.GeneralAction;
+const GamepadButton = bindings.GamepadButton;
 const ParamTarget = settings.ParamTarget;
 const SettingsCategory = state.SettingsCategory;
 pub const UIState = state.UIState;
@@ -657,9 +658,18 @@ fn drawSettingsControlsContent(ui: *UI, ui_state: *UIState) void {
     const controller_keymap_section = drawContentSection(ui, .{});
     {
         updateControllerBindingCapture(ui, ui_state);
+        updateGamepadBindingCapture(ui, ui_state);
         updateGeneralBindingCapture(ui, ui_state);
         drawControllerPlayerSelector(ui, ui_state);
+        drawConnectedGamepadRow(ui, ui_state);
         drawControllerBindingOverlay(ui, ui_state);
+
+        if (ui.getGamepadCount() > 0) {
+            drawContentSectionHeader(ui, "Analog Stick");
+            const gamepad_section = drawContentSection(ui, .{});
+            drawGamepadDeadzoneRow(ui, ui_state);
+            gamepad_section.end();
+        }
     }
     controller_keymap_section.end();
 
@@ -680,6 +690,71 @@ fn drawSettingsControlsContent(ui: *UI, ui_state: *UIState) void {
         scroll.end();
     }
     general_keymap_section.end();
+}
+
+fn drawGamepadDeadzoneRow(ui: *UI, ui_state: *UIState) void {
+    const alloc = ui.current_window.ctx.frameAlloc();
+    const current: f32 = @floatFromInt(ui_state.settings.gamepad_deadzone);
+
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+    });
+    {
+        _ = ui.label(.{
+            .text = "Deadzone",
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_primary,
+        });
+        _ = ui.spacer(.{ .sizing = .grow });
+        _ = ui.label(.{
+            .text = std.fmt.allocPrint(alloc, "{d}%", .{ui_state.settings.gamepad_deadzone}) catch "?",
+            .font_size = 14,
+            .color = theme.text_value,
+        });
+    }
+    row.end();
+
+    const drag = ui.slider(.{
+        .value = current,
+        .min = 0.0,
+        .max = 100.0,
+        .step = 1.0,
+        .height = 4,
+        .fill_color = theme.accent_green,
+        .track_color = theme.bg_hover,
+        .thumb_color = theme.text_primary,
+        .corner_radius = 2,
+    });
+    const new_val: u8 = @intFromFloat(drag.value());
+    if (ui_state.settings.gamepad_deadzone != new_val) {
+        ui_state.settings.gamepad_deadzone = new_val;
+    }
+}
+
+fn drawConnectedGamepadRow(ui: *UI, ui_state: *UIState) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+    });
+    {
+        if (ui.getConnectedGamepadName(ui_state.settings.selected_controller_player.value())) |name| {
+            _ = ui.label(.{
+                .text = "Gamepad",
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_primary,
+            });
+            _ = ui.spacer(.{ .sizing = .grow });
+            _ = ui.label(.{
+                .text = name,
+                .font_size = 15,
+                .color = theme.text_primary,
+            });
+        }
+    }
+    row.end();
 }
 
 fn drawControllerPlayerSelector(ui: *UI, ui_state: *UIState) void {
@@ -705,6 +780,7 @@ fn drawControllerPlayerSelector(ui: *UI, ui_state: *UIState) void {
                 ui_state.settings.selected_controller_player = player;
                 ui_state.settings.capture_binding = null;
                 ui_state.settings.capture_general_binding = null;
+                ui_state.settings.capture_gamepad_binding = null;
             }
         }
     }
@@ -722,6 +798,17 @@ fn updateControllerBindingCapture(ui: *UI, ui_state: *UIState) void {
     }
     ui_state.settings.capture_binding = null;
     ui_state.applyControllerBindings();
+}
+
+fn updateGamepadBindingCapture(ui: *UI, ui_state: *UIState) void {
+    const target = ui_state.settings.capture_gamepad_binding orelse return;
+    const pressed = ui.getPressedGamepadButton() orelse return;
+
+    const player_bindings = ui_state.settings.gamepad_bindings.forPlayer(target.player);
+    if (player_bindings.get(target.action) != pressed.btn) {
+        player_bindings.set(target.action, pressed.btn);
+    }
+    ui_state.settings.capture_gamepad_binding = null;
 }
 
 fn updateGeneralBindingCapture(ui: *UI, ui_state: *UIState) void {
@@ -768,11 +855,23 @@ fn drawControllerBindingField(
     player: ControllerPlayer,
     action: ControllerAction,
 ) void {
+    const has_gamepad = ui.getGamepadCount() > 0;
+
     const position = controllerBindingPosition(action);
     const target = ControllerBindingTarget{ .player = player, .action = action };
-    const is_capturing = isControllerBindingTarget(ui_state.settings.capture_binding, target);
-    const key = ui_state.settings.controller_bindings.forPlayerConst(player).get(action);
-    const label = if (is_capturing) "Press key" else key.keyName();
+
+    const is_capturing_kb = !has_gamepad and isControllerBindingTarget(ui_state.settings.capture_binding, target);
+    const is_capturing_gp = has_gamepad and isControllerBindingTarget(ui_state.settings.capture_gamepad_binding, target);
+    const is_capturing = is_capturing_kb or is_capturing_gp;
+
+    const label: []const u8 = if (is_capturing_gp)
+        "Press btn"
+    else if (is_capturing_kb)
+        "Press key"
+    else if (has_gamepad)
+        ui_state.settings.gamepad_bindings.forPlayerConst(player).get(action).displayName()
+    else
+        ui_state.settings.controller_bindings.forPlayerConst(player).get(action).keyName();
 
     const float = ui.float(.{
         .attach_to = .to_element_with_id,
@@ -783,7 +882,7 @@ fn drawControllerBindingField(
     });
     {
         const btn = ui.button(.{
-            .sizing = .{ .w = .fitMinMax(.{ .min = 50, .max = 55 }), .h = .fit },
+            .sizing = .{ .w = .fitMinMax(.{ .min = 50, .max = 65 }), .h = .fit },
             .padding = .all(4),
             .bg_color = if (is_capturing) theme.bg_active.withAlpha(0.85) else theme.bg_panel,
             .corner_radius = 0,
@@ -798,7 +897,13 @@ fn drawControllerBindingField(
                 null,
         });
         if (btn.clicked(ui.current_window.ctx)) {
-            ui_state.settings.capture_binding = target;
+            if (has_gamepad) {
+                ui_state.settings.capture_gamepad_binding = target;
+                ui_state.settings.capture_binding = null;
+            } else {
+                ui_state.settings.capture_binding = target;
+                ui_state.settings.capture_gamepad_binding = null;
+            }
             ui_state.settings.capture_general_binding = null;
         }
     }
