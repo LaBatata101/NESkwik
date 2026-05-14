@@ -1132,13 +1132,7 @@ fn drawShaderParamsSection(
 ) void {
     drawContentSectionHeader(ui, title);
 
-    const wrapper = ui.column(.{
-        .sizing = .{ .w = .grow, .h = .fixed(220) },
-        .bg_color = theme.bg_section,
-        .border_width = 1,
-        .border_color = theme.border_dim,
-        .corner_radius = 3,
-    });
+    const section = drawContentSection(ui, .{});
     {
         const scroll = ui.scrollArea(.{
             .padding = .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
@@ -1151,7 +1145,7 @@ fn drawShaderParamsSection(
         }
         scroll.end();
     }
-    wrapper.end();
+    section.end();
 }
 
 const PREVIEW_MAX_W: f32 = 320;

@@ -539,7 +539,7 @@ pub const ScrollContainer = struct {
 
         var padding = params.padding;
         if (params.show_scrollbar and params.vertical and state.scroll.scrollbar_visible) {
-            padding.right = @max(padding.right, 15);
+            padding.right = 10;
         }
 
         // Reset for this frame; set to true below if we actually render the scrollbar.
@@ -613,7 +613,7 @@ pub const ScrollContainer = struct {
                             .attach_to = .to_element_with_id,
                             .parentId = element_id.id,
                             .attach_points = .{ .element = .right_top, .parent = .right_top },
-                            .offset = .{ .x = -2, .y = scroll_bar_y },
+                            .offset = .{ .x = -1, .y = scroll_bar_y },
                             .z_index = 10,
                             .pointer_capture_mode = .passthrough,
                             .clip_to = .to_attached_parent,
