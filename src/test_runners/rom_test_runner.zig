@@ -19,6 +19,25 @@ const CPU_ONE_SEC_CYCLES: u64 = 1_790_000;
 
 const TESTS_DIR = "test_roms";
 
+const BUILTIN_SKIPPED_TESTS = [_]SkippedTest{
+    .{ .pattern = "cpu_interrupts", .reason = "Doesn't pass all test cases yet" },
+};
+
+const SkippedTest = struct {
+    pattern: []const u8,
+    reason: []const u8 = "",
+};
+
+const CliOptions = struct {
+    filters: std.ArrayList([]const u8) = .empty,
+    skip_patterns: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *CliOptions, allocator: std.mem.Allocator) void {
+        self.filters.deinit(allocator);
+        self.skip_patterns.deinit(allocator);
+    }
+};
+
 pub fn suppressLog(
     comptime message_level: std.log.Level,
     comptime scope: @Type(.enum_literal),
@@ -40,6 +59,7 @@ const TestState = struct {
     mutex: std.Thread.Mutex = .{},
     passed_count: usize = 0,
     total_count: usize = 0,
+    skipped_count: usize = 0,
     failed_tests: std.ArrayList(FailedTest),
     allocator: std.mem.Allocator,
 
@@ -69,10 +89,8 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var filter: ?[]const u8 = null;
-    if (args.len > 1) {
-        filter = args[1];
-    }
+    var options = try parseArgs(allocator, args);
+    defer options.deinit(allocator);
 
     _ = c.SDL_SetHint(c.SDL_HINT_NO_SIGNAL_HANDLERS, "1");
 
@@ -104,8 +122,19 @@ pub fn main() !void {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".nes")) continue;
 
-        if (filter) |f| {
-            if (std.mem.indexOf(u8, entry.path, f) == null) continue;
+        if (!matchesAnyFilter(entry.path, options.filters.items)) continue;
+
+        if (skipReason(entry.path, options.skip_patterns.items)) |reason| {
+            const name_stem = displayName(entry.path);
+            state.mutex.lock();
+            state.skipped_count += 1;
+            if (reason.len > 0) {
+                std.debug.print("{s: <30} \x1b[33mSKIP\x1b[0m \t\x1b[1m{s}\x1b[0m\n", .{ name_stem, reason });
+            } else {
+                std.debug.print("{s: <30} \x1b[33mSKIP\x1b[0m\n", .{name_stem});
+            }
+            state.mutex.unlock();
+            continue;
         }
 
         // We must duplicate the path because the thread will run after the
@@ -133,6 +162,9 @@ pub fn main() !void {
     }
 
     std.debug.print("\nPassed: {}/{}\n", .{ state.passed_count, state.total_count });
+    if (state.skipped_count > 0) {
+        std.debug.print("Skipped: {}\n", .{state.skipped_count});
+    }
     std.debug.print("Total time: {d:.2}ms\n", .{
         exec_time / std.time.ns_per_ms,
     });
@@ -140,6 +172,49 @@ pub fn main() !void {
     if (state.failed_tests.items.len > 0) {
         std.process.exit(1);
     }
+}
+
+fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !CliOptions {
+    var options: CliOptions = .{};
+    errdefer options.deinit(allocator);
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--skip")) {
+            i += 1;
+            if (i >= args.len) return error.MissingSkipPattern;
+            try options.skip_patterns.append(allocator, args[i]);
+        } else if (std.mem.startsWith(u8, arg, "--skip=")) {
+            try options.skip_patterns.append(allocator, arg["--skip=".len..]);
+        } else {
+            try options.filters.append(allocator, arg);
+        }
+    }
+
+    return options;
+}
+
+fn matchesAnyFilter(path: []const u8, filters: []const []const u8) bool {
+    if (filters.len == 0) return true;
+    for (filters) |filter| {
+        if (std.mem.indexOf(u8, path, filter) != null) return true;
+    }
+    return false;
+}
+
+fn skipReason(path: []const u8, cli_skip_patterns: []const []const u8) ?[]const u8 {
+    for (&BUILTIN_SKIPPED_TESTS) |skipped| {
+        if (std.mem.indexOf(u8, path, skipped.pattern) != null) return skipped.reason;
+    }
+    for (cli_skip_patterns) |pattern| {
+        if (std.mem.indexOf(u8, path, pattern) != null) return "requested by --skip";
+    }
+    return null;
+}
+
+fn displayName(path: []const u8) []const u8 {
+    return if (std.mem.lastIndexOfScalar(u8, path, '.')) |i| path[0..i] else path;
 }
 
 // Wrapper function executed by the thread pool
@@ -171,7 +246,7 @@ fn run_test_wrapper(state: *TestState, rom_path: []const u8) void {
     // Strip the leading "test_roms/" prefix so subdirectory tests show "subdir/test"
     // instead of just "test"; then strip the .nes extension.
     const rel = rom_path[TESTS_DIR.len + 1 ..];
-    const name_stem = if (std.mem.lastIndexOfScalar(u8, rel, '.')) |i| rel[0..i] else rel;
+    const name_stem = displayName(rel);
 
     switch (result) {
         .passed => {

@@ -111,11 +111,13 @@ pub fn build(b: *std.Build) void {
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
     const no_run = b.option(bool, "no-run", "Don't run the test") orelse false;
     const rom_tests_enabled = b.option(bool, "rom-tests", "Run ROM tests. This is very slow!") orelse false;
+    const skipped_rom_tests = b.option([]const []const u8, "skip-rom-test", "Skip ROM tests matching any pattern") orelse &[0][]const u8{};
 
     const test_step = b.step("test", "Run tests");
     if (!no_run and rom_tests_enabled) {
         const test_exe = b.addExecutable(.{
             .name = "rom-tests",
+            .use_llvm = true,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/test_runners/rom_test_runner.zig"),
                 .target = target,
@@ -142,6 +144,10 @@ pub fn build(b: *std.Build) void {
 
         for (test_filters) |filter| {
             run_rom_tests.addArg(filter);
+        }
+        for (skipped_rom_tests) |skip| {
+            run_rom_tests.addArg("--skip");
+            run_rom_tests.addArg(skip);
         }
 
         test_step.dependOn(&rom_mod_test_artifacts.step);
