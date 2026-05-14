@@ -32,6 +32,7 @@ pub const Mapper0 = struct {
             chr_ram = &.{};
         }
         const prg_ram: []u8 = try allocator.alloc(u8, params.prg_ram_size);
+        @memset(prg_ram, 0);
 
         self.* = .{
             .prg_rom = params.prg_rom,
