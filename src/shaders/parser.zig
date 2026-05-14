@@ -53,7 +53,7 @@ fn lex(alloc: std.mem.Allocator, source: []const u8) ![]Token {
         switch (source[pos]) {
             '#' => {
                 pos += 1;
-                while (std.ascii.isAlphabetic(source[pos])) pos += 1;
+                while (pos < source.len and std.ascii.isAlphabetic(source[pos])) pos += 1;
                 if (std.mem.eql(u8, source[start..pos], "#pragma")) {
                     is_lexing_pragma = true;
                     try tokens.append(alloc, .{
@@ -77,7 +77,7 @@ fn lex(alloc: std.mem.Allocator, source: []const u8) ![]Token {
             },
             '\n', '\r' => {
                 is_lexing_pragma = false;
-                if (source[pos] == '\r') {
+                if (source[pos] == '\r' and pos + 1 < source.len and source[pos + 1] == '\n') {
                     pos += 2; // \r\n
                 } else {
                     pos += 1;
@@ -146,18 +146,19 @@ fn lex(alloc: std.mem.Allocator, source: []const u8) ![]Token {
             },
             '"' => {
                 pos += 1; // openning quote
-                while (source[pos] != '"') pos += 1;
-                pos += 1; // closing quote
+                while (pos < source.len and source[pos] != '"') pos += 1;
+                const value_end = pos;
+                if (pos < source.len) pos += 1; // closing quote
                 try tokens.append(alloc, .{
                     .type = .String,
-                    .value = source[start + 1 .. pos - 1],
+                    .value = source[start + 1 .. value_end],
                     .pos = .{ .start = start, .end = pos },
                 });
             },
             '0'...'9', '-' => {
                 if (source[pos] == '-') pos += 1;
-                while (std.ascii.isDigit(source[pos])) pos += 1;
-                if (source[pos] == '.') {
+                while (pos < source.len and std.ascii.isDigit(source[pos])) pos += 1;
+                if (pos < source.len and source[pos] == '.') {
                     pos += 1; // Dot
                     while (pos < source.len and std.ascii.isDigit(source[pos])) pos += 1;
                     try tokens.append(alloc, .{
@@ -174,8 +175,8 @@ fn lex(alloc: std.mem.Allocator, source: []const u8) ![]Token {
                 }
             },
             'a'...'z', 'A'...'Z', '_' => {
-                while (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_' or
-                    (is_lexing_pragma and source[pos] == '-')) pos += 1;
+                while (pos < source.len and (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_' or
+                    (is_lexing_pragma and source[pos] == '-'))) pos += 1;
 
                 try tokens.append(alloc, .{
                     .type = .Id,
@@ -368,16 +369,29 @@ const Parser = struct {
         };
     }
 
+    fn atEnd(self: *const Self) bool {
+        return self.pos >= self.tokens.len or self.tokens[self.pos].type == .Eof;
+    }
+
     fn peek(self: *const Self) *const Token {
+        std.debug.assert(self.tokens.len > 0);
+        if (self.pos >= self.tokens.len) {
+            return &self.tokens[self.tokens.len - 1];
+        }
         return &self.tokens[self.pos];
     }
 
     fn eat(self: *Self) *const Token {
+        std.debug.assert(self.tokens.len > 0);
+        if (self.pos >= self.tokens.len) {
+            return &self.tokens[self.tokens.len - 1];
+        }
         defer self.pos += 1;
         return &self.tokens[self.pos];
     }
 
     fn eat_if(self: *Self, token: TokType) bool {
+        if (self.pos >= self.tokens.len) return false;
         if (self.tokens[self.pos].type == token) {
             self.pos += 1;
             return true;
@@ -387,40 +401,62 @@ const Parser = struct {
 
     fn parseBlockFields(self: *Self) ![]Field {
         var fields = try std.ArrayList(Field).initCapacity(self.alloc, 0);
+        errdefer fields.deinit(self.alloc);
 
-        // Loop until we hit the closing brace '}'
-        while (self.tokens[self.pos].type != .Rbrace and self.pos < self.tokens.len) {
-            if (self.tokens[self.pos].type == .Newline) {
+        field_loop: while (!self.atEnd()) {
+            if (self.peek().type == .Rbrace) break;
+
+            if (self.peek().type == .Newline) {
                 _ = self.eat();
                 continue;
             }
 
-            // If we hit Rbrace after skipping newlines, break
-            if (self.tokens[self.pos].type == .Rbrace) break;
-
             const type_tok = self.eat();
-            if (type_tok.type != .Id) continue;
-
-            // Parse Variable Names (comma separated)
-            while (true) {
-                const name_tok = self.eat();
-                if (name_tok.type == .Id) {
-                    try fields.append(self.alloc, .{
-                        .type_name = type_tok.value,
-                        .name = name_tok.value,
-                    });
+            if (type_tok.type != .Id) {
+                while (!self.atEnd()) {
+                    switch (self.peek().type) {
+                        .Semi => {
+                            _ = self.eat();
+                            break;
+                        },
+                        .Rbrace => break,
+                        else => _ = self.eat(),
+                    }
                 }
+                continue;
+            }
 
-                const next = self.eat();
-                if (next.type == .Semi) break; // End of statement
-                if (next.type == .Comma) continue; // Next variable
+            var expect_name = true;
+            while (!self.atEnd()) {
+                switch (self.peek().type) {
+                    .Semi => {
+                        _ = self.eat();
+                        break;
+                    },
+                    .Rbrace => break :field_loop,
+                    .Comma => {
+                        _ = self.eat();
+                        expect_name = true;
+                    },
+                    .Newline => _ = self.eat(),
+                    else => {
+                        const tok = self.eat();
+                        if (expect_name and tok.type == .Id) {
+                            try fields.append(self.alloc, .{
+                                .type_name = type_tok.value,
+                                .name = tok.value,
+                            });
+                            expect_name = false;
+                        }
+                    },
+                }
             }
         }
         return fields.toOwnedSlice(self.alloc);
     }
 
     fn parse(self: *Self) !void {
-        while (self.pos < self.tokens.len) {
+        while (!self.atEnd()) {
             const token = self.eat();
             switch (token.type) {
                 .Version => {
@@ -486,7 +522,7 @@ const Parser = struct {
 
                     var layout_type: LayoutType = undefined;
                     // Parse layout qualifiers: layout(push_constant) or layout(set=0, binding=0)
-                    while (self.tokens[self.pos].type != .Rparen) {
+                    while (!self.atEnd() and self.peek().type != .Rparen) {
                         const tok = self.eat();
                         if (tok.type == .Id) {
                             if (std.mem.eql(u8, tok.value, "push_constant")) {
@@ -506,7 +542,7 @@ const Parser = struct {
                             }
                         }
                     }
-                    _ = self.eat(); // consume )
+                    if (!self.eat_if(.Rparen)) continue;
 
                     // Check for 'uniform'
                     const next = self.eat();
@@ -538,10 +574,17 @@ const Parser = struct {
                             .Lbrace => {
                                 _ = self.eat(); // consume {
                                 const fields = try self.parseBlockFields();
-                                _ = self.eat(); // consume }
+                                if (!self.eat_if(.Rbrace)) {
+                                    self.alloc.free(fields);
+                                    continue;
+                                }
 
                                 const instance_name = self.eat();
                                 const semi = self.eat(); // consume ;
+                                if (instance_name.type != .Id or semi.type != .Semi) {
+                                    self.alloc.free(fields);
+                                    continue;
+                                }
 
                                 try self.nodes.append(self.alloc, .{ .LayoutBlock = .{
                                     .name = block_name.value,
@@ -1160,6 +1203,25 @@ test "parser" {
         defer alloc.free(got);
         try std.testing.expect(std.mem.eql(u8, got, expected[i]));
     }
+}
+
+test "parser tolerates unterminated layout blocks" {
+    const alloc = std.testing.allocator;
+    const source =
+        \\layout(push_constant) uniform Push
+        \\{
+        \\   float value
+    ;
+
+    const nodes = try parseSource(alloc, source);
+    defer {
+        for (nodes) |node| {
+            node.deinit(alloc);
+        }
+        alloc.free(nodes);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), nodes.len);
 }
 
 test "convert" {
