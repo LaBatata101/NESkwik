@@ -338,7 +338,6 @@ fn cardHeight(title_lines: u16) f32 {
 
 fn drawGameCard(ui: *UI, ui_state: *UIState, entry: *const game_history.GameEntry, title_lines: u16) void {
     const ctx = ui.main_window.ctx;
-    const title_h = cardTitleHeight(title_lines);
     const info_h = cardInfoHeight(title_lines);
 
     const card = ui.column(.{
@@ -381,23 +380,16 @@ fn drawGameCard(ui: *UI, ui_state: *UIState, entry: *const game_history.GameEntr
             .child_alignment = .{ .x = .left, .y = .top },
         });
         {
-            const title = ui.scrollArea(.{
-                .sizing = .{ .w = .fixed(CARD_CONTENT_W), .h = .fixed(title_h) },
-                .vertical = true,
-                .show_scrollbar = false,
+            _ = ui.label(.{
+                .text = entry.name,
+                .font_size = 14,
+                .line_height = CARD_TITLE_LINE_H,
+                .color = theme.text_primary,
             });
-            {
-                _ = ui.label(.{
-                    .text = entry.name,
-                    .font_size = 14,
-                    .line_height = CARD_TITLE_LINE_H,
-                    .color = theme.text_primary,
-                });
-            }
-            title.end();
+            _ = ui.spacer(.{ .sizing = .grow });
             _ = ui.label(.{
                 .text = formatPlayTime(entry.play_time_secs, ctx.frameAlloc()),
-                .font_size = 12,
+                .font_size = 13,
                 .line_height = CARD_PLAY_TIME_LINE_H,
                 .color = theme.text_secondary,
             });
