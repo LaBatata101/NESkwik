@@ -295,6 +295,12 @@ fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_base,
                     .child_alignment = .{ .x = .left, .y = .top },
                     .padding = .{ .left = 24, .right = 24, .top = 20, .bottom = 24 },
+                    .item_transition = .{
+                        .handler = clay.easeOut,
+                        .duration = 0.22,
+                        .properties = clay.TransitionProperty.position,
+                        .interaction_handling = .allow_interactions_while_transitioning_position,
+                    },
                 });
                 for (entries) |*entry| {
                     const slot = grid.item();

@@ -299,8 +299,8 @@ pub const WidgetState = union(enum) {
     dropdown_menu: DropdownMenuState,
     combobox: ComboboxState,
     tooltip: TooltipState,
+    grid: GridState,
     slider: SliderState,
-    toggle: ToggleState,
 
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
@@ -321,12 +321,11 @@ pub const WidgetState = union(enum) {
     pub const TooltipState = struct {
         hover_start_ms: u64,
     };
+    pub const GridState = struct {
+        items_per_row: usize,
+    };
     pub const SliderState = struct {
         dragging: bool = false,
-        visual_value: f32,
-    };
-    pub const ToggleState = struct {
-        progress: f32,
     };
 };
 
@@ -2758,7 +2757,7 @@ pub const UI = struct {
     }
 
     pub fn grid(self: *Self, params: widgets.Grid.Params) *widgets.Grid {
-        return self.current_window.ctx.allocWidget(widgets.Grid, .start(params));
+        return self.current_window.ctx.allocWidget(widgets.Grid, .start(self.current_window.ctx, params));
     }
 
     pub fn float(self: *Self, params: widgets.Float.Params) *widgets.Float {

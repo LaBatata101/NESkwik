@@ -893,23 +893,26 @@ pub const TransitionState = enum(EnumBackingType) {
     exiting = 3,
 };
 
-/// Bitmask of element properties that can be animated during a transition
-pub const TransitionProperty = enum(u32) {
-    none = 0,
-    x = 1,
-    y = 2,
-    position = 3,
-    width = 4,
-    height = 8,
-    dimensions = 12,
-    bounding_box = 15,
-    background_color = 16,
-    overlay_color = 32,
-    corner_radius = 64,
-    border_color = 128,
-    border_width = 256,
-    border = 384,
-    _,
+/// Bitmask of element properties that can be animated during a transition.
+/// Use struct literal syntax to select properties: `.{ .width = true, .x = true }`.
+/// Composite constants (e.g. `TransitionProperty.position`) are also available.
+pub const TransitionProperty = packed struct(u32) {
+    x: bool = false,
+    y: bool = false,
+    width: bool = false,
+    height: bool = false,
+    background_color: bool = false,
+    overlay_color: bool = false,
+    corner_radius: bool = false,
+    border_color: bool = false,
+    border_width: bool = false,
+    _padding: u23 = 0,
+
+    pub const none: TransitionProperty = .{};
+    pub const position: TransitionProperty = .{ .x = true, .y = true };
+    pub const dimensions: TransitionProperty = .{ .width = true, .height = true };
+    pub const bounding_box: TransitionProperty = .{ .x = true, .y = true, .width = true, .height = true };
+    pub const border: TransitionProperty = .{ .border_color = true, .border_width = true };
 };
 
 pub const TransitionCallbackArguments = extern struct {

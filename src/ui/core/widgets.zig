@@ -6,28 +6,6 @@ pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
 const utils = @import("utils.zig");
 
-fn animateValue(current: f32, target: f32, speed: f32, dt: f32) f32 {
-    if (dt <= 0.0) return current;
-
-    const delta = target - current;
-    if (@abs(delta) <= 0.0001) return target;
-
-    const blend = 1.0 - @exp(-speed * dt);
-    return current + delta * blend;
-}
-
-fn lerpColor(a: Color, b: Color, t: f32) Color {
-    const clamped_t = std.math.clamp(t, 0.0, 1.0);
-    const inv_t = 1.0 - clamped_t;
-
-    return .{
-        .r = @intFromFloat(@round(@as(f32, @floatFromInt(a.r)) * inv_t + @as(f32, @floatFromInt(b.r)) * clamped_t)),
-        .g = @intFromFloat(@round(@as(f32, @floatFromInt(a.g)) * inv_t + @as(f32, @floatFromInt(b.g)) * clamped_t)),
-        .b = @intFromFloat(@round(@as(f32, @floatFromInt(a.b)) * inv_t + @as(f32, @floatFromInt(b.b)) * clamped_t)),
-        .a = @intFromFloat(@round(@as(f32, @floatFromInt(a.a)) * inv_t + @as(f32, @floatFromInt(b.a)) * clamped_t)),
-    };
-}
-
 pub const CustomData = union(enum) {
     canvas: Canvas,
     shape: ShapeData,
@@ -107,6 +85,7 @@ pub const Grid = struct {
         padding: clay.Padding = .{},
         bg_color: ?Color = null,
         child_alignment: clay.ChildAlignment = .{ .x = .left, .y = .top },
+        item_transition: clay.TransitionElementConfig = .{},
     };
 
     pub const Item = struct {
@@ -117,7 +96,7 @@ pub const Grid = struct {
 
     const Self = @This();
 
-    pub fn start(params: Params) Self {
+    pub fn start(ctx: *UIContext, params: Params) Self {
         const grid_id = clay.ElementId.ID(params.id);
         const first_item_id = clay.ElementId.IDI(params.id, 0);
 
@@ -127,12 +106,22 @@ pub const Grid = struct {
         // Derive column count from the first item's measured width last frame.
         // Defaults to 1 column on the first frame until a measurement exists.
         const item_data = clay.getElementData(first_item_id);
-        const items_per_row: usize = if (item_data.found and item_data.bounding_box.width > 0) blk: {
+        const desired_items_per_row: usize = if (item_data.found and item_data.bounding_box.width > 0) blk: {
             const gap: f32 = @floatFromInt(params.gap);
             break :blk @max(1, @as(usize, @intFromFloat(
                 @floor((available + gap) / (item_data.bounding_box.width + gap)),
             )));
         } else 1;
+
+        const state = ctx.getOrCreateWidgetState(grid_id, .{ .grid = .{
+            .items_per_row = desired_items_per_row,
+        } });
+
+        // On the frame after a resize Clay clears element position data, so skip
+        // updating the column count that frame
+        if (!ctx.clay_ctx.rootResizedLastFrame) {
+            state.grid.items_per_row = desired_items_per_row;
+        }
 
         const container = Container.start(.{
             .id = params.id,
@@ -148,7 +137,7 @@ pub const Grid = struct {
             .id = grid_id,
             .container = container,
             .params = params,
-            .items_per_row = items_per_row,
+            .items_per_row = state.grid.items_per_row,
         };
     }
 
@@ -166,14 +155,10 @@ pub const Grid = struct {
         const index = self.item_count;
         self.item_count += 1;
 
-        // Tag the first item with a stable ID so its width can be measured next frame.
-        if (index == 0) {
-            clay.openElementWithId(clay.ElementId.IDI(self.params.id, 0));
-        } else {
-            _ = clay.openElement();
-        }
+        clay.openElementWithId(clay.ElementId.IDI(self.params.id, @intCast(index)));
         clay.configureOpenElement(.{
             .layout = .{ .sizing = .{ .w = .fit, .h = .fit } },
+            .transition = self.params.item_transition,
         });
         return .{};
     }
@@ -738,6 +723,29 @@ pub const MenuBar = struct {
     }
 };
 
+// Shared enter/exit state for floating panels (dropdowns, comboboxes).
+// Offsets the bounding box 6px downward so panels slide up when entering and slide
+// down when exiting, giving a natural open/close feel regardless of direction.
+fn floatingPanelEdgeState(state: clay.TransitionData, _: clay.TransitionProperty) callconv(.c) clay.TransitionData {
+    var s = state;
+    s.bounding_box.y += 6;
+    return s;
+}
+
+const floating_panel_transition = clay.TransitionElementConfig{
+    .handler = clay.easeOut,
+    .duration = 0.05,
+    .properties = clay.TransitionProperty.position,
+    .enter = .{
+        .set_initial_state = floatingPanelEdgeState,
+        .trigger = .trigger_on_first_parent_frame,
+    },
+    .exit = .{
+        .set_final_state = floatingPanelEdgeState,
+        .sibling_ordering = .natural_order,
+    },
+};
+
 pub const DropdownMenu = struct {
     id: clay.ElementId,
     params: Params,
@@ -816,6 +824,7 @@ pub const DropdownMenu = struct {
                     .attach_points = .{ .element = .left_top, .parent = .left_bottom },
                     .z_index = 1,
                 },
+                .transition = floating_panel_transition,
             });
         }
 
@@ -1128,6 +1137,7 @@ pub fn Combobox(comptime Option: type) type {
                         .offset = .{ .x = 0, .y = offset_y },
                         .z_index = 1,
                     },
+                    .transition = floating_panel_transition,
                 });
 
                 const scroll = ScrollContainer.start(ctx, .{
@@ -1247,7 +1257,6 @@ pub const Slider = struct {
 
         const state = ctx.getOrCreateWidgetState(element_id, .{ .slider = .{
             .dragging = false,
-            .visual_value = params.value,
         } });
         const is_hovered = clay.pointerOver(element_id);
 
@@ -1275,15 +1284,7 @@ pub const Slider = struct {
             };
         }
 
-        const visual_target = if (state.slider.dragging and ctx.frame.mouse_down) raw_value else params.value;
-        state.slider.visual_value = animateValue(
-            state.slider.visual_value,
-            visual_target,
-            if (state.slider.dragging and ctx.frame.mouse_down) 28.0 else 18.0,
-            ctx.dt,
-        );
-        const visual_value = std.math.clamp(state.slider.visual_value, params.min, params.max);
-        state.slider.visual_value = visual_value;
+        const visual_value = std.math.clamp(if (state.slider.dragging and ctx.frame.mouse_down) raw_value else params.value, params.min, params.max);
 
         // Full-width track with a proportional left fill and a thumb at the boundary.
         const frac = if (params.max > params.min)
@@ -1296,6 +1297,17 @@ pub const Slider = struct {
         const fill_w = std.math.clamp(track_w * frac - thumb_d / 2.0, 0.0, track_w - thumb_d);
 
         const track_h: f32 = @floatFromInt(params.height);
+        const is_dragging = state.slider.dragging and ctx.frame.mouse_down;
+        const slider_transition = clay.TransitionElementConfig{
+            .handler = clay.easeOut,
+            .duration = if (is_dragging) 0 else 0.14,
+            .properties = .{ .width = true },
+        };
+        const slider_thumb_transition = clay.TransitionElementConfig{
+            .handler = clay.easeOut,
+            .duration = if (is_dragging) 0 else 0.14,
+            .properties = clay.TransitionProperty.position,
+        };
 
         // Outer container
         clay.configureOpenElement(.{
@@ -1306,34 +1318,36 @@ pub const Slider = struct {
             },
         });
 
-        // Left fill (up to the thumb).
-        if (fill_w > 0) {
-            _ = clay.openElement();
+        {
+            // Left fill (up to the thumb).
+            clay.openElementWithId(clay.ElementId.localID("slider-fill"));
             clay.configureOpenElement(.{
                 .layout = .{ .sizing = .{ .w = .fixed(fill_w), .h = .fixed(track_h) } },
                 .background_color = params.fill_color.toClay(),
                 .corner_radius = .all(params.corner_radius),
+                .transition = slider_transition,
+            });
+            clay.closeElement();
+
+            // Circular thumb
+            clay.openElementWithId(clay.ElementId.localID("slider-thumb"));
+            clay.configureOpenElement(.{
+                .layout = .{ .sizing = .{ .w = .fixed(thumb_d), .h = .fixed(thumb_d) } },
+                .background_color = params.thumb_color.toClay(),
+                .corner_radius = .all(thumb_d / 2.0),
+                .transition = slider_thumb_transition,
+            });
+            clay.closeElement();
+
+            // Right remainder track.
+            clay.openElementWithId(clay.ElementId.localID("slider-track"));
+            clay.configureOpenElement(.{
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(track_h) } },
+                .background_color = params.track_color.toClay(),
+                .corner_radius = .all(params.corner_radius),
             });
             clay.closeElement();
         }
-
-        // Circular thumb
-        _ = clay.openElement();
-        clay.configureOpenElement(.{
-            .layout = .{ .sizing = .{ .w = .fixed(thumb_d), .h = .fixed(thumb_d) } },
-            .background_color = params.thumb_color.toClay(),
-            .corner_radius = .all(thumb_d / 2.0),
-        });
-        clay.closeElement();
-
-        // Right remainder track.
-        _ = clay.openElement();
-        clay.configureOpenElement(.{
-            .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(track_h) } },
-            .background_color = params.track_color.toClay(),
-            .corner_radius = .all(params.corner_radius),
-        });
-        clay.closeElement();
 
         clay.closeElement();
         return .{ .id = element_id, .ctx = ctx, .updated_value = new_value };
@@ -1369,9 +1383,6 @@ pub const Toggle = struct {
             break :b element_id;
         } else clay.openElement();
 
-        const state = ctx.getOrCreateWidgetState(element_id, .{ .toggle = .{
-            .progress = if (params.value) 1.0 else 0.0,
-        } });
         const is_hovered = clay.pointerOver(element_id);
         var new_value = params.value;
         if (is_hovered and ctx.frame.mouse_pressed) new_value = !params.value;
@@ -1381,15 +1392,23 @@ pub const Toggle = struct {
         const pad: u16 = @intFromFloat(@round(h * 0.15));
         const circle_d: f32 = h - @as(f32, @floatFromInt(pad)) * 2.0;
         const travel = @max(0.0, w - @as(f32, @floatFromInt(pad * 2)) - circle_d);
-        const target_progress: f32 = if (new_value) 1.0 else 0.0;
-
-        state.toggle.progress = animateValue(state.toggle.progress, target_progress, 20.0, ctx.dt);
-        const progress = std.math.clamp(state.toggle.progress, 0.0, 1.0);
-        state.toggle.progress = progress;
-
-        const bg_color = lerpColor(params.off_color, params.on_color, progress);
-        const leading_space = travel * progress;
+        const leading_space = if (new_value) travel else 0.0;
         const trailing_space = travel - leading_space;
+        const toggle_bg_transition = clay.TransitionElementConfig{
+            .handler = clay.easeOut,
+            .duration = 0.12,
+            .properties = .{ .background_color = true },
+        };
+        const toggle_space_transition = clay.TransitionElementConfig{
+            .handler = clay.easeOut,
+            .duration = 0.12,
+            .properties = .{ .width = true },
+        };
+        const toggle_thumb_transition = clay.TransitionElementConfig{
+            .handler = clay.easeOut,
+            .duration = 0.12,
+            .properties = clay.TransitionProperty.position,
+        };
 
         clay.configureOpenElement(.{
             .layout = .{
@@ -1398,33 +1417,33 @@ pub const Toggle = struct {
                 .child_alignment = .{ .y = .center },
                 .padding = .all(pad),
             },
-            .background_color = bg_color.toClay(),
+            .background_color = (if (new_value) params.on_color else params.off_color).toClay(),
             .corner_radius = .all(h / 2.0),
+            .transition = toggle_bg_transition,
         });
 
-        if (leading_space > 0.0) {
-            _ = clay.openElement();
-            clay.configureOpenElement(.{
-                .layout = .{ .sizing = .{ .w = .fixed(leading_space), .h = .fixed(0) } },
-            });
-            clay.closeElement();
-        }
+        clay.openElementWithId(clay.ElementId.localID("toggle-leading-space"));
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(leading_space), .h = .fixed(0) } },
+            .transition = toggle_space_transition,
+        });
+        clay.closeElement();
 
-        _ = clay.openElement();
+        clay.openElementWithId(clay.ElementId.localID("toggle-thumb"));
         clay.configureOpenElement(.{
             .layout = .{ .sizing = .{ .w = .fixed(circle_d), .h = .fixed(circle_d) } },
             .background_color = params.thumb_color.toClay(),
             .corner_radius = .all(circle_d / 2.0),
+            .transition = toggle_thumb_transition,
         });
         clay.closeElement();
 
-        if (trailing_space > 0.0) {
-            _ = clay.openElement();
-            clay.configureOpenElement(.{
-                .layout = .{ .sizing = .{ .w = .fixed(trailing_space), .h = .fixed(0) } },
-            });
-            clay.closeElement();
-        }
+        clay.openElementWithId(clay.ElementId.localID("toggle-trailing-space"));
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(trailing_space), .h = .fixed(0) } },
+            .transition = toggle_space_transition,
+        });
+        clay.closeElement();
 
         clay.closeElement();
         return .{ .updated_value = new_value };
