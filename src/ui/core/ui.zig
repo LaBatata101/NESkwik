@@ -14,6 +14,7 @@ const GamepadButton = @import("../bindings.zig").GamepadButton;
 const ControllerPlayer = @import("../bindings.zig").ControllerPlayer;
 
 const PIXELOID_FONT = @embedFile("pixeloid_font");
+const APP_ICON = @embedFile("app_icon");
 
 fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
     std.debug.print("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
@@ -44,6 +45,14 @@ pub fn setMouseCursorText(value: bool) void {
     } else {
         sdlError(c.SDL_SetCursor(c.SDL_GetDefaultCursor()));
     }
+}
+
+fn setWindowIcon(window: ?*c.SDL_Window) void {
+    const io = c.SDL_IOFromConstMem(APP_ICON, APP_ICON.len);
+    const surface = c.SDL_LoadPNG_IO(io, true);
+    defer c.SDL_DestroySurface(surface);
+
+    sdlError(c.SDL_SetWindowIcon(window, surface));
 }
 
 const TextCacheItem = struct {
@@ -1584,6 +1593,10 @@ pub const UI = struct {
     const CLAY_ERROR_HANDLER = clay.ErrorHandler{ .error_handler_function = handleClayError };
 
     pub fn init(allocator: std.mem.Allocator, title: []const u8, width: i32, height: i32) !*Self {
+        sdlError(c.SDL_SetAppMetadata("NESkwik", "1.0.0", "com.labatata.neskwik"));
+        sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD));
+        sdlError(c.TTF_Init());
+
         if (c.glslang_initialize_process() != 1) {
             return error.GLSlangFailedToInitialize;
         }
@@ -1657,6 +1670,7 @@ pub const UI = struct {
             .renderer = try Renderer.init(allocator, gpu_device, main_window.ptr, vk_version),
         };
         sdlError(c.SDL_SetWindowMinimumSize(main_window.ptr, 300, 480));
+        setWindowIcon(main_window.ptr);
 
         const shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
         const border_shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
@@ -1708,6 +1722,9 @@ pub const UI = struct {
         c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);
         c.TTF_CloseFont(self.font);
+
+        c.TTF_Quit();
+        c.SDL_Quit();
 
         self.allocator.destroy(self);
     }
@@ -1864,6 +1881,7 @@ pub const UI = struct {
             .renderer = Renderer.init(self.allocator, self.gpu_device, window.ptr, vulkan.detect_vulkan_version()) catch @panic("OOM"),
         };
 
+        setWindowIcon(window.ptr);
         sdlError(c.SDL_SetWindowParent(window.ptr, self.main_window.ptr));
         sdlError(c.SDL_SetWindowModal(window.ptr, true));
 

@@ -77,6 +77,7 @@ pub fn build(b: *std.Build) void {
 
     mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("resources/fonts/PixeloidSans.ttf") });
     mod.addAnonymousImport("nes_controller_img", .{ .root_source_file = b.path("resources/images/nes-controller.png") });
+    mod.addAnonymousImport("app_icon", .{ .root_source_file = b.path("resources/images/nes-icon-256x256.png") });
 
     const exe = b.addExecutable(.{
         .name = "ness",

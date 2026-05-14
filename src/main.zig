@@ -12,18 +12,7 @@ const widgets = ness.ui.widgets;
 const FPSManager = ness.render.FPSManager;
 const sdlError = ness.sdlError;
 
-const SCALE = 3;
 const CURSOR_HIDE_DELAY_MS = 3000;
-
-fn init_sdl_systems() void {
-    sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD));
-    sdlError(c.TTF_Init());
-}
-
-fn deinit_sdl_systems() void {
-    c.TTF_Quit();
-    c.SDL_Quit();
-}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
@@ -32,9 +21,6 @@ pub fn main() !void {
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
-
-    init_sdl_systems();
-    defer deinit_sdl_systems();
 
     var ui = try UI.init(allocator, "NESkwik", 1280, 720);
     defer ui.deinit();
