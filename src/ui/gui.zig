@@ -604,9 +604,9 @@ fn drawContentSectionHeader(ui: *UI, title: []const u8) void {
     });
 }
 
-fn drawContentSection(ui: *UI, params: struct { padding: ?clay.Padding = null }) *widgets.Container {
+fn drawContentSection(ui: *UI, params: struct { padding: ?clay.Padding = null, sizing: ?clay.Sizing = null }) *widgets.Container {
     return ui.column(.{
-        .sizing = .{ .w = .grow, .h = .fit },
+        .sizing = if (params.sizing) |sizing| sizing else .{ .w = .grow, .h = .fit },
         .bg_color = theme.bg_section,
         .padding = if (params.padding) |padding| padding else .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
         .gap = 12,
@@ -1133,11 +1133,13 @@ fn drawShaderParamsSection(
 ) void {
     drawContentSectionHeader(ui, title);
 
-    const section = drawContentSection(ui, .{});
+    const section = drawContentSection(ui, .{
+        .sizing = .{ .w = .growMinMax(.{ .max = 500 }), .h = .fit },
+    });
     {
         const scroll = ui.scrollArea(.{
-            .padding = .{ .left = 14, .right = 14, .top = 12, .bottom = 12 },
             .gap = 12,
+            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .max = 350 }) },
         });
         {
             for (param_infos) |info| {
