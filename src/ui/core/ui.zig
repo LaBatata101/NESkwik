@@ -801,6 +801,7 @@ pub const Renderer = struct {
     vertices: std.ArrayList(c.SDL_Vertex),
     indices: std.ArrayList(u32),
     draw_calls: std.ArrayList(DrawCall),
+    clip_stack: std.ArrayList(?c.SDL_Rect),
 
     vertex_buffer: ?*c.SDL_GPUBuffer = null,
     index_buffer: ?*c.SDL_GPUBuffer = null,
@@ -911,6 +912,7 @@ pub const Renderer = struct {
             .vertices = .empty,
             .indices = .empty,
             .draw_calls = .empty,
+            .clip_stack = .empty,
             .current_texture = self.white_texture,
             .pipeline = sdlError(c.SDL_CreateGPUGraphicsPipeline(device, &.{
                 .vertex_shader = vert,
@@ -971,6 +973,7 @@ pub const Renderer = struct {
         self.vertices.deinit(self.allocator);
         self.indices.deinit(self.allocator);
         self.draw_calls.deinit(self.allocator);
+        self.clip_stack.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -978,6 +981,7 @@ pub const Renderer = struct {
         self.vertices.clearRetainingCapacity();
         self.indices.clearRetainingCapacity();
         self.draw_calls.clearRetainingCapacity();
+        self.clip_stack.clearRetainingCapacity();
         self.current_texture = self.white_texture;
         self.current_clip = null;
 
@@ -1036,6 +1040,33 @@ pub const Renderer = struct {
     fn setClipRect(self: *Self, rect: ?c.SDL_Rect) void {
         self.current_clip = rect;
         self.flush();
+    }
+
+    fn pushClipRect(self: *Self, rect: c.SDL_Rect) void {
+        self.clip_stack.append(self.allocator, self.current_clip) catch @panic("Failed to allocate");
+        self.setClipRect(if (self.current_clip) |current| intersectClipRects(current, rect) else rect);
+    }
+
+    fn popClipRect(self: *Self) void {
+        if (self.clip_stack.pop()) |rect| {
+            self.setClipRect(rect);
+        } else {
+            self.setClipRect(null);
+        }
+    }
+
+    fn intersectClipRects(a: c.SDL_Rect, b: c.SDL_Rect) c.SDL_Rect {
+        const left = @max(a.x, b.x);
+        const top = @max(a.y, b.y);
+        const right = @min(a.x + a.w, b.x + b.w);
+        const bottom = @min(a.y + a.h, b.y + b.h);
+
+        return .{
+            .x = left,
+            .y = top,
+            .w = @max(0, right - left),
+            .h = @max(0, bottom - top),
+        };
     }
 
     fn pushRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, uv: ?c.SDL_FRect) void {
@@ -2128,9 +2159,9 @@ pub const UI = struct {
                         .w = @intFromFloat(cmd.bounding_box.width),
                         .h = @intFromFloat(cmd.bounding_box.height),
                     };
-                    window.renderer.setClipRect(clip_rect);
+                    window.renderer.pushClipRect(clip_rect);
                 },
-                clay.RenderCommandType.scissor_end => window.renderer.setClipRect(null),
+                clay.RenderCommandType.scissor_end => window.renderer.popClipRect(),
                 clay.RenderCommandType.custom => self.renderCustom(&cmd, window),
                 else => {
                     std.log.warn("Render command not impl: {any}", .{cmd.command_type});
