@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdlError = @import("utils/sdl.zig").sdlError;
 const c = @import("root.zig").c;
+const paths = @import("paths.zig");
 
 pub const THUMBNAIL_WIDTH: u32 = 256;
 pub const THUMBNAIL_HEIGHT: u32 = 224;
@@ -27,11 +28,10 @@ pub const GameHistory = struct {
     entries: std.ArrayList(GameEntry),
     data_dir: ?[]u8, // null when the OS data dir is unavailable
 
-    const APP_NAME = "ness";
     const HISTORY_SUBDIR = "history";
 
     pub fn init(alloc: std.mem.Allocator) GameHistory {
-        const data_dir = std.fs.getAppDataDir(alloc, APP_NAME) catch null;
+        const data_dir = paths.getDataDir(alloc) catch null;
         return .{
             .alloc = alloc,
             .entries = .{},

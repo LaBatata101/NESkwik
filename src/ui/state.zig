@@ -9,6 +9,7 @@ const utils = @import("core/utils.zig");
 const System = @import("../system.zig").System;
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
+const paths = @import("../paths.zig");
 const ness = @import("../root.zig");
 
 const NES_WIDTH = ness.NES_WIDTH;
@@ -134,7 +135,7 @@ pub const UIState = struct {
         const img_bytes = c.SDL_IOFromConstMem(NES_CONTROLLER_IMG, NES_CONTROLLER_IMG.len);
         const surface = c.SDL_LoadPNG_IO(img_bytes, true);
 
-        const config_dir = settings.getSettingsDir(alloc) catch |err| blk: {
+        const config_dir = paths.getConfigDir(alloc) catch |err| blk: {
             std.log.warn("settings directory unavailable: {s}", .{@errorName(err)});
             break :blk null;
         };
