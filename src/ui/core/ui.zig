@@ -1656,6 +1656,7 @@ pub const UI = struct {
             .ctx = ui_ctx,
             .renderer = try Renderer.init(allocator, gpu_device, main_window.ptr, vk_version),
         };
+        sdlError(c.SDL_SetWindowMinimumSize(main_window.ptr, 300, 480));
 
         const shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
         const border_shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
