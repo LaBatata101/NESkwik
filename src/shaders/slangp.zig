@@ -300,28 +300,40 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
                         try textures.put(try alloc.dupe(u8, texture_name), .{});
                     }
                     continue;
-                } else if (is_shader_param(field) or textures.contains(field)) {
-                    if (std.mem.endsWith(u8, field, "_linear")) {
-                        const base = field[0 .. field.len - "_linear".len];
-                        if (textures.getEntry(base)) |entry| {
-                            entry.value_ptr.*.linear = std.mem.eql(u8, value_tok.value, "true");
-                        }
-                    } else if (textures.getEntry(field)) |entry| {
-                        entry.value_ptr.*.path = try alloc.dupe(u8, value_tok.value);
-                    } else {
-                        const value: TypeUnion = blk: {
-                            if (is_float(value_tok.value)) {
-                                break :blk .{ .Float = try std.fmt.parseFloat(f32, value_tok.value) };
-                            } else if (std.mem.eql(u8, value_tok.value, "true")) {
-                                break :blk .{ .Bool = true };
-                            } else if (std.mem.eql(u8, value_tok.value, "false")) {
-                                break :blk .{ .Bool = false };
-                            } else {
-                                break :blk .{ .String = try alloc.dupe(u8, value_tok.value) };
-                            }
-                        };
-                        try shader_params.put(try alloc.dupe(u8, field), value);
+                }
+
+                if (textures.getEntry(field)) |entry| {
+                    entry.value_ptr.*.path = try alloc.dupe(u8, value_tok.value);
+                    continue;
+                }
+
+                if (std.mem.endsWith(u8, field, "_linear")) {
+                    const base = field[0 .. field.len - "_linear".len];
+                    if (textures.getEntry(base)) |entry| {
+                        entry.value_ptr.*.linear = std.mem.eql(u8, value_tok.value, "true");
+                        continue;
                     }
+                } else if (std.mem.endsWith(u8, field, "_wrap_mode")) {
+                    const base = field[0 .. field.len - "_wrap_mode".len];
+                    if (textures.contains(base)) continue;
+                } else if (std.mem.endsWith(u8, field, "_mipmap")) {
+                    const base = field[0 .. field.len - "_mipmap".len];
+                    if (textures.contains(base)) continue;
+                }
+
+                if (is_shader_param(field)) {
+                    const value: TypeUnion = blk: {
+                        if (is_float(value_tok.value)) {
+                            break :blk .{ .Float = try std.fmt.parseFloat(f32, value_tok.value) };
+                        } else if (std.mem.eql(u8, value_tok.value, "true")) {
+                            break :blk .{ .Bool = true };
+                        } else if (std.mem.eql(u8, value_tok.value, "false")) {
+                            break :blk .{ .Bool = false };
+                        } else {
+                            break :blk .{ .String = try alloc.dupe(u8, value_tok.value) };
+                        }
+                    };
+                    try shader_params.put(try alloc.dupe(u8, field), value);
                     continue;
                 }
 
@@ -546,11 +558,15 @@ test "parse_slangp_with_textures" {
         \\scale_type_x0 = "absolute"
         \\scantime = "47.900070"
         \\
-        \\textures = COLOR_PALETTE;BACKGROUND
+        \\textures = COLOR_PALETTE;BACKGROUND;SamplerLUT1
         \\COLOR_PALETTE = gameboy/resources/palette.png
         \\COLOR_PALETTE_linear = false
         \\BACKGROUND = gameboy/resources/background.png
         \\BACKGROUND_linear = true
+        \\SamplerLUT1 = shaders/guest/advanced/lut/trinitron-lut.png
+        \\SamplerLUT1_linear = true
+        \\SamplerLUT1_wrap_mode = clamp_to_edge
+        \\SamplerLUT1_mipmap = false
     ;
     var shader_config = try parse_slangp(alloc, source);
     defer shader_config.deinit(alloc);
@@ -558,9 +574,10 @@ test "parse_slangp_with_textures" {
     const expected = [_]struct { []const u8, []const u8, bool }{
         .{ "COLOR_PALETTE", "gameboy/resources/palette.png", false },
         .{ "BACKGROUND", "gameboy/resources/background.png", true },
+        .{ "SamplerLUT1", "shaders/guest/advanced/lut/trinitron-lut.png", true },
     };
 
-    try std.testing.expectEqual(2, shader_config.textures.count());
+    try std.testing.expectEqual(3, shader_config.textures.count());
     for (expected) |entry| {
         const value = shader_config.textures.get(entry[0]);
         try std.testing.expect(value != null);
