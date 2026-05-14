@@ -998,7 +998,7 @@ pub fn parseShader(alloc: std.mem.Allocator, dir: []const u8, source: []const u8
             .PragmaParam => |param| try shader_params.put(
                 try alloc.dupe(u8, param.id),
                 .{
-                    .option_name = try alloc.dupe(u8, param.description),
+                    .option_name = try alloc.dupe(u8, std.mem.trim(u8, param.description, " \t\r\n")),
                     .initial = param.initial,
                     .min = param.min,
                     .max = param.max,
@@ -1693,6 +1693,38 @@ test "parse_shader" {
     );
     defer alloc.free(got);
     try std.testing.expect(std.mem.eql(u8, expected, got));
+}
+
+test "parse_shader trims parameter display names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\#version 450
+        \\
+        \\layout(push_constant) uniform Push
+        \\{
+        \\    float value;
+        \\} params;
+        \\
+        \\#pragma parameter value "   Padded Label   " 1.0 0.0 2.0 0.5
+        \\#pragma stage vertex
+        \\layout(location = 0) in vec4 Position;
+        \\layout(location = 1) in vec2 TexCoord;
+        \\layout(location = 0) out vec2 vTexCoord;
+        \\void main() { gl_Position = Position; vTexCoord = TexCoord; }
+        \\#pragma stage fragment
+        \\layout(location = 0) in vec2 vTexCoord;
+        \\layout(location = 0) out vec4 FragColor;
+        \\void main() { FragColor = vec4(vTexCoord, 0.0, 1.0); }
+    ;
+
+    var shader = try parseShader(alloc, ".", source);
+    defer shader.deinit(alloc);
+
+    const config = shader.config.?;
+    try std.testing.expectEqualStrings("Padded Label", config.get("value").?.option_name);
 }
 
 const c = @cImport({
