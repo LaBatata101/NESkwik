@@ -2493,7 +2493,8 @@ pub const UI = struct {
 
                 const sp = self.shader_pipeline orelse null;
                 const bsp = self.border_shader_pipeline orelse null;
-                const should_defer = window.ptr == self.main_window.ptr and
+                const should_defer = canvas_.params.apply_runtime_shaders and
+                    window.ptr == self.main_window.ptr and
                     ((sp != null and sp.?.isActive()) or (bsp != null and bsp.?.isActive()));
                 if (should_defer) {
                     // A shader pipeline is active: defer rendering to after the UI pass.

@@ -678,6 +678,10 @@ pub const Canvas = struct {
         /// instead of uploading `pixels`. Falls back to `pixels` if the
         /// pipeline has no output yet.
         shader_preview: ?ShaderPreview = null,
+        /// Runtime shader pipelines are only meant for the emulator frame.
+        /// Other canvases, such as thumbnails and UI reference images, should
+        /// remain ordinary UI textures even when a shader is active.
+        apply_runtime_shaders: bool = false,
     };
     const Self = @This();
 
