@@ -38,20 +38,20 @@ pub fn main() !void {
                 if (std.mem.eql(u8, arg1, "--step")) {
                     step_mode = true;
                     if (args.next()) |arg2| {
-                        ui_state.setSelectedRom(arg2);
+                        try ui_state.loadRom(arg2);
                     } else {
                         std.debug.print("ROM file path not provided\n", .{});
                         std.process.exit(1);
                     }
                 } else {
-                    ui_state.setSelectedRom(arg1);
+                    try ui_state.loadRom(arg1);
                 }
             } else {
                 std.debug.print("ROM file path not provided\n", .{});
                 std.process.exit(1);
             }
         } else {
-            ui_state.setSelectedRom(arg0);
+            try ui_state.loadRom(arg0);
         }
         ui_state.render_home_ui = false;
     }
@@ -64,49 +64,6 @@ pub fn main() !void {
 
     while (!ui.shouldClose()) {
         ui.beginFrame();
-
-        if (ui_state.should_load_rom) {
-            const rom_path = ui_state.getSelectedRom();
-            std.log.debug("Reading file: {s}", .{rom_path});
-            const cwd = try std.process.getCwdAlloc(allocator);
-            defer allocator.free(cwd);
-            const rom_abs_path = try std.fs.path.resolve(allocator, &.{ cwd, rom_path });
-            defer allocator.free(rom_abs_path);
-
-            const file = std.fs.openFileAbsolute(rom_abs_path, .{}) catch |err| switch (err) {
-                else => {
-                    std.debug.print("Error while opening file: {any}\n", .{err});
-                    std.process.exit(1);
-                },
-            };
-            defer file.close();
-
-            const file_size = try file.getEndPos();
-            try file.seekTo(0);
-
-            if (ui_state.rom_bytes) |rom_bytes| allocator.free(rom_bytes);
-            ui_state.rom_bytes = try allocator.alloc(u8, file_size);
-            _ = try file.read(ui_state.rom_bytes.?);
-
-            ui_state.loadRom(rom_abs_path, ui_state.rom_bytes.?) catch |err| switch (err) {
-                error.InvalidNesFormat => {
-                    std.debug.print("Error: ROM format not supported!\n", .{});
-                    std.process.exit(1);
-                },
-                error.OutOfMemory => {
-                    std.debug.print("Error: Failed to allocate resources for ROM\n", .{});
-                    std.process.exit(1);
-                },
-                error.UnsupportedMapper => {
-                    std.debug.print("Error: Mapper not supported\n", .{});
-                    std.process.exit(1);
-                },
-                else => {
-                    std.debug.print("Another error ocurred: {any}\n", .{err});
-                    std.process.exit(1);
-                },
-            };
-        }
 
         gui.drawGUI(ui, &ui_state);
 

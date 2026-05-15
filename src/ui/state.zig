@@ -47,9 +47,6 @@ pub const SettingsCategory = enum {
 
 pub const UIState = struct {
     alloc: std.mem.Allocator,
-    selected_rom_filepath: ?[]const u8 = null,
-    /// Whether to load the selected ROM.
-    should_load_rom: bool = false,
     /// Wheter to skip drawing the home screen.
     render_home_ui: bool = true,
     render_debug_ui: bool = false,
@@ -160,7 +157,6 @@ pub const UIState = struct {
 
         if (self.config_dir) |path| self.alloc.free(path);
         if (self.current_rom_path) |p| self.alloc.free(p);
-        if (self.selected_rom_filepath) |filepath| self.alloc.free(filepath);
         if (self.rom_bytes) |rom_bytes| self.alloc.free(rom_bytes);
         deinitEmulatorSettings(self.alloc, &self.settings);
         deinitEmulatorSettings(self.alloc, &self.saved_settings);
@@ -172,19 +168,41 @@ pub const UIState = struct {
         }
     }
 
-    pub fn loadRom(self: *Self, path: []const u8, bytes: []u8) !void {
+    pub fn loadRom(self: *Self, path: []const u8) !void {
         // Save previous game's progress before replacing it.
         if (self.emulation_running) self.saveCurrentGame();
 
         if (self.rom) |*rom| rom.deinit();
         if (self.system) |*system| system.deinit();
 
-        self.rom = try Rom.init(self.alloc, path, bytes);
+        const cwd = try std.process.getCwdAlloc(self.alloc);
+        defer self.alloc.free(cwd);
+        const rom_abs_path = try std.fs.path.resolve(self.alloc, &.{ cwd, path });
+        defer self.alloc.free(rom_abs_path);
+
+        const file = std.fs.openFileAbsolute(rom_abs_path, .{}) catch |err| switch (err) {
+            else => {
+                std.debug.print("Error while opening file: {any}\n", .{err});
+                std.process.exit(1);
+            },
+        };
+        defer file.close();
+
+        const file_size = try file.getEndPos();
+        try file.seekTo(0);
+
+        std.log.debug("Reading file: {s}", .{rom_abs_path});
+        if (self.rom_bytes) |bytes| self.alloc.free(bytes);
+        self.rom_bytes = try self.alloc.alloc(u8, file_size);
+        _ = try file.read(self.rom_bytes.?);
+
+        self.rom = try Rom.init(self.alloc, path, self.rom_bytes.?);
         self.system = try System.init(self.alloc, &self.rom.?, .{});
-        self.applyControllerBindings();
         self.system.?.reset();
         self.emulation_running = true;
         self.render_home_ui = false;
+
+        self.applyControllerBindings();
 
         if (self.current_rom_path) |p| self.alloc.free(p);
         self.current_rom_path = self.alloc.dupe(u8, path) catch null;
@@ -197,9 +215,11 @@ pub const UIState = struct {
         self.rom.?.deinit();
         self.system.?.deinit();
         self.alloc.free(self.current_rom_path.?);
+        self.alloc.free(self.rom_bytes.?);
 
         self.rom = null;
         self.system = null;
+        self.rom_bytes = null;
         self.current_rom_path = null;
         self.emulation_running = false;
         self.render_home_ui = true;
@@ -225,17 +245,6 @@ pub const UIState = struct {
 
         // Reset so back-to-back saves (loadRom then deinit) don't double-count.
         self.game_start_time_ms = std.time.milliTimestamp();
-    }
-
-    pub fn setSelectedRom(self: *Self, filepath: []const u8) void {
-        if (self.selected_rom_filepath) |path| self.alloc.free(path);
-        self.selected_rom_filepath = self.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
-        self.should_load_rom = true;
-    }
-
-    pub fn getSelectedRom(self: *Self) []const u8 {
-        self.should_load_rom = false;
-        return self.selected_rom_filepath.?;
     }
 
     pub fn applyControllerBindings(self: *Self) void {

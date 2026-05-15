@@ -1576,8 +1576,6 @@ fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]
 }
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
-    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
-
     if (filelist == null) {
         std.debug.print("An error ocurred while selecting the file: {s}\n", .{c.SDL_GetError()});
         return;
@@ -1585,8 +1583,9 @@ fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c
     if (filelist.* == null) { // A pointer to NULL, the user either didn't choose any file or canceled the dialog.
         return;
     }
+    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
 
     const filepath = std.mem.span(filelist.*);
     std.log.debug("User selected file: {s}", .{filepath});
-    ui_state.setSelectedRom(filepath);
+    ui_state.loadRom(filepath) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
 }
