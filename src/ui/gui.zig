@@ -435,8 +435,8 @@ fn drawGameCard(ui: *UI, ui_state: *UIState, entry: *const game_history.GameEntr
     }
     card.end();
 
-    if (clay.pointerOver(card.id) and ctx.frame.mouse_released) {
-        ui_state.setSelectedRom(entry.rom_path);
+    if (card.clicked(ui.main_window.ctx)) {
+        ui_state.loadRom(entry.rom_path) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
     }
 }
 

@@ -68,6 +68,11 @@ pub const Container = struct {
     pub fn end(_: *const Self) void {
         clay.closeElement();
     }
+
+    pub fn clicked(self: *const Self, ctx: *UIContext) bool {
+        const is_hovered = clay.pointerOver(self.id);
+        return is_hovered and ctx.frame.mouse_released;
+    }
 };
 
 pub const Grid = struct {
