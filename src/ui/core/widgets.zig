@@ -807,41 +807,39 @@ pub const DropdownMenu = struct {
             }
         }
 
-        if (state.dropdown_menu.is_open) {
-            clay.openElementWithId(menu_list_id);
-            clay.configureOpenElement(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(params.width), .h = .fit },
-                    .direction = .top_to_bottom,
-                    .padding = .all(4),
-                    .child_gap = 2,
-                },
-                .background_color = params.list_bg_color.toClay(),
-                .corner_radius = .all(4),
-                .border = .{ .width = .outside(1), .color = params.list_border_color.toClay() },
-                .floating = .{
-                    .attach_to = .to_element_with_id,
-                    .parentId = element_id.id, // Attach to the button we just drew
-                    .attach_points = .{ .element = .left_top, .parent = .left_bottom },
-                    .z_index = std.math.maxInt(i16),
-                },
-                .transition = floating_panel_transition,
-            });
-        }
-
+        clay.openElementWithId(menu_list_id);
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(params.width), .h = .fit },
+                .direction = .top_to_bottom,
+                .padding = .all(4),
+                .child_gap = 2,
+            },
+            .background_color = params.list_bg_color.toClay(),
+            .corner_radius = .all(4),
+            .border = if (state.dropdown_menu.is_open)
+                .{ .width = .outside(1), .color = params.list_border_color.toClay() }
+            else
+                .{},
+            .floating = .{
+                .attach_to = .to_element_with_id,
+                .parentId = element_id.id,
+                .attach_points = .{ .element = .left_top, .parent = .left_bottom },
+                .z_index = std.math.maxInt(i16),
+            },
+            .transition = floating_panel_transition,
+            .no_render = !state.dropdown_menu.is_open,
+        });
         return .{ .id = element_id, .params = params, .ctx = ctx };
     }
 
     pub fn end(self: *const Self) void {
         self.ctx.popParent();
         const state = self.ctx.getWidgetStateById(self.id).?;
-        if (state.dropdown_menu.is_open) {
-            clay.closeElement();
-
-            if (self.ctx.frame.menu_item_clicked) {
-                state.dropdown_menu.is_open = false;
-                self.ctx.frame.active_id = null;
-            }
+        clay.closeElement();
+        if (state.dropdown_menu.is_open and self.ctx.frame.menu_item_clicked) {
+            state.dropdown_menu.is_open = false;
+            self.ctx.frame.active_id = null;
         }
     }
 };
@@ -863,13 +861,6 @@ pub const MenuItem = struct {
     const Self = @This();
 
     pub fn start(ctx: *UIContext, params: Params) Self {
-        if (ctx.getParentState()) |state| {
-            // Only end the menu item if the dropdown menu is open.
-            if (!state.dropdown_menu.is_open) {
-                return .{ .id = null, .params = params };
-            }
-        }
-
         const id = if (params.id) |id| b: {
             const element_id = clay.ElementId.ID(id);
             clay.openElementWithId(element_id);
