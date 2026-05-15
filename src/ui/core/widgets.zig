@@ -502,9 +502,7 @@ pub const ScrollContainer = struct {
     params: Params,
 
     pub const Params = struct {
-        element_id: ?clay.ElementId = null,
         id: ?[]const u8 = null,
-        scrollbar_id: ?clay.ElementId = null,
         sizing: clay.Sizing = .grow,
         vertical: bool = true,
         horizontal: bool = false,
@@ -516,10 +514,7 @@ pub const ScrollContainer = struct {
     const Self = @This();
 
     pub fn start(ctx: *UIContext, params: Params) Self {
-        const element_id = if (params.element_id) |element_id| b: {
-            clay.openElementWithId(element_id);
-            break :b element_id;
-        } else if (params.id) |id| b: {
+        const element_id = if (params.id) |id| b: {
             const element_id = clay.ElementId.ID(id);
             clay.openElementWithId(element_id);
             break :b element_id;
@@ -572,10 +567,7 @@ pub const ScrollContainer = struct {
                     const scroll_track_space = viewport_h - scroll_bar_height;
                     const scroll_bar_y = scroll_ratio * scroll_track_space;
 
-                    const scrollbar_id = if (params.scrollbar_id) |scrollbar_id|
-                        scrollbar_id
-                    else
-                        clay.ElementId.localIDI("scrollbar", element_id.id);
+                    const scrollbar_id = clay.ElementId.localIDI("scrollbar", element_id.id);
                     const is_hovered = clay.pointerOver(scrollbar_id);
 
                     if (is_hovered and ctx.frame.mouse_pressed) {
@@ -980,6 +972,7 @@ pub fn Combobox(comptime Option: type) type {
             float_panel: struct {
                 bg_color: Color = .white,
                 border_color: Color = .gray,
+                max_height: f32 = 200.0,
             } = .{},
             item: struct {
                 bg_color: Color = .white,
@@ -1018,12 +1011,10 @@ pub fn Combobox(comptime Option: type) type {
             state.combobox.selected_key = optionKey(params.selected orelse params.options[0]);
 
             const menu_list_id = clay.ElementId.localIDI("combobox_list", element_id.id);
-            const scroll_id = clay.ElementId.localIDI("scroll_area", element_id.id);
-            const scrollbar_id = clay.ElementId.localIDI("scrollbar", scroll_id.id);
 
             const is_hovered = clay.hovered();
             const is_list_hovered = if (state.combobox.is_open)
-                clay.pointerOver(menu_list_id) or clay.pointerOver(scrollbar_id)
+                clay.pointerOver(menu_list_id)
             else
                 false;
 
@@ -1088,7 +1079,7 @@ pub fn Combobox(comptime Option: type) type {
                 const combobox_data = clay.getElementData(element_id);
                 const layout_dims = ctx.clay_ctx.layoutDimensions;
 
-                const max_height_cap: f32 = 200.0;
+                const max_height_cap: f32 = params.float_panel.max_height;
                 const gap: f32 = 3.0;
                 const margin: f32 = 4.0;
 
@@ -1146,8 +1137,6 @@ pub fn Combobox(comptime Option: type) type {
                 });
 
                 const scroll = ScrollContainer.start(ctx, .{
-                    .element_id = scroll_id,
-                    .scrollbar_id = scrollbar_id,
                     .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = 0, .max = scroll_max_h }) },
                     .gap = 2,
                 });
