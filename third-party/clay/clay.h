@@ -869,6 +869,8 @@ typedef struct Clay_ElementDeclaration {
     Clay_TransitionElementConfig transition;
     // A pointer that will be transparently passed through to resulting render commands.
     void *userData;
+    // When true, suppresses render command generation for this element and all its children.
+    bool noRender;
 } Clay_ElementDeclaration;
 
 CLAY__WRAPPER_STRUCT(Clay_ElementDeclaration);
@@ -2572,6 +2574,7 @@ bool Clay__ElementIsOffscreen(Clay_BoundingBox *boundingBox) {
 
 void Clay__CalculateFinalLayout(float deltaTime, bool useStoredBoundingBoxes, bool generateRenderCommands) {
     Clay_Context* context = Clay_GetCurrentContext();
+    int32_t noRenderDepth = 0;
 
     // Calculate sizing along the X axis
     Clay__int32_tArray textElements = context->openClipElementStack;
@@ -2817,7 +2820,8 @@ void Clay__CalculateFinalLayout(float deltaTime, bool useStoredBoundingBoxes, bo
                     continue;
                 }
                 Clay_LayoutElementHashMapItem *currentElementData = Clay__GetHashMapItem(currentElement->id);
-                if (generateRenderCommands && !Clay__ElementIsOffscreen(&currentElementData->boundingBox)) {
+                if (currentElement->config.noRender) { noRenderDepth--; }
+                if (generateRenderCommands && noRenderDepth == 0 && !Clay__ElementIsOffscreen(&currentElementData->boundingBox)) {
                     // DFS is returning upwards backwards
                     bool closeClipElement = false;
                     if (currentElement->config.clip.horizontal || currentElement->config.clip.vertical) {
@@ -2965,8 +2969,10 @@ void Clay__CalculateFinalLayout(float deltaTime, bool useStoredBoundingBoxes, bo
 
             bool offscreen = Clay__ElementIsOffscreen(&currentElementBoundingBox);
 
+            if (!currentElement->isTextElement && currentElement->config.noRender) { noRenderDepth++; }
+
             // Generate render commands for current element
-            if (generateRenderCommands && !offscreen) {
+            if (generateRenderCommands && noRenderDepth == 0 && !offscreen) {
                 if (currentElement->isTextElement) {
                     Clay_TextElementConfig *textElementConfig = &currentElement->textConfig;
                     float naturalLineHeight = currentElement->textElementData.preferredDimensions.height;
@@ -4128,6 +4134,11 @@ void Clay_SetPointerState(Clay_Vector2 position, bool isPointerDown) {
                 }
 
                 if (skipTree) {
+                    dfsBuffer.length--;
+                    continue;
+                }
+
+                if (!currentElement->isTextElement && currentElement->config.noRender) {
                     dfsBuffer.length--;
                     continue;
                 }

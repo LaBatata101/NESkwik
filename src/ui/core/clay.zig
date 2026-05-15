@@ -991,6 +991,8 @@ pub const ElementDeclarationNoId = extern struct {
     transition: TransitionElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     user_data: ?*anyopaque = null,
+    /// When true, suppresses render command generation for this element and all its children.
+    no_render: bool = false,
 };
 pub const ElementDeclaration = extern struct {
     /// Element IDs have two main use cases.
@@ -1032,6 +1034,8 @@ pub const ElementDeclaration = extern struct {
     transition: TransitionElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     user_data: ?*anyopaque = null,
+    /// When true, suppresses render command generation for this element and all its children.
+    no_render: bool = false,
 };
 /// Main API for creating UI elements with children
 ///
