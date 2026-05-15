@@ -226,6 +226,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     ui_state.system.?.reset();
                 }
 
+                _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
                 if (ui.menuItem(.{
                     .label = "Debug",
                     .enabled = ui_state.emulation_running,
@@ -235,6 +236,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 }).clicked(ui.main_window.ctx)) {
                     ui_state.render_debug_ui = !ui_state.render_debug_ui;
                 }
+                _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
 
                 if (ui.menuItem(.{
                     .label = "Settings",
