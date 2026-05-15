@@ -136,7 +136,7 @@ pub fn main() !void {
                 }
             }
 
-            if (!step_mode) {
+            if (!step_mode and !ui_state.paused) {
                 const speed = ui_state.settings.emulation_speed;
                 frame_acc += speed.multiplier();
                 const frames_to_run: u32 = @intFromFloat(frame_acc);

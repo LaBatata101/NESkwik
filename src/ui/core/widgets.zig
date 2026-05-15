@@ -185,6 +185,7 @@ pub const Float = struct {
         pointer_capture_mode: clay.PointerCaptureMode = .capture,
         attach_to: clay.FloatingAttachToElement = .to_none,
         clip_to: clay.FloatingClipToElement = .to_none,
+        sizing: clay.Sizing = .fit,
     };
     const Self = @This();
 
@@ -195,16 +196,19 @@ pub const Float = struct {
             break :b element_id;
         } else clay.openElement();
 
-        clay.configureOpenElement(.{ .floating = .{
-            .offset = params.offset,
-            .expand = params.expand,
-            .parentId = params.parentId,
-            .z_index = params.z_index,
-            .attach_points = params.attach_points,
-            .pointer_capture_mode = params.pointer_capture_mode,
-            .attach_to = params.attach_to,
-            .clip_to = params.clip_to,
-        } });
+        clay.configureOpenElement(.{
+            .floating = .{
+                .offset = params.offset,
+                .expand = params.expand,
+                .parentId = params.parentId,
+                .z_index = params.z_index,
+                .attach_points = params.attach_points,
+                .pointer_capture_mode = params.pointer_capture_mode,
+                .attach_to = params.attach_to,
+                .clip_to = params.clip_to,
+            },
+            .layout = .{ .sizing = params.sizing },
+        });
 
         return .{ .id = element_id };
     }
@@ -822,7 +826,7 @@ pub const DropdownMenu = struct {
                     .attach_to = .to_element_with_id,
                     .parentId = element_id.id, // Attach to the button we just drew
                     .attach_points = .{ .element = .left_top, .parent = .left_bottom },
-                    .z_index = 1,
+                    .z_index = std.math.maxInt(i16),
                 },
                 .transition = floating_panel_transition,
             });
@@ -902,11 +906,7 @@ pub const MenuItem = struct {
             ctx.frame.menu_item_clicked = true;
         }
 
-        return .{ .id = id, .params = .{
-            .label = params.label,
-            .padding = params.padding,
-            .shortcut = params.shortcut,
-        } };
+        return .{ .id = id, .params = params };
     }
 
     pub fn clicked(self: *const Self, ctx: *UIContext) bool {

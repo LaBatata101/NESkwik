@@ -199,6 +199,23 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .list_border_color = theme.border,
                 });
                 if (ui.menuItem(.{
+                    .label = if (ui_state.paused) "Continue" else "Pause",
+                    .enabled = ui_state.emulation_running,
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                }).clicked(ui.main_window.ctx)) {
+                    ui_state.paused = !ui_state.paused;
+                }
+                if (ui.menuItem(.{
+                    .label = "Stop",
+                    .enabled = ui_state.emulation_running,
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                }).clicked(ui.main_window.ctx)) {}
+
+                if (ui.menuItem(.{
                     .label = "Debug",
                     .enabled = ui_state.emulation_running,
                     .bg_color = theme.bg_section,
@@ -231,7 +248,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
         } else if (ui_state.render_debug_ui) {
             debug.drawUI(ui, ui_state);
         } else {
-            _ = ui.canvas(.{
+            const canvas = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
                 .pixels = ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES],
                 .w = NES_WIDTH,
@@ -240,6 +257,24 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                 .bg_color = Color.black,
                 .apply_runtime_shaders = true,
             });
+            if (ui_state.paused) {
+                const f = ui.float(.{
+                    .attach_to = .to_element_with_id,
+                    .attach_points = .{ .parent = .center_center, .element = .center_center },
+                    .z_index = 1,
+                    .sizing = .grow,
+                    .parentId = canvas.id.id,
+                });
+                {
+                    const col = ui.column(.{
+                        .bg_color = Color.black.withAlpha(0.8),
+                        .child_alignment = .center,
+                    });
+                    _ = ui.label(.{ .text = "Paused", .font_size = 42, .color = .white });
+                    col.end();
+                }
+                f.end();
+            }
         }
     }
     root.end();

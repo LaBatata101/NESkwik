@@ -63,6 +63,8 @@ pub const UIState = struct {
     current_rom_path: ?[]u8 = null,
     game_start_time_ms: i64 = 0,
 
+    paused: bool = false,
+
     settings: EmulatorSettings = .{},
     saved_settings: EmulatorSettings = .{},
     config_dir: ?[]u8 = null,
