@@ -27,25 +27,13 @@ pub fn main() !void {
     var ui_state = gui.UIState.init(allocator);
     defer ui_state.deinit();
 
-    var debug_mode = false;
-    var step_mode = false;
     _ = args.skip();
     if (args.next()) |arg0| {
         if (std.mem.eql(u8, arg0, "--debug")) {
-            debug_mode = true;
+            ui_state.toggleDebug();
 
             if (args.next()) |arg1| {
-                if (std.mem.eql(u8, arg1, "--step")) {
-                    step_mode = true;
-                    if (args.next()) |arg2| {
-                        try ui_state.loadRom(arg2);
-                    } else {
-                        std.debug.print("ROM file path not provided\n", .{});
-                        std.process.exit(1);
-                    }
-                } else {
-                    try ui_state.loadRom(arg1);
-                }
+                try ui_state.loadRom(arg1);
             } else {
                 std.debug.print("ROM file path not provided\n", .{});
                 std.process.exit(1);
@@ -65,17 +53,20 @@ pub fn main() !void {
     while (!ui.shouldClose()) {
         ui.beginFrame();
 
-        gui.drawGUI(ui, &ui_state);
-
         if (ui_state.emulation_running) {
             const main_window_active = ui.current_window == ui.main_window;
             if (main_window_active) {
                 ui_state.system.?.sync_controllers(ui, &ui_state);
                 if (ui.isKeyPressed(ui_state.generalBinding(.quit))) ui.quit = true;
-                if (ui.isKeyPressed(ui_state.generalBinding(.toggle_step_mode))) step_mode = !step_mode;
-                if (ui.isKeyPressed(ui_state.generalBinding(.reset))) ui_state.system.?.reset();
-                if (step_mode and ui.isKeyPressed(ui_state.generalBinding(.run_tick))) ui_state.system.?.tick();
-                if (step_mode and ui.isKeyPressed(ui_state.generalBinding(.run_frame))) ui_state.system.?.run_frame();
+                if (ui.isKeyPressed(ui_state.generalBinding(.toggle_step_mode))) ui_state.toggleDebug();
+                if (ui.isKeyPressed(ui_state.generalBinding(.restart))) ui_state.system.?.reset();
+                if (ui.isKeyPressed(ui_state.generalBinding(.toggle_pause))) ui_state.togglePause();
+                if (ui.isKeyPressed(ui_state.generalBinding(.stop))) {
+                    ui_state.unloadCurrentRom();
+                    ui.setWindowFullscreen(false);
+                }
+                if (ui_state.step_mode and ui.isKeyPressed(ui_state.generalBinding(.run_tick))) ui_state.system.?.tick();
+                if (ui_state.step_mode and ui.isKeyPressed(ui_state.generalBinding(.run_frame))) ui_state.system.?.run_frame();
                 if (ui.isKeyPressed(ui_state.generalBinding(.toggle_fullscreen))) {
                     if (ui.isWindowFullscreen()) {
                         ui.setWindowFullscreen(false);
@@ -93,7 +84,7 @@ pub fn main() !void {
                 }
             }
 
-            if (!step_mode and !ui_state.paused) {
+            if (!ui_state.step_mode and !ui_state.paused and ui_state.emulation_running) {
                 const speed = ui_state.settings.emulation_speed;
                 frame_acc += speed.multiplier();
                 const frames_to_run: u32 = @intFromFloat(frame_acc);
@@ -114,6 +105,8 @@ pub fn main() !void {
                 is_cursor_hidden = false;
             }
         }
+
+        gui.drawGUI(ui, &ui_state);
 
         ui.endFrame();
     }

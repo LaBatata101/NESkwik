@@ -188,6 +188,15 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                         false,
                     );
                 }
+                if (ui.menuItem(.{
+                    .label = "Exit",
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                    .shortcut = ui_state.generalBinding(.quit).keyName(),
+                }).clicked(ui.main_window.ctx)) {
+                    ui.quit = true;
+                }
                 sys_menu.end();
 
                 const emulation_menu = ui.dropdownMenu(.{
@@ -204,8 +213,9 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
+                    .shortcut = ui_state.generalBinding(.toggle_pause).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.paused = !ui_state.paused;
+                    ui_state.togglePause();
                 }
                 if (ui.menuItem(.{
                     .label = "Stop",
@@ -213,6 +223,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
+                    .shortcut = ui_state.generalBinding(.stop).keyName(),
                 }).clicked(ui.main_window.ctx)) {
                     ui_state.unloadCurrentRom();
                 }
@@ -222,6 +233,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
+                    .shortcut = ui_state.generalBinding(.restart).keyName(),
                 }).clicked(ui.main_window.ctx)) {
                     ui_state.system.?.reset();
                 }
@@ -233,8 +245,9 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
+                    .shortcut = ui_state.generalBinding(.toggle_step_mode).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.render_debug_ui = !ui_state.render_debug_ui;
+                    ui_state.toggleDebug();
                 }
                 _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
 

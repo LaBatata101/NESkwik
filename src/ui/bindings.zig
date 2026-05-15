@@ -214,7 +214,9 @@ pub const ControllerBindingTarget = struct {
 pub const GeneralAction = enum {
     quit,
     toggle_step_mode,
-    reset,
+    restart,
+    stop,
+    toggle_pause,
     run_tick,
     run_frame,
     toggle_fullscreen,
@@ -223,10 +225,12 @@ pub const GeneralAction = enum {
         return switch (self) {
             .quit => "Quit",
             .toggle_step_mode => "Toggle Step Mode",
-            .reset => "Reset",
+            .restart => "Restart",
             .run_tick => "Run Tick",
             .run_frame => "Run Frame",
             .toggle_fullscreen => "Toggle Fullscreen",
+            .stop => "Stop",
+            .toggle_pause => "Toggle Pause",
         };
     }
 };
@@ -234,7 +238,9 @@ pub const GeneralAction = enum {
 pub const GeneralKeyBindings = struct {
     quit: Key = .ESCAPE,
     toggle_step_mode: Key = .F9,
-    reset: Key = .R,
+    toggle_pause: Key = .F4,
+    stop: Key = .F5,
+    restart: Key = .F6,
     run_tick: Key = .F10,
     run_frame: Key = .F11,
     toggle_fullscreen: Key = .F,

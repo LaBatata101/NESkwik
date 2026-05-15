@@ -52,6 +52,8 @@ pub const UIState = struct {
     render_debug_ui: bool = false,
     emulation_running: bool = false,
 
+    step_mode: bool = false,
+
     rom_bytes: ?[]u8 = null,
     rom: ?Rom = null,
     system: ?System = null,
@@ -328,6 +330,15 @@ pub const UIState = struct {
             std.log.err("failed to persist shader parameter '{s}': out of memory", .{name});
             return;
         };
+    }
+
+    pub fn togglePause(self: *Self) void {
+        self.paused = !self.paused;
+    }
+
+    pub fn toggleDebug(self: *Self) void {
+        self.step_mode = !self.step_mode;
+        self.render_debug_ui = !self.render_debug_ui;
     }
 };
 
