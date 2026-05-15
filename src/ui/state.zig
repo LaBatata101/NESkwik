@@ -166,7 +166,7 @@ pub const UIState = struct {
         deinitEmulatorSettings(self.alloc, &self.saved_settings);
         c.SDL_DestroySurface(self.controller_img.raw);
 
-        if (self.emulation_running) { // TODO: add flag to check if a ROM was loaded
+        if (self.emulation_running) {
             self.rom.?.deinit();
             self.system.?.deinit();
         }
@@ -189,6 +189,20 @@ pub const UIState = struct {
         if (self.current_rom_path) |p| self.alloc.free(p);
         self.current_rom_path = self.alloc.dupe(u8, path) catch null;
         self.game_start_time_ms = std.time.milliTimestamp();
+    }
+
+    pub fn unloadCurrentRom(self: *Self) void {
+        self.saveCurrentGame();
+
+        self.rom.?.deinit();
+        self.system.?.deinit();
+        self.alloc.free(self.current_rom_path.?);
+
+        self.rom = null;
+        self.system = null;
+        self.current_rom_path = null;
+        self.emulation_running = false;
+        self.render_home_ui = true;
     }
 
     fn saveCurrentGame(self: *Self) void {

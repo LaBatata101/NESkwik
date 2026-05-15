@@ -213,7 +213,9 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
-                }).clicked(ui.main_window.ctx)) {}
+                }).clicked(ui.main_window.ctx)) {
+                    ui_state.unloadCurrentRom();
+                }
 
                 if (ui.menuItem(.{
                     .label = "Debug",
