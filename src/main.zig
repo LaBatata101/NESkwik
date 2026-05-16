@@ -95,7 +95,7 @@ pub fn main() !void {
                 }
             }
 
-            if (ui_state.settings.hide_mouse_on_inactivity) {
+            if (ui_state.settings.hide_mouse_on_inactivity and !ui_state.render_debug_ui) {
                 if (!is_cursor_hidden and ui.hasPassedSinceMS(last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
                     sdlError(c.SDL_HideCursor());
                     is_cursor_hidden = true;
