@@ -77,7 +77,11 @@ pub fn build(b: *std.Build) void {
 
     mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("resources/fonts/PixeloidSans.ttf") });
     mod.addAnonymousImport("nes_controller_img", .{ .root_source_file = b.path("resources/images/nes-controller.png") });
-    mod.addAnonymousImport("app_icon", .{ .root_source_file = b.path("resources/images/nes-icon-256x256.png") });
+    mod.addAnonymousImport("app_icon", .{ .root_source_file = b.path("resources/icons/nes-icon-256x256.png") });
+    mod.addAnonymousImport("fast_forward_icon", .{ .root_source_file = b.path("resources/icons/fast_forward_32x32.png") });
+    mod.addAnonymousImport("skip_next_icon", .{ .root_source_file = b.path("resources/icons/skip_next_32x32.png") });
+    mod.addAnonymousImport("play_icon", .{ .root_source_file = b.path("resources/icons/play_arrow_32x32.png") });
+    mod.addAnonymousImport("stop_icon", .{ .root_source_file = b.path("resources/icons/stop_32x32.png") });
 
     const exe = b.addExecutable(.{
         .name = "ness",

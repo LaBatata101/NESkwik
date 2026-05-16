@@ -1564,6 +1564,53 @@ const SecondaryWindow = struct {
     }
 };
 
+fn loadIconTexture(device: ?*c.SDL_GPUDevice, png_data: []const u8) ?*c.SDL_GPUTexture {
+    const io = c.SDL_IOFromConstMem(png_data.ptr, png_data.len);
+    const surface = c.SDL_LoadPNG_IO(io, true);
+    defer c.SDL_DestroySurface(surface);
+
+    const pixel_format = c.SDL_PIXELFORMAT_ABGR8888;
+    const rgba = sdlError(c.SDL_ConvertSurface(surface, pixel_format));
+    defer c.SDL_DestroySurface(rgba);
+
+    const w: u32 = @intCast(rgba.*.w);
+    const h: u32 = @intCast(rgba.*.h);
+    const bytes_per_pixel: u32 = @intCast(c.SDL_GetPixelFormatDetails(pixel_format).*.bytes_per_pixel);
+    const size = w * h * bytes_per_pixel;
+
+    const texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
+        .type = c.SDL_GPU_TEXTURETYPE_2D,
+        .format = c.SDL_GetGPUTextureFormatFromPixelFormat(pixel_format),
+        .width = w,
+        .height = h,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+    }));
+
+    const tb = c.SDL_CreateGPUTransferBuffer(device, &.{
+        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = size,
+    });
+    const map: [*]u8 = @ptrCast(@alignCast(c.SDL_MapGPUTransferBuffer(device, tb, false)));
+    @memcpy(map[0..size], @as([*]const u8, @ptrCast(@alignCast(rgba.*.pixels)))[0..size]);
+    c.SDL_UnmapGPUTransferBuffer(device, tb);
+
+    const cmd = c.SDL_AcquireGPUCommandBuffer(device);
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd);
+    c.SDL_UploadToGPUTexture(
+        copy_pass,
+        &.{ .transfer_buffer = tb },
+        &.{ .texture = texture, .w = w, .h = h, .d = 1 },
+        false,
+    );
+    c.SDL_EndGPUCopyPass(copy_pass);
+    _ = c.SDL_SubmitGPUCommandBuffer(cmd);
+    c.SDL_ReleaseGPUTransferBuffer(device, tb);
+
+    return texture;
+}
+
 pub const UI = struct {
     allocator: std.mem.Allocator,
     /// The main windows created by the program.
@@ -1587,6 +1634,24 @@ pub const UI = struct {
     border_shader_rendered_this_frame: bool = false,
 
     gamepads: std.ArrayList(GamepadState) = .empty,
+
+    icons: std.EnumArray(Icon, ?*c.SDL_GPUTexture) = .initUndefined(),
+
+    pub const Icon = enum {
+        play,
+        stop,
+        skip_next,
+        fast_forward,
+
+        fn data(self: @This()) []const u8 {
+            return switch (self) {
+                .play => @embedFile("play_icon"),
+                .stop => @embedFile("stop_icon"),
+                .skip_next => @embedFile("skip_next_icon"),
+                .fast_forward => @embedFile("fast_forward_icon"),
+            };
+        }
+    };
 
     const PendingShaderRender = struct {
         texture: ?*c.SDL_GPUTexture,
@@ -1700,6 +1765,13 @@ pub const UI = struct {
             .fps_manager = FPSManager.init(),
             .shader_pipeline = shader_pipeline,
             .border_shader_pipeline = border_shader_pipeline,
+            .icons = blk: {
+                var arr = std.EnumArray(Icon, ?*c.SDL_GPUTexture).initUndefined();
+                inline for (std.meta.tags(Icon)) |icon| {
+                    arr.set(icon, loadIconTexture(gpu_device, icon.data()));
+                }
+                break :blk arr;
+            },
         };
 
         // Open any gamepads already connected at startup.
@@ -1732,6 +1804,10 @@ pub const UI = struct {
 
         if (self.shader_pipeline) |sp| sp.deinit();
         if (self.border_shader_pipeline) |bsp| bsp.deinit();
+
+        inline for (std.meta.tags(Icon)) |icon| {
+            c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(icon));
+        }
 
         c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);

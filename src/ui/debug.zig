@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const clay = @import("core/clay.zig");
 const c = @import("../root.zig").c;
 const UI = @import("core/ui.zig").UI;
 const trace = @import("../trace.zig");
@@ -27,6 +26,62 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
         drawDebugSidebar(ui, ui_state);
     }
     root.end();
+
+    const panel = ui.draggablePanel(.{
+        .attach_to = .to_element_with_id,
+        .attach_points = .{ .element = .center_top, .parent = .center_top },
+        .parentId = root.id.id,
+        .bg_color = theme.bg_section,
+        .border_color = theme.border,
+        .border_width = 1,
+        .corner_radius = 8,
+        .grip_color = theme.text_muted,
+    });
+    {
+        const buttons = ui.row(.{ .sizing = .fit, .padding = .all(5), .gap = 3 });
+        {
+            if (ui.iconButton(.{
+                .icon = ui.icons.get(.skip_next),
+                .tooltip = .{
+                    .text = std.fmt.allocPrint(
+                        ui.current_window.ctx.frameAlloc(),
+                        "Run tick ({s})",
+                        .{ui_state.generalBinding(.run_tick).keyName()},
+                    ) catch @panic("OOM"),
+                },
+                .bg_color = Color.transparent,
+                .hover_color = theme.bg_hover,
+            }).clicked(ui.current_window.ctx)) {
+                ui_state.system.?.tick();
+            }
+            if (ui.iconButton(.{
+                .icon = ui.icons.get(.fast_forward),
+                .tooltip = .{
+                    .text = std.fmt.allocPrint(
+                        ui.current_window.ctx.frameAlloc(),
+                        "Run frame ({s})",
+                        .{ui_state.generalBinding(.run_frame).keyName()},
+                    ) catch @panic("OOM"),
+                },
+                .bg_color = Color.transparent,
+                .hover_color = theme.bg_hover,
+            }).clicked(ui.current_window.ctx)) {
+                ui_state.system.?.run_frame();
+            }
+            if (ui.iconButton(.{
+                .icon = if (ui_state.step_mode) ui.icons.get(.play) else ui.icons.get(.stop),
+                .tooltip = .{
+                    .text = if (ui_state.step_mode) "Run emulation" else "Stop emulation",
+                },
+                .bg_color = Color.transparent,
+                .hover_color = theme.bg_hover,
+            }).clicked(ui.current_window.ctx)) {
+                ui_state.step_mode = !ui_state.step_mode;
+            }
+        }
+        buttons.end();
+    }
+    panel.end();
 }
 
 fn drawGameScreen(ui: *UI, ui_state: *UIState) void {
