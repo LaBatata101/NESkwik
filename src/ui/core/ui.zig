@@ -47,6 +47,15 @@ pub fn setMouseCursorText(value: bool) void {
     }
 }
 
+pub fn setMouseCursorMove(value: bool) void {
+    if (value) {
+        const move_cursor = sdlError(c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_MOVE));
+        sdlError(c.SDL_SetCursor(move_cursor));
+    } else {
+        sdlError(c.SDL_SetCursor(c.SDL_GetDefaultCursor()));
+    }
+}
+
 fn setWindowIcon(window: ?*c.SDL_Window) void {
     const io = c.SDL_IOFromConstMem(APP_ICON, APP_ICON.len);
     const surface = c.SDL_LoadPNG_IO(io, true);
@@ -310,6 +319,7 @@ pub const WidgetState = union(enum) {
     tooltip: TooltipState,
     grid: GridState,
     slider: SliderState,
+    draggable_panel: DraggablePanelState,
 
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
@@ -334,6 +344,10 @@ pub const WidgetState = union(enum) {
         items_per_row: usize,
     };
     pub const SliderState = struct {
+        dragging: bool = false,
+    };
+    pub const DraggablePanelState = struct {
+        offset: clay.Vector2,
         dragging: bool = false,
     };
 };
@@ -2887,6 +2901,10 @@ pub const UI = struct {
 
     pub fn toggle(self: *Self, params: widgets.Toggle.Params) *widgets.Toggle {
         return self.current_window.ctx.allocWidget(widgets.Toggle, .start(self.current_window.ctx, params));
+    }
+
+    pub fn draggablePanel(self: *Self, params: widgets.DraggablePanel.Params) *widgets.DraggablePanel {
+        return self.current_window.ctx.allocWidget(widgets.DraggablePanel, .start(self.current_window.ctx, params));
     }
 
     pub fn iconButton(self: *Self, params: widgets.IconButton.Params) *widgets.IconButton {

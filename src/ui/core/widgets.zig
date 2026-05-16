@@ -229,6 +229,155 @@ pub const Float = struct {
     }
 };
 
+pub const DraggablePanel = struct {
+    id: clay.ElementId,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        expand: clay.Dimensions = .{ .w = 0, .h = 0 },
+        parentId: u32 = 0,
+        z_index: i16 = 0,
+        attach_points: clay.FloatingAttachPoints = .{ .element = .center_center, .parent = .center_center },
+        pointer_capture_mode: clay.PointerCaptureMode = .capture,
+        attach_to: clay.FloatingAttachToElement = .to_root,
+        clip_to: clay.FloatingClipToElement = .to_none,
+        sizing: clay.Sizing = .fit,
+        bg_color: ?Color = null,
+        border_color: ?Color = null,
+        border_width: u16 = 0,
+        corner_radius: f32 = 0,
+        grip_color: Color = Color.rgb(80, 90, 110),
+    };
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        const element_id = if (params.id) |id| b: {
+            const eid = clay.ElementId.ID(id);
+            clay.openElementWithId(eid);
+            break :b eid;
+        } else clay.openElement();
+
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .draggable_panel = .{
+            .offset = .{ .x = 0, .y = 0 },
+        } });
+
+        clay.configureOpenElement(.{
+            .floating = .{
+                .offset = state.draggable_panel.offset,
+                .expand = params.expand,
+                .parentId = params.parentId,
+                .z_index = params.z_index,
+                .attach_points = params.attach_points,
+                .pointer_capture_mode = params.pointer_capture_mode,
+                .attach_to = params.attach_to,
+                .clip_to = params.clip_to,
+            },
+            .layout = .{
+                .sizing = params.sizing,
+                .direction = .left_to_right,
+                .child_alignment = .center,
+            },
+            .background_color = if (params.bg_color) |col| col.toClay() else .{ 0, 0, 0, 0 },
+            .corner_radius = .all(params.corner_radius),
+            .border = if (params.border_color) |border_color| .{
+                .color = border_color.toClay(),
+                .width = .outside(params.border_width),
+            } else .{ .color = .{ 0, 0, 0, 0 } },
+        });
+
+        // Render the internal drag handle (grip strip + separator)
+        const dot_params = Shape.Params{
+            .vertices = &Shape.SQUARE,
+            .sizing = .{ .w = .fixed(3), .h = .fixed(3) },
+            .color = params.grip_color,
+        };
+        const grip = DragHandle.start(ctx, element_id, .{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .padding = .{ .left = 10, .right = 10, .top = 6, .bottom = 5 },
+            .child_alignment = .center,
+            .gap = 4,
+        });
+        {
+            const col1 = Container.start(.{ .sizing = .fit, .gap = 3 });
+            _ = Shape.start(ctx, dot_params);
+            _ = Shape.start(ctx, dot_params);
+            _ = Shape.start(ctx, dot_params);
+            col1.end();
+            const col2 = Container.start(.{ .sizing = .fit, .gap = 3 });
+            _ = Shape.start(ctx, dot_params);
+            _ = Shape.start(ctx, dot_params);
+            _ = Shape.start(ctx, dot_params);
+            col2.end();
+        }
+        grip.end();
+        _ = Separator.start(.{
+            .color = params.border_color orelse Color.rgb(35, 40, 50),
+            .direction = .vertical,
+            .thickness = 2,
+        });
+
+        return .{ .id = element_id };
+    }
+
+    pub fn end(_: *const Self) void {
+        clay.closeElement();
+    }
+};
+
+const DragHandle = struct {
+    const Params = struct {
+        sizing: clay.Sizing = .fit,
+        padding: clay.Padding = .{},
+        gap: u16 = 0,
+        child_alignment: clay.ChildAlignment = .{ .x = .left, .y = .center },
+    };
+    const Self = @This();
+
+    fn start(ctx: *UIContext, panel_id: clay.ElementId, params: Params) Self {
+        const element_id = clay.openElement();
+
+        const panel_state = ctx.getWidgetStateById(panel_id).?;
+
+        const is_hovered = clay.pointerOver(element_id);
+        if (is_hovered and ctx.frame.mouse_pressed) panel_state.draggable_panel.dragging = true;
+        if (ctx.frame.mouse_released) panel_state.draggable_panel.dragging = false;
+
+        const is_dragging = panel_state.draggable_panel.dragging and ctx.frame.mouse_down;
+        if (is_dragging) {
+            const dx = ctx.frame.mouse_delta.x;
+            const dy = ctx.frame.mouse_delta.y;
+            const data = clay.getElementData(panel_id);
+            if (data.found) {
+                const bb = data.bounding_box;
+                const dimensions = clay.getLayoutDimensions();
+                panel_state.draggable_panel.offset.x += std.math.clamp(dx, -bb.x, dimensions.w - bb.x - bb.width);
+                panel_state.draggable_panel.offset.y += std.math.clamp(dy, -bb.y, dimensions.h - bb.y - bb.height);
+            } else {
+                panel_state.draggable_panel.offset.x += dx;
+                panel_state.draggable_panel.offset.y += dy;
+            }
+        }
+
+        ui.setMouseCursorMove(is_hovered or is_dragging);
+
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = params.sizing,
+                .padding = params.padding,
+                .child_gap = params.gap,
+                .direction = .left_to_right,
+                .child_alignment = params.child_alignment,
+            },
+        });
+
+        return .{};
+    }
+
+    fn end(_: *const Self) void {
+        clay.closeElement();
+    }
+};
+
 pub const Label = struct {
     params: Params,
 

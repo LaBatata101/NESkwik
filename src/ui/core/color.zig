@@ -15,6 +15,7 @@ pub const Color = struct {
     pub const gray = Color{ .r = 150, .g = 150, .b = 150, .a = 255 };
     pub const lightGray = Color{ .r = 200, .g = 200, .b = 200, .a = 255 };
     pub const darkGray = Color{ .r = 80, .g = 80, .b = 80, .a = 255 };
+    pub const transparent = Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
 
     pub fn rgb(r: u8, g: u8, b: u8) Color {
         return .{ .r = r, .g = g, .b = b, .a = 255 };
