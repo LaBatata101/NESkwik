@@ -2658,6 +2658,21 @@ pub const UI = struct {
                     }
                 }
             },
+            .icon => |icon_data| {
+                window.renderer.setTexture(icon_data.texture);
+                window.renderer.pushRoundedTexturedRect(
+                    .{
+                        .x = cmd.bounding_box.x,
+                        .y = cmd.bounding_box.y,
+                        .w = cmd.bounding_box.width,
+                        .h = cmd.bounding_box.height,
+                    },
+                    icon_data.tint.toSDL(),
+                    .{},
+                    null,
+                );
+                window.renderer.flush();
+            },
         }
     }
 
@@ -2872,5 +2887,9 @@ pub const UI = struct {
 
     pub fn toggle(self: *Self, params: widgets.Toggle.Params) *widgets.Toggle {
         return self.current_window.ctx.allocWidget(widgets.Toggle, .start(self.current_window.ctx, params));
+    }
+
+    pub fn iconButton(self: *Self, params: widgets.IconButton.Params) *widgets.IconButton {
+        return self.current_window.ctx.allocWidget(widgets.IconButton, .start(self.current_window.ctx, params));
     }
 };

@@ -9,6 +9,12 @@ const utils = @import("utils.zig");
 pub const CustomData = union(enum) {
     canvas: Canvas,
     shape: ShapeData,
+    icon: IconData,
+};
+
+pub const IconData = struct {
+    texture: ?*c.SDL_GPUTexture,
+    tint: Color,
 };
 
 pub const LayoutDirection = enum {
@@ -399,6 +405,140 @@ pub const Button = struct {
         if (!self.params.enabled) return false;
         const is_hovered = clay.pointerOver(self.id);
         return is_hovered and ctx.frame.mouse_pressed;
+    }
+};
+
+pub const IconButton = struct {
+    id: clay.ElementId,
+    enabled: bool,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        icon: ?*c.SDL_GPUTexture,
+        size: u16 = 32,
+        enabled: bool = true,
+        bg_color: Color = Color.transparent,
+        hover_color: ?Color = null,
+        tint: Color = Color.white,
+        corner_radius: f32 = 4,
+        padding: clay.Padding = .all(4),
+        tooltip: ?struct {
+            text: []const u8,
+            text_size: u16 = 14,
+            color: Color = Color.white,
+            wrap_mode: clay.TextElementConfigWrapMode = .none,
+        } = null,
+    };
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        const element_id = if (params.id) |id| b: {
+            const eid = clay.ElementId.ID(id);
+            clay.openElementWithId(eid);
+            break :b eid;
+        } else clay.openElement();
+
+        const is_hovered = params.enabled and clay.hovered();
+        const hover_col = params.hover_color orelse params.bg_color.lighten(0.2);
+        const bg = if (is_hovered) hover_col else params.bg_color;
+        const tint = if (params.enabled) params.tint else params.tint.withAlpha(0.4);
+
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .fit,
+                .padding = params.padding,
+                .child_alignment = .center,
+            },
+            .background_color = bg.toClay(),
+            .corner_radius = .all(params.corner_radius),
+        });
+
+        {
+            const icon_size: f32 = @floatFromInt(params.size);
+            _ = clay.openElement();
+            const custom_data = ctx.frameAlloc().create(CustomData) catch @panic("OOM");
+            custom_data.* = .{ .icon = .{ .texture = params.icon, .tint = tint } };
+            clay.configureOpenElement(.{
+                .layout = .{ .sizing = .{ .w = .fixed(icon_size), .h = .fixed(icon_size) } },
+                .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(custom_data) },
+            });
+            clay.closeElement();
+        }
+
+        if (params.tooltip) |tooltip| {
+            if (is_hovered) {
+                const state = ctx.getOrCreateWidgetState(element_id, .{ .tooltip = .{
+                    .hover_start_ms = c.SDL_GetTicks(),
+                } });
+                if (ctx.hasPassedSinceMS(state.tooltip.hover_start_ms, 500)) {
+                    const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
+                    const button_data = clay.getElementData(element_id);
+                    const layout_dims = ctx.clay_ctx.layoutDimensions;
+
+                    var attach_parent: clay.FloatingAttachPointType = .left_bottom;
+                    var attach_element: clay.FloatingAttachPointType = .left_top;
+
+                    if (button_data.found) {
+                        const is_right_half = button_data.bounding_box.x > (layout_dims.w / 2.0);
+                        const is_bottom_half = button_data.bounding_box.y > (layout_dims.h / 2.0);
+
+                        if (is_right_half and is_bottom_half) {
+                            attach_parent = .right_top;
+                            attach_element = .right_bottom;
+                        } else if (is_right_half) {
+                            attach_parent = .right_bottom;
+                            attach_element = .right_top;
+                        } else if (is_bottom_half) {
+                            attach_parent = .left_top;
+                            attach_element = .left_bottom;
+                        }
+                    }
+
+                    const max_tooltip_width = @min(250.0, layout_dims.w - 32.0);
+                    clay.openElementWithId(tooltip_id);
+                    clay.configureOpenElement(.{
+                        .layout = .{
+                            .sizing = .{
+                                .w = clay.SizingAxis.fitMinMax(.{ .max = max_tooltip_width }),
+                                .h = .fit,
+                            },
+                            .padding = .{ .left = 8, .right = 8, .top = 5, .bottom = 5 },
+                            .child_alignment = .center,
+                        },
+                        .background_color = Color.rgb(30, 30, 30).toClay(),
+                        .corner_radius = .all(8),
+                        .border = .{
+                            .color = Color.rgb(80, 80, 80).toClay(),
+                            .width = .outside(1),
+                        },
+                        .floating = .{
+                            .attach_to = .to_element_with_id,
+                            .parentId = element_id.id,
+                            .attach_points = .{ .element = attach_element, .parent = attach_parent },
+                            .offset = .{ .x = 0, .y = 4 },
+                            .z_index = 200,
+                            .pointer_capture_mode = .passthrough,
+                        },
+                    });
+                    _ = Label.start(.{
+                        .text = tooltip.text,
+                        .font_size = tooltip.text_size,
+                        .color = tooltip.color,
+                        .wrap_mode = tooltip.wrap_mode,
+                    });
+                    clay.closeElement();
+                }
+            }
+        }
+
+        clay.closeElement();
+
+        return .{ .id = element_id, .enabled = params.enabled };
+    }
+
+    pub fn clicked(self: *const Self, ctx: *UIContext) bool {
+        if (!self.enabled) return false;
+        return clay.pointerOver(self.id) and ctx.frame.mouse_pressed;
     }
 };
 
