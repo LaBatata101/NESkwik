@@ -1636,6 +1636,7 @@ pub const Slider = struct {
 /// An on/off toggle switch rendered as a pill with a sliding circle thumb.
 /// Click to flip.  Call `.value()` to read the (potentially updated) state.
 pub const Toggle = struct {
+    id: clay.ElementId,
     updated_value: bool,
 
     pub const Params = struct {
@@ -1720,7 +1721,7 @@ pub const Toggle = struct {
         clay.closeElement();
 
         clay.closeElement();
-        return .{ .updated_value = new_value };
+        return .{ .id = element_id, .updated_value = new_value };
     }
 
     /// Returns the (potentially flipped) value after this frame's click.

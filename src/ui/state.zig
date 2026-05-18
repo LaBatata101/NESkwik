@@ -117,6 +117,7 @@ pub const UIState = struct {
         border_shader_error: ?[]u8 = null,
         /// Currently selected category in the settings sidebar.
         selected_category: SettingsCategory = .general,
+        vsync: bool = true,
         hide_mouse_on_inactivity: bool = false,
         emulation_speed: EmulationSpeed = .normal,
         selected_controller_player: ControllerPlayer = .one,
@@ -348,6 +349,7 @@ fn clonePersistedSettings(
 ) !UIState.EmulatorSettings {
     var result = UIState.EmulatorSettings{
         .aspect_ratio = source.aspect_ratio,
+        .vsync = source.vsync,
         .hide_mouse_on_inactivity = source.hide_mouse_on_inactivity,
         .emulation_speed = source.emulation_speed,
         .controller_bindings = source.controller_bindings,
@@ -418,6 +420,7 @@ fn isSettingsEqual(a: UIState.EmulatorSettings, b: UIState.EmulatorSettings) boo
         optionalStringsEqual(a.border_shader_preset_path, b.border_shader_preset_path) and
         shaderParamSettingsEqual(a.border_shader_params.items, b.border_shader_params.items) and
         a.hide_mouse_on_inactivity == b.hide_mouse_on_inactivity and
+        a.vsync == b.vsync and
         a.emulation_speed == b.emulation_speed and
         std.meta.eql(a.controller_bindings, b.controller_bindings) and
         std.meta.eql(a.general_bindings, b.general_bindings) and

@@ -52,6 +52,7 @@ const SettingsConfig = struct {
     border_shader_preset_path: ?[]const u8 = null,
     border_shader_params: []const ShaderParamSetting = &.{},
     hide_mouse_on_inactivity: bool = false,
+    vsync: bool = true,
     emulation_speed: EmulationSpeed = .normal,
     controller_bindings: bindings.ControllerKeyBindings = .{},
     general_bindings: bindings.GeneralKeyBindings = .{},
@@ -98,6 +99,7 @@ pub fn save(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: Emulato
         .border_shader_preset_path = settings.border_shader_preset_path,
         .border_shader_params = settings.border_shader_params.items,
         .hide_mouse_on_inactivity = settings.hide_mouse_on_inactivity,
+        .vsync = settings.vsync,
         .emulation_speed = settings.emulation_speed,
         .controller_bindings = settings.controller_bindings,
         .general_bindings = settings.general_bindings,
@@ -116,6 +118,7 @@ pub fn save(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: Emulato
 fn applyConfig(alloc: std.mem.Allocator, settings: *EmulatorSettings, config: SettingsConfig) !void {
     settings.aspect_ratio = config.aspect_ratio;
     settings.hide_mouse_on_inactivity = config.hide_mouse_on_inactivity;
+    settings.vsync = config.vsync;
     settings.emulation_speed = config.emulation_speed;
     settings.controller_bindings = config.controller_bindings;
     settings.general_bindings = config.general_bindings;

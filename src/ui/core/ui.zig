@@ -1844,6 +1844,20 @@ pub const UI = struct {
         sdlError(c.SDL_SetWindowFullscreen(self.current_window.ptr, value));
     }
 
+    pub fn setVSync(self: *const Self, enabled: bool) void {
+        const present_mode: c.SDL_GPUPresentMode = if (enabled)
+            c.SDL_GPU_PRESENTMODE_VSYNC
+        else
+            c.SDL_GPU_PRESENTMODE_IMMEDIATE;
+
+        sdlError(c.SDL_SetGPUSwapchainParameters(
+            self.gpu_device,
+            self.main_window.ptr,
+            c.SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+            present_mode,
+        ));
+    }
+
     pub fn getShaderParamInfos(self: *const Self) []const pipeline.ParamInfo {
         const sp = self.shader_pipeline orelse return &.{};
         return sp.getParamInfos();

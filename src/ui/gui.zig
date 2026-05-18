@@ -590,7 +590,8 @@ fn drawSettingsFooter(ui: *UI, ui_state: *UIState) void {
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
             ui_state.saveSettings();
-            ui.closeCurrentWindow();
+            ui.closeCurrentWindow(); // close settings window
+            ui.setVSync(ui_state.settings.vsync);
         }
     }
     footer.end();
@@ -677,12 +678,31 @@ fn drawContentSection(ui: *UI, params: struct { padding: ?clay.Padding = null, s
 }
 
 fn drawSettingsVideoContent(ui: *UI, ui_state: *UIState) void {
-    drawContentSectionHeader(ui, "Display");
+    drawContentSectionHeader(ui, "General");
+    const general_section = drawContentSection(ui, .{});
     {
-        const section = drawContentSection(ui, .{});
-        drawAspectRatioRow(ui, ui_state);
-        section.end();
+        const row = ui.row(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+        });
+        {
+            _ = ui.label(.{
+                .text = "VSync",
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_primary,
+            });
+            _ = ui.spacer(.{ .sizing = .grow });
+            ui_state.settings.vsync = ui.toggle(.{ .value = ui_state.settings.vsync, .size = 22 }).value();
+        }
+        row.end();
     }
+    general_section.end();
+
+    drawContentSectionHeader(ui, "Display");
+    const display_section = drawContentSection(ui, .{});
+    {
+        drawAspectRatioRow(ui, ui_state);
+    }
+    display_section.end();
 }
 
 fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {

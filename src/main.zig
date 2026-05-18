@@ -27,6 +27,8 @@ pub fn main() !void {
     var ui_state = gui.UIState.init(allocator);
     defer ui_state.deinit();
 
+    ui.setVSync(ui_state.settings.vsync);
+
     _ = args.skip();
     if (args.next()) |arg0| {
         if (std.mem.eql(u8, arg0, "--debug")) {
@@ -44,7 +46,7 @@ pub fn main() !void {
         ui_state.render_home_ui = false;
     }
 
-    ui.setFramerate(.{ .limited = 60 });
+    ui.setFramerate(.unlimited);
 
     var last_mouse_activity_time: u64 = c.SDL_GetTicks();
     var is_cursor_hidden: bool = false;
