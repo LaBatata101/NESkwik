@@ -1,5 +1,3 @@
-const std = @import("std");
-
 const ControllerButton = @import("../controller.zig").ControllerButton;
 const Key = @import("core/ui.zig").Key;
 
@@ -125,7 +123,7 @@ pub const ControllerAction = enum {
         };
     }
 
-    fn button(self: @This()) ControllerButton {
+    pub fn button(self: @This()) ControllerButton {
         return switch (self) {
             .up => .{ .UP = true },
             .down => .{ .DOWN = true },
@@ -257,20 +255,3 @@ pub const GeneralKeyBindings = struct {
         }
     }
 };
-
-pub fn applyBindingsToKeymap(
-    keymap: *std.AutoHashMap(Key, ControllerButton),
-    player_bindings: ControllerPlayerBindings,
-) void {
-    keymap.clearRetainingCapacity();
-    inline for (@typeInfo(ControllerAction).@"enum".fields) |f| {
-        const action = @field(ControllerAction, f.name);
-        const key = player_bindings.get(action);
-        const entry = keymap.getOrPut(key) catch @panic("Failed to update controller binding");
-        if (entry.found_existing) {
-            entry.value_ptr.insert(action.button());
-        } else {
-            entry.value_ptr.* = action.button();
-        }
-    }
-}

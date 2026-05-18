@@ -2,28 +2,31 @@ const std = @import("std");
 
 const c = @import("../root.zig").c;
 const UI = @import("core/ui.zig").UI;
-const trace = @import("../trace.zig");
 const opcodes = @import("../opcodes.zig");
+const OpCode = opcodes.OpCode;
 const theme = @import("common.zig").theme;
-const UIState = @import("gui.zig").UIState;
+const UIState = @import("state.zig").UIState;
 const Shape = @import("core/widgets.zig").Shape;
 const Color = @import("core/color.zig").Color;
+const OVERSCAN_TOP = @import("../root.zig").OVERSCAN_TOP;
+const NES_VISIBLE_HEIGHT = @import("../root.zig").NES_VISIBLE_HEIGHT;
+const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
+const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const NES_WIDTH = @import("../root.zig").NES_WIDTH;
 const NES_HEIGHT = @import("../root.zig").NES_HEIGHT;
-const ProcessorStatus = @import("../cpu.zig").ProcessorStatus;
 const SYSTEM_PALETTE = @import("../render.zig").SYSTEM_PALETTE;
-const PatternTableFrame = @import("../render.zig").PatternTableFrame;
 
 pub fn drawUI(ui: *UI, ui_state: *UIState) void {
+    const snapshot = ui_state.debugSnapshot();
     const root = ui.row(.{ .bg_color = theme.bg_base, .sizing = .grow, .gap = 2 });
     {
         const col = ui.column(.{ .child_alignment = .{ .y = .top } });
         {
             drawGameScreen(ui, ui_state);
-            drawPatternAndPalettePanel(ui, ui_state);
+            drawPatternAndPalettePanel(ui, &snapshot);
         }
         col.end();
-        drawDebugSidebar(ui, ui_state);
+        drawDebugSidebar(ui, &snapshot);
     }
     root.end();
 
@@ -52,7 +55,7 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.system.?.tick();
+                ui_state.runSystemTick();
             }
             if (ui.iconButton(.{
                 .icon = ui.icons.get(.fast_forward),
@@ -66,7 +69,7 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.system.?.run_frame();
+                ui_state.runSystemFrame();
             }
             if (ui.iconButton(.{
                 .icon = if (ui_state.step_mode) ui.icons.get(.play) else ui.icons.get(.stop),
@@ -76,7 +79,7 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.step_mode = !ui_state.step_mode;
+                ui_state.toggleStepMode();
             }
         }
         buttons.end();
@@ -88,14 +91,14 @@ fn drawGameScreen(ui: *UI, ui_state: *UIState) void {
     const wrapper = ui.column(.{ .sizing = .{ .w = .grow, .h = .percent(0.677) } });
     _ = ui.canvas(.{
         .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-        .pixels = ui_state.system.?.frame_buffer(),
+        .pixels = ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
         .w = NES_WIDTH,
         .h = NES_HEIGHT,
     });
     wrapper.end();
 }
 
-fn drawDebugSidebar(ui: *UI, ui_state: *UIState) void {
+fn drawDebugSidebar(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     const sidebar = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
@@ -103,9 +106,9 @@ fn drawDebugSidebar(ui: *UI, ui_state: *UIState) void {
         .child_alignment = .{ .y = .top },
     });
     {
-        drawDisassemblyPanel(ui, ui_state);
-        drawRegistersPanel(ui, ui_state);
-        drawPPUPanel(ui, ui_state);
+        drawDisassemblyPanel(ui, snapshot);
+        drawRegistersPanel(ui, snapshot);
+        drawPPUPanel(ui, snapshot);
     }
     sidebar.end();
 }
@@ -137,9 +140,7 @@ fn drawSectionHeader(ui: *UI, title: []const u8, accent: Color) void {
     header.end();
 }
 
-fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
-    const system = ui_state.system.?;
-
+fn drawDisassemblyPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     drawSectionHeader(ui, "DISASSEMBLY", theme.accent_amber);
 
     const body = ui.column(.{
@@ -149,11 +150,12 @@ fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
         .gap = 1,
     });
     {
-        var op_size: u8 = 0;
+        var op_size: u16 = 0;
         for (0..12) |i| {
             const is_current = (i == 0); // first entry is always the current PC
 
-            const code = ui_state.rom.?.prg_rom[(system.cpu.pc + op_size) % ui_state.rom.?.prg_rom.len];
+            const pc = snapshot.pc +% op_size;
+            const code = snapshot.memPeek(pc);
             const opcode = opcodes.OP_CODES[code];
 
             const buf = ui.current_window.ctx.frameAlloc().alloc(u8, 23) catch @panic("alloc");
@@ -162,22 +164,22 @@ fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
             const addr_str = std.fmt.allocPrint(
                 ui.current_window.ctx.frameAlloc(),
                 "${X:04}",
-                .{system.cpu.pc + op_size},
+                .{pc},
             ) catch @panic("fmt");
-            const op_str = trace.format_opcode(
-                system.cpu,
+            const op_str = formatOpcode(
+                snapshot,
                 code,
-                system.cpu.pc + op_size,
+                pc,
                 buf,
             ) catch @panic("fmt");
-            const mode_str = trace.format_addressing_mode(
-                system.cpu,
+            const mode_str = formatAddressingMode(
+                snapshot,
                 opcode,
-                system.cpu.pc + op_size + 1,
+                pc +% 1,
                 addr_buf,
             ) catch @panic("fmt");
 
-            op_size += opcode.size();
+            op_size +%= opcode.size();
 
             drawDisassemblyRow(ui, addr_str, op_str, mode_str, is_current);
         }
@@ -185,13 +187,7 @@ fn drawDisassemblyPanel(ui: *UI, ui_state: *UIState) void {
     body.end();
 }
 
-fn drawDisassemblyRow(
-    ui: *UI,
-    addr: []const u8,
-    mnemonic: []const u8,
-    operand: []const u8,
-    is_current: bool,
-) void {
+fn drawDisassemblyRow(ui: *UI, addr: []const u8, mnemonic: []const u8, operand: []const u8, is_current: bool) void {
     const bg = if (is_current) theme.bg_active else Color.rgb(0, 0, 0).withAlpha(0);
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -239,9 +235,163 @@ fn drawDisassemblyRow(
     row.end();
 }
 
-fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
-    const cpu = ui_state.system.?.cpu;
+fn formatOpcode(snapshot: *const UIState.DebugSnapshot, code: u8, pc: u16, buffer: []u8) ![]u8 {
+    const opcode = opcodes.OP_CODES[code];
+    const mnemonic = switch (code) {
+        // zig fmt: off
+        0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xFA, 0x0C, 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC, 0x04, 0x14, 0x34, 0x44, 0x54,
+        0x64, 0x74, 0x80, 0x82, 0x89, 0xC2, 0xD4, 0xE2, 0xF4, 0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92,
+        0xB2, 0xD2, 0xF2 => "NOP",
+        0xE7, 0xF7, 0xEF, 0xFF, 0xFB, 0xE3, 0xF3 => "ISB",
+        // zig fmt: on
+        else => @tagName(opcode),
+    };
 
+    const instruction_size = opcode.size();
+    var inst_bytes: [9]u8 = [_]u8{' '} ** 9;
+    var pos: usize = 0;
+    for (0..instruction_size) |i| {
+        _ = try std.fmt.bufPrint(
+            inst_bytes[pos..],
+            "{X:02} ",
+            .{snapshot.memPeek(pc + @as(u16, @intCast(i)))},
+        );
+        pos += 3;
+    }
+
+    pos = 0;
+    var str: []u8 = undefined;
+    if (opcode.is_unofficial()) {
+        const p = try std.fmt.bufPrint(buffer[0..], "{s: <9}", .{inst_bytes});
+        str = try std.fmt.bufPrint(buffer[p.len..], "*{s}", .{mnemonic});
+        pos += p.len + str.len;
+    } else {
+        const p = try std.fmt.bufPrint(buffer[0..], "{s: <10}", .{inst_bytes});
+        str = try std.fmt.bufPrint(buffer[p.len..], "{s}", .{mnemonic});
+        pos += p.len + str.len;
+    }
+    return buffer[0..pos];
+}
+
+fn formatAddressingMode(snapshot: *const UIState.DebugSnapshot, opcode: OpCode, arg_addr: u16, buffer: []u8) ![]u8 {
+    switch (opcode.addressing_mode()) {
+        .Immediate => {
+            return try std.fmt.bufPrint(buffer, " #${X:02}", .{snapshot.memPeek(arg_addr)});
+        },
+        .Relative => {
+            const offset = @as(i8, @bitCast(snapshot.memPeek(arg_addr)));
+            return try std.fmt.bufPrint(
+                buffer,
+                " ${X:04}",
+                .{arg_addr +% 1 +% @as(u16, @bitCast(@as(i16, offset)))},
+            );
+        },
+        .Absolute => {
+            const ptr_addr = snapshot.memPeekU16(arg_addr);
+            switch (opcode) {
+                .JMP, .JSR => return try std.fmt.bufPrint(buffer, " ${X:04}", .{ptr_addr}),
+                else => return try std.fmt.bufPrint(buffer, " ${X:04} = {X:02}", .{
+                    ptr_addr,
+                    snapshot.memPeek(ptr_addr),
+                }),
+            }
+        },
+        .AbsoluteX => {
+            const base = snapshot.memPeekU16(arg_addr);
+            const ptr_addr = base +% snapshot.register_x;
+            return try std.fmt.bufPrint(
+                buffer,
+                " ${X:04},X @ {X:04} = {X:02}",
+                .{ base, ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .AbsoluteY => {
+            const base = snapshot.memPeekU16(arg_addr);
+            const ptr_addr = base +% snapshot.register_y;
+
+            return try std.fmt.bufPrint(
+                buffer,
+                " ${X:04},Y @ {X:04} = {X:02}",
+                .{ base, ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .ZeroPage => {
+            const ptr_addr = snapshot.memPeek(arg_addr);
+            return try std.fmt.bufPrint(
+                buffer,
+                " ${X:02} = {X:02}",
+                .{ ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .ZeroPageX => {
+            const base = snapshot.memPeek(arg_addr);
+            const ptr_addr = base +% snapshot.register_x;
+            return try std.fmt.bufPrint(
+                buffer,
+                " ${X:02},X @ {X:02} = {X:02}",
+                .{ base, ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .ZeroPageY => {
+            const base = snapshot.memPeek(arg_addr);
+            const ptr_addr = base +% snapshot.register_y;
+            return try std.fmt.bufPrint(
+                buffer,
+                " ${X:02},Y @ {X:02} = {X:02}",
+                .{ base, ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .Indirect => {
+            const ptr_addr = snapshot.memPeekU16(arg_addr);
+            const jmp_addr = blk: {
+                if (ptr_addr & 0xFF == 0xFF) {
+                    const lo = snapshot.memPeek(ptr_addr);
+                    const hi = snapshot.memPeek(ptr_addr & 0xFF00);
+                    break :blk @as(u16, hi) << 8 | lo;
+                } else {
+                    break :blk snapshot.memPeekU16(ptr_addr);
+                }
+            };
+            return try std.fmt.bufPrint(
+                buffer,
+                " (${X:04}) = {X:04}",
+                .{ ptr_addr, jmp_addr },
+            );
+        },
+        .IndirectX => {
+            const base = snapshot.memPeek(arg_addr);
+            const ptr = base +% snapshot.register_x;
+            const lo = snapshot.memPeek(ptr);
+            const hi = snapshot.memPeek(ptr +% 1);
+            const ptr_addr = @as(u16, hi) << 8 | lo;
+            return try std.fmt.bufPrint(
+                buffer,
+                " (${X:02},X) @ {X:02} = {X:04} = {X:02}",
+                .{ base, ptr, ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .IndirectY => {
+            const base = snapshot.memPeek(arg_addr);
+            const lo = snapshot.memPeek(base);
+            const hi = snapshot.memPeek(base +% 1);
+            const base_ptr_addr = @as(u16, hi) << 8 | lo;
+            const ptr_addr = base_ptr_addr +% snapshot.register_y;
+            return try std.fmt.bufPrint(
+                buffer,
+                " (${X:02}),Y = {X:04} @ {X:04} = {X:02}",
+                .{ base, base_ptr_addr, ptr_addr, snapshot.memPeek(ptr_addr) },
+            );
+        },
+        .Implicit => {
+            switch (opcode) {
+                .ASL, .LSR, .ROL, .ROR => return try std.fmt.bufPrint(buffer, " A", .{}),
+                else => return "",
+            }
+        },
+    }
+}
+
+fn drawRegistersPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     drawSectionHeader(ui, "CPU REGISTERS", theme.accent_blue);
 
     const body = ui.column(.{
@@ -256,31 +406,31 @@ fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
             drawRegisterBadge(
                 ui,
                 "A",
-                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.register_a}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{snapshot.register_a}) catch @panic("fmt"),
                 theme.accent_blue,
             );
             drawRegisterBadge(
                 ui,
                 "X",
-                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.register_x}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{snapshot.register_x}) catch @panic("fmt"),
                 theme.accent_purple,
             );
             drawRegisterBadge(
                 ui,
                 "Y",
-                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.register_y}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{snapshot.register_y}) catch @panic("fmt"),
                 theme.accent_green,
             );
             drawRegisterBadge(
                 ui,
                 "PC",
-                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:04}", .{cpu.pc}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:04}", .{snapshot.pc}) catch @panic("fmt"),
                 theme.accent_amber,
             );
             drawRegisterBadge(
                 ui,
                 "SP",
-                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{cpu.sp}) catch @panic("fmt"),
+                std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "${X:02}", .{snapshot.sp}) catch @panic("fmt"),
                 theme.accent_red,
             );
         }
@@ -295,13 +445,13 @@ fn drawRegistersPanel(ui: *UI, ui_state: *UIState) void {
             // _ = ui.label(.{ .text = "FLAGS:", .font_size = LABEL_FONT, .color = theme.text_muted });
             _ = ui.label(.{ .text = "FLAGS:", .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
             _ = ui.spacer(.{ .sizing = .{ .w = .fixed(6) } });
-            drawFlagBadge(ui, "N", cpu.status.negative_flag);
-            drawFlagBadge(ui, "V", cpu.status.overflow_flag);
-            drawFlagBadge(ui, "B", cpu.status.break_command);
-            drawFlagBadge(ui, "-", cpu.status.break2); // break2 placeholder
-            drawFlagBadge(ui, "I", cpu.status.interrupt_disable);
-            drawFlagBadge(ui, "Z", cpu.status.zero_flag);
-            drawFlagBadge(ui, "C", cpu.status.carry_flag);
+            drawFlagBadge(ui, "N", snapshot.status.negative_flag);
+            drawFlagBadge(ui, "V", snapshot.status.overflow_flag);
+            drawFlagBadge(ui, "B", snapshot.status.break_command);
+            drawFlagBadge(ui, "-", snapshot.status.break2); // break2 placeholder
+            drawFlagBadge(ui, "I", snapshot.status.interrupt_disable);
+            drawFlagBadge(ui, "Z", snapshot.status.zero_flag);
+            drawFlagBadge(ui, "C", snapshot.status.carry_flag);
         }
         flags_row.end();
     }
@@ -354,9 +504,7 @@ fn drawFlagBadge(ui: *UI, name: []const u8, active: bool) void {
     pill.end();
 }
 
-fn drawPPUPanel(ui: *UI, ui_state: *UIState) void {
-    const ppu = ui_state.system.?.ppu;
-
+fn drawPPUPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     drawSectionHeader(ui, "PPU STATE", theme.accent_purple);
 
     const body = ui.row(.{
@@ -370,19 +518,19 @@ fn drawPPUPanel(ui: *UI, ui_state: *UIState) void {
         drawStatBadge(ui, "SCANLINE", std.fmt.allocPrint(
             ui.current_window.ctx.frameAlloc(),
             "{}",
-            .{ppu.scanline},
+            .{snapshot.scanline},
         ) catch @panic("fmt"), theme.accent_purple);
 
         drawStatBadge(ui, "CYCLE", std.fmt.allocPrint(
             ui.current_window.ctx.frameAlloc(),
             "{}",
-            .{ppu.cycle},
+            .{snapshot.cycle},
         ) catch @panic("fmt"), theme.accent_blue);
 
         drawStatBadge(ui, "GLOBAL", std.fmt.allocPrint(
             ui.current_window.ctx.frameAlloc(),
             "{}",
-            .{ppu.global_cycle},
+            .{snapshot.global_cycle},
         ) catch @panic("fmt"), theme.accent_green);
     }
     body.end();
@@ -406,22 +554,20 @@ fn drawStatBadge(ui: *UI, key: []const u8, value: []const u8, accent: Color) voi
     cell.end();
 }
 
-fn drawPatternAndPalettePanel(ui: *UI, ui_state: *UIState) void {
+fn drawPatternAndPalettePanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     const row = ui.row(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
         .gap = 10,
     });
     {
-        drawPatternTablesPanel(ui, ui_state);
-        drawPalettePanel(ui, ui_state);
+        drawPatternTablesPanel(ui, snapshot);
+        drawPalettePanel(ui, snapshot);
     }
     row.end();
 }
 
-fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
-    const system = ui_state.system.?;
-
+fn drawPatternTablesPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     const col = ui.column(.{
         .sizing = .{ .w = .fit, .h = .grow },
         .bg_color = theme.bg_panel,
@@ -438,9 +584,6 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
             .child_alignment = .{ .y = .top },
         });
         {
-            const pt1 = ui.current_window.ctx.frameAlloc().create(PatternTableFrame) catch @panic("alloc");
-            pt1.* = system.ppu.get_pattern_table(0, 0);
-
             const pt1_wrapper = ui.column(.{
                 .sizing = .fit,
                 .bg_color = theme.bg_section,
@@ -457,15 +600,12 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
                     .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
                     .w = 128,
                     .h = 128,
-                    .pixels = &pt1.data,
+                    .pixels = &snapshot.pattern_table_0.data,
                 });
                 // _ = ui.label(.{ .text = "CHR $0000", .font_size = LABEL_FONT, .color = theme.text_muted });
                 _ = ui.label(.{ .text = "CHR $0000", .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
             }
             pt1_wrapper.end();
-
-            const pt2 = ui.current_window.ctx.frameAlloc().create(PatternTableFrame) catch @panic("alloc");
-            pt2.* = system.ppu.get_pattern_table(1, 0);
 
             const pt2_wrapper = ui.column(.{
                 .sizing = .fit,
@@ -483,7 +623,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
                     .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
                     .w = 128,
                     .h = 128,
-                    .pixels = &pt2.data,
+                    .pixels = &snapshot.pattern_table_1.data,
                 });
                 // _ = ui.label(.{ .text = "CHR $1000", .font_size = LABEL_FONT, .color = theme.text_muted });
                 _ = ui.label(.{ .text = "CHR $1000", .font_size = theme.LABEL_FONT, .color = theme.text_secondary });
@@ -495,9 +635,7 @@ fn drawPatternTablesPanel(ui: *UI, ui_state: *UIState) void {
     col.end();
 }
 
-fn drawPalettePanel(ui: *UI, ui_state: *UIState) void {
-    const palette_ram = ui_state.system.?.ppu.palette_table;
-
+fn drawPalettePanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
     const col = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
@@ -513,8 +651,8 @@ fn drawPalettePanel(ui: *UI, ui_state: *UIState) void {
             .gap = 10,
         });
         {
-            drawPaletteGroup(ui, palette_ram, "BACKGROUND", false);
-            drawPaletteGroup(ui, palette_ram, "SPRITE", true);
+            drawPaletteGroup(ui, snapshot.palette_ram, "BACKGROUND", false);
+            drawPaletteGroup(ui, snapshot.palette_ram, "SPRITE", true);
         }
         body.end();
     }

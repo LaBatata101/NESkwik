@@ -33,7 +33,7 @@ pub const theme = struct {
     pub const HEADER_PAD: clay.Padding = .{ .left = 12, .right = 12, .top = 7, .bottom = 7 };
     pub const LABEL_FONT: u16 = 18;
     pub const VALUE_FONT: u16 = 16;
-    pub const CODE_FONT: u16 = 16;
+    pub const CODE_FONT: u16 = 18;
     pub const SWATCH_SIZE: f32 = 14;
     pub const SWATCH_GAP: u16 = 2;
 };

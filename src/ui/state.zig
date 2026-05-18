@@ -7,19 +7,27 @@ const UI = @import("core/ui.zig").UI;
 const Rom = @import("../rom.zig").Rom;
 const utils = @import("core/utils.zig");
 const System = @import("../system.zig").System;
+const Frame = @import("../render.zig").Frame;
+const PatternTableFrame = @import("../render.zig").PatternTableFrame;
+const ProcessorStatus = @import("../cpu.zig").ProcessorStatus;
+const ControllerButton = @import("../controller.zig").ControllerButton;
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
 const paths = @import("../paths.zig");
 const ness = @import("../root.zig");
 
 const NES_WIDTH = ness.NES_WIDTH;
+const NES_HEIGHT = ness.NES_HEIGHT;
 const OVERSCAN_TOP = ness.OVERSCAN_TOP;
 const NES_VISIBLE_HEIGHT = ness.NES_VISIBLE_HEIGHT;
+const NES_PIXEL_BYTES = NES_WIDTH * NES_HEIGHT * 4;
 const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
 const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const NES_CONTROLLER_IMG = @embedFile("nes_controller_img");
+const NO_FRAME: u8 = std.math.maxInt(u8);
 
 const ControllerPlayer = bindings.ControllerPlayer;
+const ControllerAction = bindings.ControllerAction;
 const ControllerKeyBindings = bindings.ControllerKeyBindings;
 const ControllerBindingTarget = bindings.ControllerBindingTarget;
 const GeneralAction = bindings.GeneralAction;
@@ -68,8 +76,69 @@ pub const UIState = struct {
     saved_settings: EmulatorSettings = .{},
     config_dir: ?[]u8 = null,
     controller_img: LoadedImage,
+    emulation_thread: ?std.Thread = null,
+    emulation_stop: std.atomic.Value(bool) = .init(false),
+    emulation_lock: std.Thread.RwLock = .{},
+    controller1_bits: std.atomic.Value(u8) = .init(0),
+    controller2_bits: std.atomic.Value(u8) = .init(0),
+    frame_buffers: [2]Frame = .{ Frame.init(), Frame.init() },
+    published_frame_idx: std.atomic.Value(u8) = .init(0),
+    ui_frame_idx: std.atomic.Value(u8) = .init(0),
+    writing_frame_idx: std.atomic.Value(u8) = .init(NO_FRAME),
+    render_frame_idx: u8 = 0,
 
     const Self = @This();
+    pub const DebugSnapshot = struct {
+        const CPU_MEMORY_SIZE = 0x10000;
+
+        register_a: u8 = 0,
+        register_x: u8 = 0,
+        register_y: u8 = 0,
+        pc: u16 = 0,
+        sp: u8 = 0,
+        status: ProcessorStatus = .{},
+        scanline: u16 = 0,
+        cycle: u16 = 0,
+        global_cycle: u64 = 0,
+        palette_ram: [32]u8 = [_]u8{0} ** 32,
+        pattern_table_0: PatternTableFrame = .{},
+        pattern_table_1: PatternTableFrame = .{},
+        memory: [CPU_MEMORY_SIZE]u8 = [_]u8{0} ** CPU_MEMORY_SIZE,
+
+        pub fn memPeek(self: *const @This(), addr: u16) u8 {
+            return self.memory[addr];
+        }
+
+        pub fn memPeekU16(self: *const @This(), addr: u16) u16 {
+            const lo = self.memPeek(addr);
+            const hi = @as(u16, self.memPeek(addr +% 1));
+            return (hi << 8) | lo;
+        }
+
+        fn capture(system: *const System) @This() {
+            var snapshot: @This() = .{
+                .register_a = system.cpu.register_a,
+                .register_x = system.cpu.register_x,
+                .register_y = system.cpu.register_y,
+                .pc = system.cpu.pc,
+                .sp = system.cpu.sp,
+                .status = system.cpu.status,
+                .scanline = system.ppu.scanline,
+                .cycle = system.ppu.cycle,
+                .global_cycle = system.ppu.global_cycle,
+                .palette_ram = system.ppu.palette_table,
+                .pattern_table_0 = system.ppu.get_pattern_table(0, 0),
+                .pattern_table_1 = system.ppu.get_pattern_table(1, 0),
+            };
+
+            for (&snapshot.memory, 0..) |*value, addr| {
+                value.* = system.cpu.bus.mem_peek(@intCast(addr));
+            }
+
+            return snapshot;
+        }
+    };
+
     pub const LoadedImage = struct {
         raw: [*c]c.SDL_Surface,
 
@@ -154,6 +223,8 @@ pub const UIState = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.stopEmulationThread();
+
         // Save before freeing the system.
         if (self.emulation_running) self.saveCurrentGame();
         self.history.deinit();
@@ -171,9 +242,179 @@ pub const UIState = struct {
         }
     }
 
+    fn startEmulationThread(self: *Self) !void {
+        self.stopEmulationThread();
+        self.emulation_stop.store(false, .release);
+        self.emulation_thread = try std.Thread.spawn(.{}, emulationThreadMain, .{self});
+    }
+
+    pub fn stopEmulationThread(self: *Self) void {
+        if (self.emulation_thread) |thread| {
+            self.emulation_stop.store(true, .release);
+            thread.join();
+            self.emulation_thread = null;
+            self.emulation_stop.store(false, .release);
+        }
+    }
+
+    fn emulationThreadMain(self: *Self) void {
+        var frame_acc: f32 = 0.0;
+
+        while (!self.emulation_stop.load(.acquire)) {
+            self.emulation_lock.lock();
+            const can_run = self.emulation_running and self.system != null and !self.paused and !self.step_mode;
+            if (can_run) {
+                const speed = self.settings.emulation_speed;
+                const multiplier = speed.multiplier();
+                frame_acc += multiplier;
+                const frames_to_run: u32 = @intFromFloat(frame_acc);
+                frame_acc -= @floatFromInt(frames_to_run);
+
+                self.system.?.apu.device.setSpeed(multiplier);
+                for (0..frames_to_run) |_| {
+                    self.system.?.applyControllerSnapshot(self.controllerSnapshot());
+                    self.system.?.run_frame();
+                    self.publishFrame(self.system.?.frame_buffer());
+                }
+            } else {
+                frame_acc = 0.0;
+            }
+            self.emulation_lock.unlock();
+
+            c.SDL_Delay(1);
+        }
+    }
+
+    fn publishFrame(self: *Self, pixels: []const u8) void {
+        while (true) {
+            const read_idx = self.ui_frame_idx.load(.acquire);
+            const write_idx: u8 = if (read_idx == 0) 1 else 0;
+
+            self.writing_frame_idx.store(write_idx, .release);
+            if (self.ui_frame_idx.load(.acquire) == write_idx) {
+                self.writing_frame_idx.store(NO_FRAME, .release);
+                continue;
+            }
+
+            @memcpy(self.frame_buffers[write_idx].data[0..], pixels);
+            self.published_frame_idx.store(write_idx, .release);
+            self.writing_frame_idx.store(NO_FRAME, .release);
+            return;
+        }
+    }
+
+    pub fn update(self: *Self) void {
+        while (true) {
+            const idx = self.published_frame_idx.load(.acquire);
+            self.ui_frame_idx.store(idx, .release);
+            if (self.writing_frame_idx.load(.acquire) != idx) {
+                self.render_frame_idx = idx;
+                return;
+            }
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn framePixels(self: *Self, offset: usize, len: usize) []const u8 {
+        return self.frame_buffers[self.render_frame_idx].data[offset..][0..len];
+    }
+
+    pub fn debugSnapshot(self: *Self) DebugSnapshot {
+        self.emulation_lock.lockShared();
+        defer self.emulation_lock.unlockShared();
+
+        return DebugSnapshot.capture(&self.system.?);
+    }
+
+    pub fn syncControllers(self: *Self, ui: *UI) void {
+        const snapshot = self.pollControllers(ui);
+        self.controller1_bits.store(@bitCast(snapshot.player1), .release);
+        self.controller2_bits.store(@bitCast(snapshot.player2), .release);
+    }
+
+    fn controllerSnapshot(self: *Self) System.ControllerSnapshot {
+        return .{
+            .player1 = @bitCast(self.controller1_bits.load(.acquire)),
+            .player2 = @bitCast(self.controller2_bits.load(.acquire)),
+        };
+    }
+
+    fn pollControllers(self: *Self, ui: *UI) System.ControllerSnapshot {
+        return .{
+            .player1 = self.pollController(ui, .one),
+            .player2 = self.pollController(ui, .two),
+        };
+    }
+
+    fn pollController(self: *Self, ui: *UI, player: ControllerPlayer) ControllerButton {
+        var status: ControllerButton = .{};
+        const key_bindings = self.settings.controller_bindings.forPlayerConst(player);
+
+        inline for (@typeInfo(ControllerAction).@"enum".fields) |field| {
+            const action = @field(ControllerAction, field.name);
+            if (ui.isKeyDown(key_bindings.get(action))) {
+                status.insert(action.button());
+            }
+        }
+
+        if (ui.getGamepadCount() > player.value()) {
+            self.pollGamepadButtons(ui, player, &status);
+        }
+
+        return status;
+    }
+
+    fn pollGamepadButtons(self: *Self, ui: *UI, player: ControllerPlayer, status: *ControllerButton) void {
+        const gamepad_bindings = self.settings.gamepad_bindings.forPlayerConst(player);
+
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.a)) status.insert(.{ .BUTTON_A = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.b)) status.insert(.{ .BUTTON_B = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.start)) status.insert(.{ .START = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.select)) status.insert(.{ .SELECT = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.up)) status.insert(.{ .UP = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.down)) status.insert(.{ .DOWN = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.left)) status.insert(.{ .LEFT = true });
+        if (ui.isGamepadButtonDown(player, gamepad_bindings.right)) status.insert(.{ .RIGHT = true });
+
+        const threshold: i16 = @intCast(@as(u32, self.settings.gamepad_deadzone) * 32767 / 100);
+        const lx = ui.getGamepadAxis(player, c.SDL_GAMEPAD_AXIS_LEFTX);
+        const ly = ui.getGamepadAxis(player, c.SDL_GAMEPAD_AXIS_LEFTY);
+        if (lx < -threshold) status.insert(.{ .LEFT = true });
+        if (lx > threshold) status.insert(.{ .RIGHT = true });
+        if (ly < -threshold) status.insert(.{ .UP = true });
+        if (ly > threshold) status.insert(.{ .DOWN = true });
+    }
+
+    pub fn resetSystem(self: *Self) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.system.?.reset();
+    }
+
+    pub fn runSystemTick(self: *Self) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.system.?.tick();
+    }
+
+    pub fn runSystemFrame(self: *Self) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.system.?.run_frame();
+    }
+
+    pub fn setEmulationSpeed(self: *Self, speed: EmulationSpeed) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.settings.emulation_speed = speed;
+    }
+
     pub fn loadRom(self: *Self, path: []const u8) !void {
         // Save previous game's progress before replacing it.
-        if (self.emulation_running) self.saveCurrentGame();
+        if (self.emulation_running) {
+            self.stopEmulationThread();
+            self.saveCurrentGame();
+        }
 
         if (self.rom) |*rom| rom.deinit();
         if (self.system) |*system| system.deinit();
@@ -202,17 +443,18 @@ pub const UIState = struct {
         self.rom = try Rom.init(self.alloc, path, self.rom_bytes.?);
         self.system = try System.init(self.alloc, &self.rom.?, .{});
         self.system.?.reset();
+        self.publishFrame(self.system.?.frame_buffer());
         self.emulation_running = true;
         self.render_home_ui = false;
-
-        self.applyControllerBindings();
 
         if (self.current_rom_path) |p| self.alloc.free(p);
         self.current_rom_path = self.alloc.dupe(u8, path) catch null;
         self.game_start_time_ms = std.time.milliTimestamp();
+        try self.startEmulationThread();
     }
 
     pub fn unloadCurrentRom(self: *Self) void {
+        self.stopEmulationThread();
         self.saveCurrentGame();
 
         self.rom.?.deinit();
@@ -243,18 +485,11 @@ pub const UIState = struct {
             }
         }
 
-        const pixels = self.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES];
+        const pixels = self.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES);
         self.history.save(name, path, existing_secs + elapsed_secs, pixels);
 
         // Reset so back-to-back saves (loadRom then deinit) don't double-count.
         self.game_start_time_ms = std.time.milliTimestamp();
-    }
-
-    pub fn applyControllerBindings(self: *Self) void {
-        if (self.system) |*system| {
-            bindings.applyBindingsToKeymap(&system.keymap1, self.settings.controller_bindings.player1);
-            bindings.applyBindingsToKeymap(&system.keymap2, self.settings.controller_bindings.player2);
-        }
     }
 
     pub fn generalBinding(self: *const Self, action: GeneralAction) Key {
@@ -274,6 +509,10 @@ pub const UIState = struct {
     pub fn restoreSavedSettings(self: *Self) void {
         const restored = clonePersistedSettings(self.alloc, self.saved_settings) catch
             @panic("Failed to restore loaded settings");
+
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+
         deinitEmulatorSettings(self.alloc, &self.settings);
         self.settings = restored;
 
@@ -286,8 +525,6 @@ pub const UIState = struct {
         self.settings.should_clear_border_shader = self.settings.border_shader_preset_path == null;
         self.settings.border_shader_loading = false;
         self.settings.border_shader_error = null;
-
-        self.applyControllerBindings();
     }
 
     fn loadSettings(self: *Self) void {
@@ -334,12 +571,22 @@ pub const UIState = struct {
     }
 
     pub fn togglePause(self: *Self) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
         self.paused = !self.paused;
     }
 
     pub fn toggleDebug(self: *Self) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
         self.step_mode = !self.step_mode;
         self.render_debug_ui = !self.render_debug_ui;
+    }
+
+    pub fn toggleStepMode(self: *Self) void {
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.step_mode = !self.step_mode;
     }
 };
 

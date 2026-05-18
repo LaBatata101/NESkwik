@@ -28,12 +28,12 @@ const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const ControllerPlayer = bindings.ControllerPlayer;
 const ControllerAction = bindings.ControllerAction;
 const ControllerBindingTarget = bindings.ControllerBindingTarget;
-pub const GeneralAction = bindings.GeneralAction;
+const GeneralAction = bindings.GeneralAction;
 const GamepadButton = bindings.GamepadButton;
 const ParamTarget = settings.ParamTarget;
 const SettingsCategory = state.SettingsCategory;
 pub const UIState = state.UIState;
-pub const EmulationSpeed = settings.EmulationSpeed;
+const EmulationSpeed = settings.EmulationSpeed;
 
 const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
     .{ .name = "NES ROMs", .pattern = "nes" },
@@ -235,7 +235,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .text_color = theme.text_secondary,
                     .shortcut = ui_state.generalBinding(.restart).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.system.?.reset();
+                    ui_state.resetSystem();
                 }
 
                 _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
@@ -276,7 +276,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
         } else {
             const canvas = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-                .pixels = ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES],
+                .pixels = ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
                 .w = NES_WIDTH,
                 .h = NES_VISIBLE_HEIGHT,
                 .aspect_ratio = ui_state.settings.aspect_ratio,
@@ -719,12 +719,9 @@ fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
                 .color = theme.text_primary,
             });
             _ = ui.spacer(.{ .sizing = .grow });
-            const hide_mouse_on_inactivity = ui
+            ui_state.settings.hide_mouse_on_inactivity = ui
                 .toggle(.{ .value = ui_state.settings.hide_mouse_on_inactivity, .size = 22 })
                 .value();
-            if (ui_state.settings.hide_mouse_on_inactivity != hide_mouse_on_inactivity) {
-                ui_state.settings.hide_mouse_on_inactivity = hide_mouse_on_inactivity;
-            }
         }
         row.end();
 
@@ -877,7 +874,6 @@ fn updateControllerBindingCapture(ui: *UI, ui_state: *UIState) void {
         player_bindings.set(target.action, key);
     }
     ui_state.settings.capture_binding = null;
-    ui_state.applyControllerBindings();
 }
 
 fn updateGamepadBindingCapture(ui: *UI, ui_state: *UIState) void {
@@ -1089,7 +1085,7 @@ fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
 
         const selected_speed = speed_opts.selected();
         if (ui_state.settings.emulation_speed != selected_speed) {
-            ui_state.settings.emulation_speed = selected_speed;
+            ui_state.setEmulationSpeed(selected_speed);
         }
     }
     row.end();
@@ -1360,7 +1356,7 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
 
     if (ui_state.emulation_running) {
         const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES], NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
+        drawShaderPreview(ui, ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES), NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
         center.end();
     }
 }
@@ -1586,7 +1582,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
             else => ui_state.settings.aspect_ratio,
         };
         const preview_pixels: []const u8 = if (ui_state.emulation_running)
-            ui_state.system.?.frame_buffer()[OVERSCAN_PIXEL_OFFSET..][0..NES_VISIBLE_PIXEL_BYTES]
+            ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES)
         else
             &black_pixel;
         const px_w: u32 = if (ui_state.emulation_running) NES_WIDTH else 1;

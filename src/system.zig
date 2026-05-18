@@ -1,17 +1,10 @@
 const std = @import("std");
 
-const c = @import("root.zig").c;
 const Rom = @import("rom.zig").Rom;
 const Bus = @import("bus.zig").Bus;
 const CPU = @import("cpu.zig").CPU;
 const PPU = @import("ppu.zig").PPU;
 const APU = @import("apu/apu.zig").APU;
-const Keys = @import("ui/core/ui.zig").Key;
-const UI = @import("ui/core/ui.zig").UI;
-const UIState = @import("ui/gui.zig").UIState;
-const ControllerPlayer = @import("ui/bindings.zig").ControllerPlayer;
-const GamepadKeyBindings = @import("ui/bindings.zig").GamepadKeyBindings;
-const GamepadPlayerBindings = @import("ui/bindings.zig").GamepadPlayerBindings;
 const SDLAudioOut = @import("sdl_audio.zig").SDLAudioOut;
 const ControllerButton = @import("controller.zig").ControllerButton;
 const trace = @import("trace.zig").trace;
@@ -29,11 +22,6 @@ pub const System = struct {
     apu: *APU,
     ppu: *PPU,
 
-    // Keymap for controller 1.
-    keymap1: std.AutoHashMap(Keys, ControllerButton),
-    // Keymap for controller 2.
-    keymap2: std.AutoHashMap(Keys, ControllerButton),
-
     settings: Settings,
 
     trace_file: ?std.fs.File,
@@ -41,6 +29,11 @@ pub const System = struct {
     trace_file_buffer: [4096]u8,
 
     const Self = @This();
+
+    pub const ControllerSnapshot = struct {
+        player1: ControllerButton = .{},
+        player2: ControllerButton = .{},
+    };
 
     pub fn init(allocator: std.mem.Allocator, rom: *Rom, settings: Settings) !Self {
         const cpu = try allocator.create(CPU);
@@ -54,8 +47,6 @@ pub const System = struct {
         cpu.* = CPU.init(bus);
 
         apu.device.disable = settings.disable_audio;
-
-        const keymap1, const keymap2 = try Self.init_keymaps(allocator);
 
         var trace_file: ?std.fs.File = null;
         var trace_file_writer: ?std.fs.File.Writer = null;
@@ -72,8 +63,6 @@ pub const System = struct {
             .ppu = ppu,
             .apu = apu,
             .settings = settings,
-            .keymap1 = keymap1,
-            .keymap2 = keymap2,
             .trace_file = trace_file,
             .trace_file_writer = trace_file_writer,
             .trace_file_buffer = undefined,
@@ -81,8 +70,6 @@ pub const System = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.keymap1.deinit();
-        self.keymap2.deinit();
         self.apu.deinit();
 
         self.allocator.destroy(self.cpu);
@@ -93,35 +80,6 @@ pub const System = struct {
         if (self.settings.trace_cpu) {
             self.trace_file.?.close();
         }
-    }
-
-    fn init_keymaps(allocator: std.mem.Allocator) !struct {
-        std.AutoHashMap(Keys, ControllerButton),
-        std.AutoHashMap(Keys, ControllerButton),
-    } {
-        var keymap1 = std.AutoHashMap(Keys, ControllerButton).init(allocator);
-
-        try keymap1.put(.DOWN, .{ .DOWN = true });
-        try keymap1.put(.UP, .{ .UP = true });
-        try keymap1.put(.RIGHT, .{ .RIGHT = true });
-        try keymap1.put(.LEFT, .{ .LEFT = true });
-        try keymap1.put(.RETURN, .{ .START = true });
-        try keymap1.put(.SPACE, .{ .SELECT = true });
-        try keymap1.put(.Z, .{ .BUTTON_A = true });
-        try keymap1.put(.X, .{ .BUTTON_B = true });
-
-        var keymap2 = std.AutoHashMap(Keys, ControllerButton).init(allocator);
-
-        try keymap2.put(.S, .{ .DOWN = true });
-        try keymap2.put(.W, .{ .UP = true });
-        try keymap2.put(.D, .{ .RIGHT = true });
-        try keymap2.put(.A, .{ .LEFT = true });
-        try keymap2.put(.P, .{ .START = true });
-        try keymap2.put(.U, .{ .SELECT = true });
-        try keymap2.put(.I, .{ .BUTTON_A = true });
-        try keymap2.put(.O, .{ .BUTTON_B = true });
-
-        return .{ keymap1, keymap2 };
     }
 
     pub fn tick(self: *Self) void {
@@ -214,60 +172,8 @@ pub const System = struct {
         return &self.ppu.frame_buffer.data;
     }
 
-    pub fn sync_controllers(self: *Self, ui: *UI, ui_state: *UIState) void {
-        self.bus.controllers.cntrl1_status = .{};
-        var it1 = self.keymap1.iterator();
-        while (it1.next()) |entry| {
-            if (ui.isKeyDown(entry.key_ptr.*)) {
-                self.bus.controllers.cntrl1_status.insert(entry.value_ptr.*);
-            }
-        }
-        if (ui.getGamepadCount() > 0) {
-            syncGamepadButtons(
-                ui,
-                .one,
-                ui_state.settings.gamepad_bindings.forPlayerConst(.one),
-                &self.bus.controllers.cntrl1_status,
-                ui_state.settings.gamepad_deadzone,
-            );
-        }
-
-        self.bus.controllers.cntrl2_status = .{};
-        var it2 = self.keymap2.iterator();
-        while (it2.next()) |entry| {
-            if (ui.isKeyDown(entry.key_ptr.*)) {
-                self.bus.controllers.cntrl2_status.insert(entry.value_ptr.*);
-            }
-        }
-
-        if (ui.getGamepadCount() > 1) {
-            syncGamepadButtons(
-                ui,
-                .two,
-                ui_state.settings.gamepad_bindings.forPlayerConst(.two),
-                &self.bus.controllers.cntrl2_status,
-                ui_state.settings.gamepad_deadzone,
-            );
-        }
+    pub fn applyControllerSnapshot(self: *Self, snapshot: ControllerSnapshot) void {
+        self.bus.controllers.cntrl1_status = snapshot.player1;
+        self.bus.controllers.cntrl2_status = snapshot.player2;
     }
 };
-
-fn syncGamepadButtons(ui: *UI, gamepad_idx: ControllerPlayer, bindings: *const GamepadPlayerBindings, status: *ControllerButton, deadzone: u8) void {
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.a)) status.insert(.{ .BUTTON_A = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.b)) status.insert(.{ .BUTTON_B = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.start)) status.insert(.{ .START = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.select)) status.insert(.{ .SELECT = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.up)) status.insert(.{ .UP = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.down)) status.insert(.{ .DOWN = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.left)) status.insert(.{ .LEFT = true });
-    if (ui.isGamepadButtonDown(gamepad_idx, bindings.right)) status.insert(.{ .RIGHT = true });
-
-    // Left analog stick as D-pad
-    const threshold: i16 = @intCast(@as(u32, deadzone) * 32767 / 100);
-    const lx = ui.getGamepadAxis(gamepad_idx, c.SDL_GAMEPAD_AXIS_LEFTX);
-    const ly = ui.getGamepadAxis(gamepad_idx, c.SDL_GAMEPAD_AXIS_LEFTY);
-    if (lx < -threshold) status.insert(.{ .LEFT = true });
-    if (lx > threshold) status.insert(.{ .RIGHT = true });
-    if (ly < -threshold) status.insert(.{ .UP = true });
-    if (ly > threshold) status.insert(.{ .DOWN = true });
-}
