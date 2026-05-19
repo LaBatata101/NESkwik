@@ -2,7 +2,7 @@ const std = @import("std");
 
 const bindings = @import("bindings.zig");
 const utils = @import("core/utils.zig");
-const EmulatorSettings = @import("state.zig").UIState.EmulatorSettings;
+const EmulatorSettings = @import("state.zig").AppState.EmulatorSettings;
 
 const SETTINGS_FILENAME = "config.json";
 
@@ -44,7 +44,7 @@ pub const ShaderParamSetting = struct {
     value: f32,
 };
 
-const SettingsConfig = struct {
+pub const SettingsConfig = struct {
     version: u32 = 1,
     aspect_ratio: utils.AspectRatio = .@"4_3",
     shader_preset_path: ?[]const u8 = null,
@@ -92,20 +92,7 @@ pub fn save(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: Emulato
     try std.fs.cwd().makePath(dir);
 
     const config_path = try std.fs.path.join(arena_alloc, &.{ dir, SETTINGS_FILENAME });
-    const json_bytes = try std.json.Stringify.valueAlloc(arena_alloc, SettingsConfig{
-        .aspect_ratio = settings.aspect_ratio,
-        .shader_preset_path = settings.shader_preset_path,
-        .shader_params = settings.shader_params.items,
-        .border_shader_preset_path = settings.border_shader_preset_path,
-        .border_shader_params = settings.border_shader_params.items,
-        .hide_mouse_on_inactivity = settings.hide_mouse_on_inactivity,
-        .vsync = settings.vsync,
-        .emulation_speed = settings.emulation_speed,
-        .controller_bindings = settings.controller_bindings,
-        .general_bindings = settings.general_bindings,
-        .gamepad_bindings = settings.gamepad_bindings,
-        .gamepad_deadzone = settings.gamepad_deadzone,
-    }, .{
+    const json_bytes = try std.json.Stringify.valueAlloc(arena_alloc, configFromSettings(settings), .{
         .whitespace = .indent_2,
         .emit_null_optional_fields = false,
     });
@@ -116,28 +103,53 @@ pub fn save(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: Emulato
 }
 
 fn applyConfig(alloc: std.mem.Allocator, settings: *EmulatorSettings, config: SettingsConfig) !void {
-    settings.aspect_ratio = config.aspect_ratio;
-    settings.hide_mouse_on_inactivity = config.hide_mouse_on_inactivity;
-    settings.vsync = config.vsync;
-    settings.emulation_speed = config.emulation_speed;
-    settings.controller_bindings = config.controller_bindings;
-    settings.general_bindings = config.general_bindings;
-    settings.gamepad_bindings = config.gamepad_bindings;
-    settings.gamepad_deadzone = config.gamepad_deadzone;
+    inline for (std.meta.fields(SettingsConfig)) |field| {
+        if (@hasField(EmulatorSettings, field.name)) {
+            try applyConfigField(alloc, &@field(settings, field.name), @field(config, field.name));
+        }
+    }
 
-    try replaceOptionalOwnedString(alloc, &settings.shader_preset_path, config.shader_preset_path);
-    try replaceShaderParamSettings(alloc, &settings.shader_params, config.shader_params);
+    clearParamsWithoutPreset(alloc, settings);
+}
+
+fn configFromSettings(settings: EmulatorSettings) SettingsConfig {
+    var config: SettingsConfig = .{};
+    inline for (std.meta.fields(SettingsConfig)) |field| {
+        if (@hasField(EmulatorSettings, field.name)) {
+            @field(config, field.name) = configFieldValue(field.type, @field(settings, field.name));
+        }
+    }
+    return config;
+}
+
+fn configFieldValue(comptime T: type, value: anytype) T {
+    if (T == []const ShaderParamSetting and @TypeOf(value) == std.ArrayList(ShaderParamSetting)) {
+        return value.items;
+    }
+
+    return value;
+}
+
+fn applyConfigField(alloc: std.mem.Allocator, dest: anytype, source: anytype) !void {
+    const Dest = @typeInfo(@TypeOf(dest)).pointer.child;
+    const Source = @TypeOf(source);
+
+    if (Dest == ?[]u8 and Source == ?[]const u8) {
+        try replaceOptionalOwnedString(alloc, dest, source);
+    } else if (Dest == std.ArrayList(ShaderParamSetting) and Source == []const ShaderParamSetting) {
+        try replaceShaderParamSettings(alloc, dest, source);
+    } else {
+        dest.* = source;
+    }
+}
+
+fn clearParamsWithoutPreset(alloc: std.mem.Allocator, settings: *EmulatorSettings) void {
     if (settings.shader_preset_path == null) {
         clearShaderParamSettings(alloc, &settings.shader_params);
     }
-    settings.should_load_shader = settings.shader_preset_path != null;
-
-    try replaceOptionalOwnedString(alloc, &settings.border_shader_preset_path, config.border_shader_preset_path);
-    try replaceShaderParamSettings(alloc, &settings.border_shader_params, config.border_shader_params);
     if (settings.border_shader_preset_path == null) {
         clearShaderParamSettings(alloc, &settings.border_shader_params);
     }
-    settings.should_load_border_shader = settings.border_shader_preset_path != null;
 }
 
 pub fn setShaderParamSetting(

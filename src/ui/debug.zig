@@ -5,7 +5,7 @@ const UI = @import("core/ui.zig").UI;
 const opcodes = @import("../opcodes.zig");
 const OpCode = opcodes.OpCode;
 const theme = @import("common.zig").theme;
-const UIState = @import("state.zig").UIState;
+const AppState = @import("state.zig").AppState;
 const Shape = @import("core/widgets.zig").Shape;
 const Color = @import("core/color.zig").Color;
 const OVERSCAN_TOP = @import("../root.zig").OVERSCAN_TOP;
@@ -16,13 +16,13 @@ const NES_WIDTH = @import("../root.zig").NES_WIDTH;
 const NES_HEIGHT = @import("../root.zig").NES_HEIGHT;
 const SYSTEM_PALETTE = @import("../render.zig").SYSTEM_PALETTE;
 
-pub fn drawUI(ui: *UI, ui_state: *UIState) void {
-    const snapshot = ui_state.debugSnapshot();
+pub fn drawUI(ui: *UI, app_state: *AppState) void {
+    const snapshot = app_state.debugSnapshot();
     const root = ui.row(.{ .bg_color = theme.bg_base, .sizing = .grow, .gap = 2 });
     {
         const col = ui.column(.{ .child_alignment = .{ .y = .top } });
         {
-            drawGameScreen(ui, ui_state);
+            drawGameScreen(ui, app_state);
             drawPatternAndPalettePanel(ui, &snapshot);
         }
         col.end();
@@ -49,13 +49,13 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
                     .text = std.fmt.allocPrint(
                         ui.current_window.ctx.frameAlloc(),
                         "Run tick ({s})",
-                        .{ui_state.generalBinding(.run_tick).keyName()},
+                        .{app_state.generalBinding(.run_tick).keyName()},
                     ) catch @panic("OOM"),
                 },
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.runSystemTick();
+                app_state.runSystemTick();
             }
             if (ui.iconButton(.{
                 .icon = ui.icons.get(.fast_forward),
@@ -63,23 +63,23 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
                     .text = std.fmt.allocPrint(
                         ui.current_window.ctx.frameAlloc(),
                         "Run frame ({s})",
-                        .{ui_state.generalBinding(.run_frame).keyName()},
+                        .{app_state.generalBinding(.run_frame).keyName()},
                     ) catch @panic("OOM"),
                 },
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.runSystemFrame();
+                app_state.runSystemFrame();
             }
             if (ui.iconButton(.{
-                .icon = if (ui_state.step_mode) ui.icons.get(.play) else ui.icons.get(.stop),
+                .icon = if (app_state.step_mode) ui.icons.get(.play) else ui.icons.get(.stop),
                 .tooltip = .{
-                    .text = if (ui_state.step_mode) "Run emulation" else "Stop emulation",
+                    .text = if (app_state.step_mode) "Run emulation" else "Stop emulation",
                 },
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.toggleStepMode();
+                app_state.toggleStepMode();
             }
         }
         buttons.end();
@@ -87,18 +87,18 @@ pub fn drawUI(ui: *UI, ui_state: *UIState) void {
     panel.end();
 }
 
-fn drawGameScreen(ui: *UI, ui_state: *UIState) void {
+fn drawGameScreen(ui: *UI, app_state: *AppState) void {
     const wrapper = ui.column(.{ .sizing = .{ .w = .grow, .h = .percent(0.677) } });
     _ = ui.canvas(.{
         .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-        .pixels = ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
+        .pixels = app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
         .w = NES_WIDTH,
         .h = NES_HEIGHT,
     });
     wrapper.end();
 }
 
-fn drawDebugSidebar(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawDebugSidebar(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     const sidebar = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
@@ -140,7 +140,7 @@ fn drawSectionHeader(ui: *UI, title: []const u8, accent: Color) void {
     header.end();
 }
 
-fn drawDisassemblyPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawDisassemblyPanel(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     drawSectionHeader(ui, "DISASSEMBLY", theme.accent_amber);
 
     const body = ui.column(.{
@@ -235,7 +235,7 @@ fn drawDisassemblyRow(ui: *UI, addr: []const u8, mnemonic: []const u8, operand: 
     row.end();
 }
 
-fn formatOpcode(snapshot: *const UIState.DebugSnapshot, code: u8, pc: u16, buffer: []u8) ![]u8 {
+fn formatOpcode(snapshot: *const AppState.DebugSnapshot, code: u8, pc: u16, buffer: []u8) ![]u8 {
     const opcode = opcodes.OP_CODES[code];
     const mnemonic = switch (code) {
         // zig fmt: off
@@ -273,7 +273,7 @@ fn formatOpcode(snapshot: *const UIState.DebugSnapshot, code: u8, pc: u16, buffe
     return buffer[0..pos];
 }
 
-fn formatAddressingMode(snapshot: *const UIState.DebugSnapshot, opcode: OpCode, arg_addr: u16, buffer: []u8) ![]u8 {
+fn formatAddressingMode(snapshot: *const AppState.DebugSnapshot, opcode: OpCode, arg_addr: u16, buffer: []u8) ![]u8 {
     switch (opcode.addressing_mode()) {
         .Immediate => {
             return try std.fmt.bufPrint(buffer, " #${X:02}", .{snapshot.memPeek(arg_addr)});
@@ -391,7 +391,7 @@ fn formatAddressingMode(snapshot: *const UIState.DebugSnapshot, opcode: OpCode, 
     }
 }
 
-fn drawRegistersPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawRegistersPanel(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     drawSectionHeader(ui, "CPU REGISTERS", theme.accent_blue);
 
     const body = ui.column(.{
@@ -504,7 +504,7 @@ fn drawFlagBadge(ui: *UI, name: []const u8, active: bool) void {
     pill.end();
 }
 
-fn drawPPUPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawPPUPanel(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     drawSectionHeader(ui, "PPU STATE", theme.accent_purple);
 
     const body = ui.row(.{
@@ -554,7 +554,7 @@ fn drawStatBadge(ui: *UI, key: []const u8, value: []const u8, accent: Color) voi
     cell.end();
 }
 
-fn drawPatternAndPalettePanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawPatternAndPalettePanel(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     const row = ui.row(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,
@@ -567,7 +567,7 @@ fn drawPatternAndPalettePanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) v
     row.end();
 }
 
-fn drawPatternTablesPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawPatternTablesPanel(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     const col = ui.column(.{
         .sizing = .{ .w = .fit, .h = .grow },
         .bg_color = theme.bg_panel,
@@ -635,7 +635,7 @@ fn drawPatternTablesPanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void 
     col.end();
 }
 
-fn drawPalettePanel(ui: *UI, snapshot: *const UIState.DebugSnapshot) void {
+fn drawPalettePanel(ui: *UI, snapshot: *const AppState.DebugSnapshot) void {
     const col = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_panel,

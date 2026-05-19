@@ -15,6 +15,7 @@ const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
 const paths = @import("../paths.zig");
 const ness = @import("../root.zig");
+const sdlError = ness.sdlError;
 
 const NES_WIDTH = ness.NES_WIDTH;
 const NES_HEIGHT = ness.NES_HEIGHT;
@@ -25,6 +26,7 @@ const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
 const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const NES_CONTROLLER_IMG = @embedFile("nes_controller_img");
 const NO_FRAME: u8 = std.math.maxInt(u8);
+const CURSOR_HIDE_DELAY_MS = 3000;
 
 const ControllerPlayer = bindings.ControllerPlayer;
 const ControllerAction = bindings.ControllerAction;
@@ -53,7 +55,7 @@ pub const SettingsCategory = enum {
     }
 };
 
-pub const UIState = struct {
+pub const AppState = struct {
     alloc: std.mem.Allocator,
     /// Wheter to skip drawing the home screen.
     render_home_ui: bool = true,
@@ -71,6 +73,26 @@ pub const UIState = struct {
     game_start_time_ms: i64 = 0,
 
     paused: bool = false,
+
+    last_mouse_activity_time: u64,
+    is_cursor_hidden: bool = false,
+
+    /// Set to true to trigger loading the shader preset on the next frame.
+    should_load_shader: bool = false,
+    /// Set to true to trigger clearing the shader preset on the next frame.
+    should_clear_shader: bool = false,
+    /// True while an async shader compile is in progress.
+    shader_loading: bool = false,
+    /// Last shader load error message to display in the settings window (owned).
+    shader_error: ?[]u8 = null,
+    /// Set to true to trigger loading the border shader preset on the next frame.
+    should_load_border_shader: bool = false,
+    /// Set to true to trigger clearing the border shader preset on the next frame.
+    should_clear_border_shader: bool = false,
+    /// True while an async border shader compile is in progress.
+    border_shader_loading: bool = false,
+    /// Last border shader load error message (owned).
+    border_shader_error: ?[]u8 = null,
 
     settings: EmulatorSettings = .{},
     saved_settings: EmulatorSettings = .{},
@@ -164,26 +186,10 @@ pub const UIState = struct {
         shader_preset_path: ?[]u8 = null,
         /// Active shader parameter overrides (names are owned by this struct).
         shader_params: std.ArrayList(ShaderParamSetting) = .{},
-        /// Set to true to trigger loading the shader preset on the next frame.
-        should_load_shader: bool = false,
-        /// Set to true to trigger clearing the shader preset on the next frame.
-        should_clear_shader: bool = false,
-        /// True while an async shader compile is in progress.
-        shader_loading: bool = false,
-        /// Last shader load error message to display in the settings window (owned).
-        shader_error: ?[]u8 = null,
         /// Path to the active border shader preset (owned by this struct).
         border_shader_preset_path: ?[]u8 = null,
         /// Active border shader parameter overrides (names are owned by this struct).
         border_shader_params: std.ArrayList(ShaderParamSetting) = .{},
-        /// Set to true to trigger loading the border shader preset on the next frame.
-        should_load_border_shader: bool = false,
-        /// Set to true to trigger clearing the border shader preset on the next frame.
-        should_clear_border_shader: bool = false,
-        /// True while an async border shader compile is in progress.
-        border_shader_loading: bool = false,
-        /// Last border shader load error message (owned).
-        border_shader_error: ?[]u8 = null,
         /// Currently selected category in the settings sidebar.
         selected_category: SettingsCategory = .general,
         vsync: bool = true,
@@ -216,6 +222,7 @@ pub const UIState = struct {
             .history = hist,
             .config_dir = config_dir,
             .controller_img = .{ .raw = surface },
+            .last_mouse_activity_time = c.SDL_GetTicks(),
         };
         state.loadSettings();
         state.snapshotSettings() catch @panic("Failed to snapshot loaded settings");
@@ -232,6 +239,7 @@ pub const UIState = struct {
         if (self.config_dir) |path| self.alloc.free(path);
         if (self.current_rom_path) |p| self.alloc.free(p);
         if (self.rom_bytes) |rom_bytes| self.alloc.free(rom_bytes);
+        deinitShaderRuntimeState(self.alloc, self);
         deinitEmulatorSettings(self.alloc, &self.settings);
         deinitEmulatorSettings(self.alloc, &self.saved_settings);
         c.SDL_DestroySurface(self.controller_img.raw);
@@ -303,7 +311,55 @@ pub const UIState = struct {
         }
     }
 
-    pub fn update(self: *Self) void {
+    fn handleInput(self: *Self, ui: *UI) void {
+        if (self.emulation_running) {
+            const main_window_active = ui.current_window == ui.main_window;
+            if (main_window_active) {
+                self.syncControllers(ui);
+                if (ui.isKeyPressed(self.generalBinding(.quit))) ui.quit = true;
+                if (ui.isKeyPressed(self.generalBinding(.toggle_step_mode))) self.toggleDebug();
+                if (ui.isKeyPressed(self.generalBinding(.restart))) self.resetSystem();
+                if (ui.isKeyPressed(self.generalBinding(.toggle_pause))) self.togglePause();
+                if (ui.isKeyPressed(self.generalBinding(.stop))) {
+                    self.unloadCurrentRom();
+                    ui.setWindowFullscreen(false);
+                }
+                if (self.step_mode and ui.isKeyPressed(self.generalBinding(.run_tick))) self.runSystemTick();
+                if (self.step_mode and ui.isKeyPressed(self.generalBinding(.run_frame))) {
+                    self.runSystemFrame();
+                }
+                if (ui.isKeyPressed(self.generalBinding(.toggle_fullscreen))) {
+                    if (ui.isWindowFullscreen()) {
+                        ui.setWindowFullscreen(false);
+                    } else {
+                        ui.setWindowFullscreen(true);
+                    }
+                }
+            }
+
+            if (ui.mouseMotion()) {
+                self.last_mouse_activity_time = c.SDL_GetTicks();
+                if (self.is_cursor_hidden) {
+                    sdlError(c.SDL_ShowCursor());
+                    self.is_cursor_hidden = false;
+                }
+            }
+
+            if (self.settings.hide_mouse_on_inactivity and !self.render_debug_ui) {
+                if (!self.is_cursor_hidden and ui.hasPassedSinceMS(self.last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
+                    sdlError(c.SDL_HideCursor());
+                    self.is_cursor_hidden = true;
+                }
+            } else if (self.is_cursor_hidden) { // Always show cursor if not in fullscreen
+                sdlError(c.SDL_ShowCursor());
+                self.is_cursor_hidden = false;
+            }
+        }
+    }
+
+    pub fn update(self: *Self, ui: *UI) void {
+        self.handleInput(ui);
+
         while (true) {
             const idx = self.published_frame_idx.load(.acquire);
             self.ui_frame_idx.store(idx, .release);
@@ -516,20 +572,14 @@ pub const UIState = struct {
         deinitEmulatorSettings(self.alloc, &self.settings);
         self.settings = restored;
 
-        self.settings.should_load_shader = self.settings.shader_preset_path != null;
-        self.settings.should_clear_shader = self.settings.shader_preset_path == null;
-        self.settings.shader_loading = false;
-        self.settings.shader_error = null;
-
-        self.settings.should_load_border_shader = self.settings.border_shader_preset_path != null;
-        self.settings.should_clear_border_shader = self.settings.border_shader_preset_path == null;
-        self.settings.border_shader_loading = false;
-        self.settings.border_shader_error = null;
+        resetShaderRuntimeState(self);
     }
 
     fn loadSettings(self: *Self) void {
         settings.load(self.alloc, self.config_dir, &self.settings) catch |err|
             std.log.err("settings load failed: {s}", .{@errorName(err)});
+        self.should_load_shader = self.settings.shader_preset_path != null;
+        self.should_load_border_shader = self.settings.border_shader_preset_path != null;
     }
 
     fn saveSettingsImpl(self: *Self) !void {
@@ -592,31 +642,33 @@ pub const UIState = struct {
 
 fn clonePersistedSettings(
     alloc: std.mem.Allocator,
-    source: UIState.EmulatorSettings,
-) !UIState.EmulatorSettings {
-    var result = UIState.EmulatorSettings{
-        .aspect_ratio = source.aspect_ratio,
-        .vsync = source.vsync,
-        .hide_mouse_on_inactivity = source.hide_mouse_on_inactivity,
-        .emulation_speed = source.emulation_speed,
-        .controller_bindings = source.controller_bindings,
-        .general_bindings = source.general_bindings,
-        .gamepad_bindings = source.gamepad_bindings,
-        .gamepad_deadzone = source.gamepad_deadzone,
-    };
+    source: AppState.EmulatorSettings,
+) !AppState.EmulatorSettings {
+    var result = AppState.EmulatorSettings{};
     errdefer deinitEmulatorSettings(alloc, &result);
 
-    if (source.shader_preset_path) |path| {
-        result.shader_preset_path = try alloc.dupe(u8, path);
+    inline for (std.meta.fields(settings.SettingsConfig)) |field| {
+        if (@hasField(AppState.EmulatorSettings, field.name)) {
+            try cloneSettingsField(alloc, &@field(result, field.name), @field(source, field.name));
+        }
     }
-    try cloneShaderParamSettings(alloc, &result.shader_params, source.shader_params.items);
-
-    if (source.border_shader_preset_path) |path| {
-        result.border_shader_preset_path = try alloc.dupe(u8, path);
-    }
-    try cloneShaderParamSettings(alloc, &result.border_shader_params, source.border_shader_params.items);
 
     return result;
+}
+
+fn cloneSettingsField(alloc: std.mem.Allocator, dest: anytype, source: anytype) !void {
+    const Dest = @typeInfo(@TypeOf(dest)).pointer.child;
+    const Source = @TypeOf(source);
+
+    if (Dest == ?[]u8 and Source == ?[]u8) {
+        if (source) |value| {
+            dest.* = try alloc.dupe(u8, value);
+        }
+    } else if (Dest == std.ArrayList(ShaderParamSetting) and Source == std.ArrayList(ShaderParamSetting)) {
+        try cloneShaderParamSettings(alloc, dest, source.items);
+    } else {
+        dest.* = source;
+    }
 }
 
 fn cloneShaderParamSettings(
@@ -641,7 +693,6 @@ fn deinitShaderGroup(
     alloc: std.mem.Allocator,
     preset_path: *?[]u8,
     params: *std.ArrayList(ShaderParamSetting),
-    err_msg: *?[]u8,
 ) void {
     if (preset_path.*) |path| {
         alloc.free(path);
@@ -649,30 +700,63 @@ fn deinitShaderGroup(
     }
     settings.clearShaderParamSettings(alloc, params);
     params.deinit(alloc);
-    if (err_msg.*) |msg| {
-        alloc.free(msg);
-        err_msg.* = null;
+}
+
+fn deinitEmulatorSettings(alloc: std.mem.Allocator, s: *AppState.EmulatorSettings) void {
+    deinitShaderGroup(alloc, &s.shader_preset_path, &s.shader_params);
+    deinitShaderGroup(alloc, &s.border_shader_preset_path, &s.border_shader_params);
+}
+
+fn resetShaderRuntimeState(app_state: *AppState) void {
+    app_state.should_load_shader = app_state.settings.shader_preset_path != null;
+    app_state.should_clear_shader = app_state.settings.shader_preset_path == null;
+    app_state.shader_loading = false;
+    if (app_state.shader_error) |old| {
+        app_state.alloc.free(old);
+        app_state.shader_error = null;
+    }
+
+    app_state.should_load_border_shader = app_state.settings.border_shader_preset_path != null;
+    app_state.should_clear_border_shader = app_state.settings.border_shader_preset_path == null;
+    app_state.border_shader_loading = false;
+    if (app_state.border_shader_error) |old| {
+        app_state.alloc.free(old);
+        app_state.border_shader_error = null;
     }
 }
 
-fn deinitEmulatorSettings(alloc: std.mem.Allocator, s: *UIState.EmulatorSettings) void {
-    deinitShaderGroup(alloc, &s.shader_preset_path, &s.shader_params, &s.shader_error);
-    deinitShaderGroup(alloc, &s.border_shader_preset_path, &s.border_shader_params, &s.border_shader_error);
+fn deinitShaderRuntimeState(alloc: std.mem.Allocator, app_state: *AppState) void {
+    if (app_state.shader_error) |msg| {
+        alloc.free(msg);
+        app_state.shader_error = null;
+    }
+    if (app_state.border_shader_error) |msg| {
+        alloc.free(msg);
+        app_state.border_shader_error = null;
+    }
 }
 
-fn isSettingsEqual(a: UIState.EmulatorSettings, b: UIState.EmulatorSettings) bool {
-    return a.aspect_ratio == b.aspect_ratio and
-        optionalStringsEqual(a.shader_preset_path, b.shader_preset_path) and
-        shaderParamSettingsEqual(a.shader_params.items, b.shader_params.items) and
-        optionalStringsEqual(a.border_shader_preset_path, b.border_shader_preset_path) and
-        shaderParamSettingsEqual(a.border_shader_params.items, b.border_shader_params.items) and
-        a.hide_mouse_on_inactivity == b.hide_mouse_on_inactivity and
-        a.vsync == b.vsync and
-        a.emulation_speed == b.emulation_speed and
-        std.meta.eql(a.controller_bindings, b.controller_bindings) and
-        std.meta.eql(a.general_bindings, b.general_bindings) and
-        std.meta.eql(a.gamepad_bindings, b.gamepad_bindings) and
-        a.gamepad_deadzone == b.gamepad_deadzone;
+fn isSettingsEqual(a: AppState.EmulatorSettings, b: AppState.EmulatorSettings) bool {
+    inline for (std.meta.fields(settings.SettingsConfig)) |field| {
+        if (@hasField(AppState.EmulatorSettings, field.name)) {
+            if (!settingsFieldEqual(@field(a, field.name), @field(b, field.name))) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+fn settingsFieldEqual(a: anytype, b: @TypeOf(a)) bool {
+    const T = @TypeOf(a);
+    if (T == ?[]u8) {
+        return optionalStringsEqual(a, b);
+    } else if (T == std.ArrayList(ShaderParamSetting)) {
+        return shaderParamSettingsEqual(a.items, b.items);
+    } else {
+        return std.meta.eql(a, b);
+    }
 }
 
 fn optionalStringsEqual(a: ?[]const u8, b: ?[]const u8) bool {

@@ -32,7 +32,7 @@ const GeneralAction = bindings.GeneralAction;
 const GamepadButton = bindings.GamepadButton;
 const ParamTarget = settings.ParamTarget;
 const SettingsCategory = state.SettingsCategory;
-pub const UIState = state.UIState;
+pub const AppState = state.AppState;
 const EmulationSpeed = settings.EmulationSpeed;
 
 const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
@@ -40,113 +40,113 @@ const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
     .{ .name = "All files", .pattern = "*" },
 };
 
-pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
+pub fn drawGUI(ui: *UI, app_state: *AppState) void {
     // Handle deferred shader preset load/clear requests.
-    if (ui_state.settings.should_load_shader) {
-        ui_state.settings.should_load_shader = false;
-        if (ui_state.settings.shader_preset_path) |path| {
-            if (ui_state.settings.shader_error) |old| {
-                ui_state.alloc.free(old);
-                ui_state.settings.shader_error = null;
+    if (app_state.should_load_shader) {
+        app_state.should_load_shader = false;
+        if (app_state.settings.shader_preset_path) |path| {
+            if (app_state.shader_error) |old| {
+                app_state.alloc.free(old);
+                app_state.shader_error = null;
             }
             ui.startShaderPreset(path) catch |err| {
                 std.log.err("Failed to start shader load '{s}': {s}", .{ path, @errorName(err) });
-                ui_state.settings.shader_error = std.fmt.allocPrint(
-                    ui_state.alloc,
+                app_state.shader_error = std.fmt.allocPrint(
+                    app_state.alloc,
                     "Load failed: {s}",
                     .{@errorName(err)},
                 ) catch null;
                 // Clear the bad path so it doesn't show as "active".
-                ui_state.alloc.free(path);
-                ui_state.settings.shader_preset_path = null;
-                settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
+                app_state.alloc.free(path);
+                app_state.settings.shader_preset_path = null;
+                settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.shader_params);
             };
-            if (ui_state.settings.shader_error == null) {
-                ui_state.settings.shader_loading = true;
+            if (app_state.shader_error == null) {
+                app_state.shader_loading = true;
             }
         }
-    } else if (ui_state.settings.should_clear_shader) {
-        ui_state.settings.should_clear_shader = false;
+    } else if (app_state.should_clear_shader) {
+        app_state.should_clear_shader = false;
         ui.clearShaderPreset();
-        ui_state.settings.shader_loading = false;
-        if (ui_state.settings.shader_error) |old| {
-            ui_state.alloc.free(old);
-            ui_state.settings.shader_error = null;
+        app_state.shader_loading = false;
+        if (app_state.shader_error) |old| {
+            app_state.alloc.free(old);
+            app_state.shader_error = null;
         }
     }
 
     // Poll an in-progress async shader compile.
-    if (ui_state.settings.shader_loading) {
+    if (app_state.shader_loading) {
         switch (ui.pollShaderLoad()) {
-            .idle => ui_state.settings.shader_loading = false,
+            .idle => app_state.shader_loading = false,
             .done => {
-                ui_state.settings.shader_loading = false;
-                ui_state.applyShaderParamSettings(ui, .main);
+                app_state.shader_loading = false;
+                app_state.applyShaderParamSettings(ui, .main);
             },
             .compiling => {},
             .failed => |msg| {
-                ui_state.settings.shader_loading = false;
-                if (ui_state.settings.shader_error) |old| ui_state.alloc.free(old);
-                ui_state.settings.shader_error = ui_state.alloc.dupe(u8, msg) catch null;
-                if (ui_state.settings.shader_preset_path) |path| {
-                    ui_state.alloc.free(path);
-                    ui_state.settings.shader_preset_path = null;
-                    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
+                app_state.shader_loading = false;
+                if (app_state.shader_error) |old| app_state.alloc.free(old);
+                app_state.shader_error = app_state.alloc.dupe(u8, msg) catch null;
+                if (app_state.settings.shader_preset_path) |path| {
+                    app_state.alloc.free(path);
+                    app_state.settings.shader_preset_path = null;
+                    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.shader_params);
                 }
             },
         }
     }
 
     // Handle deferred border shader preset load/clear requests.
-    if (ui_state.settings.should_load_border_shader) {
-        ui_state.settings.should_load_border_shader = false;
-        if (ui_state.settings.border_shader_preset_path) |path| {
-            if (ui_state.settings.border_shader_error) |old| {
-                ui_state.alloc.free(old);
-                ui_state.settings.border_shader_error = null;
+    if (app_state.should_load_border_shader) {
+        app_state.should_load_border_shader = false;
+        if (app_state.settings.border_shader_preset_path) |path| {
+            if (app_state.border_shader_error) |old| {
+                app_state.alloc.free(old);
+                app_state.border_shader_error = null;
             }
             ui.startBorderShaderPreset(path) catch |err| {
                 std.log.err("Failed to start border shader load '{s}': {s}", .{ path, @errorName(err) });
-                ui_state.settings.border_shader_error = std.fmt.allocPrint(
-                    ui_state.alloc,
+                app_state.border_shader_error = std.fmt.allocPrint(
+                    app_state.alloc,
                     "Load failed: {s}",
                     .{@errorName(err)},
                 ) catch null;
-                ui_state.alloc.free(path);
-                ui_state.settings.border_shader_preset_path = null;
-                settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
+                app_state.alloc.free(path);
+                app_state.settings.border_shader_preset_path = null;
+                settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
             };
-            if (ui_state.settings.border_shader_error == null) {
-                ui_state.settings.border_shader_loading = true;
+            if (app_state.border_shader_error == null) {
+                app_state.border_shader_loading = true;
             }
         }
-    } else if (ui_state.settings.should_clear_border_shader) {
-        ui_state.settings.should_clear_border_shader = false;
+    } else if (app_state.should_clear_border_shader) {
+        app_state.should_clear_border_shader = false;
         ui.clearBorderShaderPreset();
-        ui_state.settings.border_shader_loading = false;
-        if (ui_state.settings.border_shader_error) |old| {
-            ui_state.alloc.free(old);
-            ui_state.settings.border_shader_error = null;
+        app_state.border_shader_loading = false;
+        if (app_state.border_shader_error) |old| {
+            app_state.alloc.free(old);
+            app_state.border_shader_error = null;
         }
     }
 
     // Poll an in-progress async border shader compile.
-    if (ui_state.settings.border_shader_loading) {
+    if (app_state.border_shader_loading) {
         switch (ui.pollBorderShaderLoad()) {
-            .idle => ui_state.settings.border_shader_loading = false,
+            .idle => app_state.border_shader_loading = false,
             .done => {
-                ui_state.settings.border_shader_loading = false;
-                ui_state.applyShaderParamSettings(ui, .border);
+                app_state.border_shader_loading = false;
+                app_state.applyShaderParamSettings(ui, .border);
             },
             .compiling => {},
             .failed => |msg| {
-                ui_state.settings.border_shader_loading = false;
-                if (ui_state.settings.border_shader_error) |old| ui_state.alloc.free(old);
-                ui_state.settings.border_shader_error = ui_state.alloc.dupe(u8, msg) catch null;
-                if (ui_state.settings.border_shader_preset_path) |path| {
-                    ui_state.alloc.free(path);
-                    ui_state.settings.border_shader_preset_path = null;
-                    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
+                app_state.border_shader_loading = false;
+                if (app_state.border_shader_error) |old| app_state.alloc.free(old);
+                app_state.border_shader_error = app_state.alloc.dupe(u8, msg) catch null;
+                if (app_state.settings.border_shader_preset_path) |path| {
+                    app_state.alloc.free(path);
+                    app_state.settings.border_shader_preset_path = null;
+                    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
                 }
             },
         }
@@ -180,7 +180,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
 
                     c.SDL_ShowOpenFileDialog(
                         dialog_callback,
-                        clay.anytypeToAnyopaquePtr(ui_state),
+                        clay.anytypeToAnyopaquePtr(app_state),
                         ui.main_window.ptr,
                         &dialog_filter_list,
                         dialog_filter_list.len,
@@ -193,7 +193,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
-                    .shortcut = ui_state.generalBinding(.quit).keyName(),
+                    .shortcut = app_state.generalBinding(.quit).keyName(),
                 }).clicked(ui.main_window.ctx)) {
                     ui.quit = true;
                 }
@@ -208,46 +208,46 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                     .list_border_color = theme.border,
                 });
                 if (ui.menuItem(.{
-                    .label = if (ui_state.paused) "Continue" else "Pause",
-                    .enabled = ui_state.emulation_running,
+                    .label = if (app_state.paused) "Continue" else "Pause",
+                    .enabled = app_state.emulation_running,
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
-                    .shortcut = ui_state.generalBinding(.toggle_pause).keyName(),
+                    .shortcut = app_state.generalBinding(.toggle_pause).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.togglePause();
+                    app_state.togglePause();
                 }
                 if (ui.menuItem(.{
                     .label = "Stop",
-                    .enabled = ui_state.emulation_running,
+                    .enabled = app_state.emulation_running,
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
-                    .shortcut = ui_state.generalBinding(.stop).keyName(),
+                    .shortcut = app_state.generalBinding(.stop).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.unloadCurrentRom();
+                    app_state.unloadCurrentRom();
                 }
                 if (ui.menuItem(.{
                     .label = "Restart",
-                    .enabled = ui_state.emulation_running,
+                    .enabled = app_state.emulation_running,
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
-                    .shortcut = ui_state.generalBinding(.restart).keyName(),
+                    .shortcut = app_state.generalBinding(.restart).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.resetSystem();
+                    app_state.resetSystem();
                 }
 
                 _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
                 if (ui.menuItem(.{
                     .label = "Debug",
-                    .enabled = ui_state.emulation_running,
+                    .enabled = app_state.emulation_running,
                     .bg_color = theme.bg_section,
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
-                    .shortcut = ui_state.generalBinding(.toggle_step_mode).keyName(),
+                    .shortcut = app_state.generalBinding(.toggle_step_mode).keyName(),
                 }).clicked(ui.main_window.ctx)) {
-                    ui_state.toggleDebug();
+                    app_state.toggleDebug();
                 }
                 _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
 
@@ -261,7 +261,7 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
                         "Settings",
                         680,
                         640,
-                        .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(ui_state) },
+                        .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(app_state) },
                     );
                 }
                 emulation_menu.end();
@@ -269,21 +269,21 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
             menubar.end();
         }
 
-        if (ui_state.render_home_ui) {
-            drawHomeUI(ui, ui_state);
-        } else if (ui_state.render_debug_ui) {
-            debug.drawUI(ui, ui_state);
+        if (app_state.render_home_ui) {
+            drawHomeUI(ui, app_state);
+        } else if (app_state.render_debug_ui) {
+            debug.drawUI(ui, app_state);
         } else {
             const canvas = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-                .pixels = ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
+                .pixels = app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
                 .w = NES_WIDTH,
                 .h = NES_VISIBLE_HEIGHT,
-                .aspect_ratio = ui_state.settings.aspect_ratio,
+                .aspect_ratio = app_state.settings.aspect_ratio,
                 .bg_color = Color.black,
                 .apply_runtime_shaders = true,
             });
-            if (ui_state.paused) {
+            if (app_state.paused) {
                 const f = ui.float(.{
                     .attach_to = .to_element_with_id,
                     .attach_points = .{ .parent = .center_center, .element = .center_center },
@@ -306,13 +306,13 @@ pub fn drawGUI(ui: *UI, ui_state: *UIState) void {
     root.end();
 }
 
-fn openRomDialog(ui: *UI, ui_state: *UIState) void {
+fn openRomDialog(ui: *UI, app_state: *AppState) void {
     const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
         @panic("Failed to allocate");
     defer ui.main_window.ctx.frameAlloc().free(default_location);
     c.SDL_ShowOpenFileDialog(
         dialog_callback,
-        clay.anytypeToAnyopaquePtr(ui_state),
+        clay.anytypeToAnyopaquePtr(app_state),
         ui.main_window.ptr,
         &dialog_filter_list,
         dialog_filter_list.len,
@@ -321,8 +321,8 @@ fn openRomDialog(ui: *UI, ui_state: *UIState) void {
     );
 }
 
-fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
-    const entries = ui_state.history.entries.items;
+fn drawHomeUI(ui: *UI, app_state: *AppState) void {
+    const entries = app_state.history.entries.items;
 
     const root = ui.column(.{
         .sizing = .grow,
@@ -341,7 +341,7 @@ fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
                 .padding = .{ .left = 28, .right = 28, .top = 10, .bottom = 10 },
                 .corner_radius = 6,
                 .elevation = 0,
-            }).clicked(ui.main_window.ctx)) openRomDialog(ui, ui_state);
+            }).clicked(ui.main_window.ctx)) openRomDialog(ui, app_state);
             _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(14) } });
             _ = ui.label(.{ .text = "or use System > Open", .font_size = 13, .color = theme.text_secondary });
             _ = ui.spacer(.{ .sizing = .grow });
@@ -365,7 +365,7 @@ fn drawHomeUI(ui: *UI, ui_state: *UIState) void {
                 });
                 for (entries) |*entry| {
                     const slot = grid.item();
-                    drawGameCard(ui, ui_state, entry, card_title_lines);
+                    drawGameCard(ui, app_state, entry, card_title_lines);
                     slot.end();
                 }
                 grid.end();
@@ -397,7 +397,7 @@ fn cardHeight(title_lines: u16) f32 {
     return CARD_THUMB_H + cardInfoHeight(title_lines);
 }
 
-fn drawGameCard(ui: *UI, ui_state: *UIState, entry: *const game_history.GameEntry, title_lines: u16) void {
+fn drawGameCard(ui: *UI, app_state: *AppState, entry: *const game_history.GameEntry, title_lines: u16) void {
     const ctx = ui.main_window.ctx;
     const info_h = cardInfoHeight(title_lines);
 
@@ -460,7 +460,7 @@ fn drawGameCard(ui: *UI, ui_state: *UIState, entry: *const game_history.GameEntr
     card.end();
 
     if (card.clicked(ui.main_window.ctx)) {
-        ui_state.loadRom(entry.rom_path) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
+        app_state.loadRom(entry.rom_path) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
     }
 }
 
@@ -527,7 +527,7 @@ const nav_active_text = Color.rgb(210, 240, 232);
 const nav_hover_bg = Color.rgb(35, 42, 52);
 
 fn drawSettingsWindowUI(ui: *UI, user_data: ?*anyopaque) void {
-    const ui_state: *UIState = @ptrCast(@alignCast(user_data));
+    const app_state: *AppState = @ptrCast(@alignCast(user_data));
 
     const root = ui.row(.{
         .sizing = .grow,
@@ -535,7 +535,7 @@ fn drawSettingsWindowUI(ui: *UI, user_data: ?*anyopaque) void {
         .child_alignment = .{ .x = .left, .y = .top },
     });
     {
-        drawSettingsSidebar(ui, ui_state);
+        drawSettingsSidebar(ui, app_state);
         _ = ui.separator(.{ .direction = .vertical, .color = theme.border_dim });
 
         const body = ui.column(.{
@@ -543,16 +543,16 @@ fn drawSettingsWindowUI(ui: *UI, user_data: ?*anyopaque) void {
             .child_alignment = .{ .x = .left, .y = .top },
         });
         {
-            drawSettingsContent(ui, ui_state);
-            drawSettingsFooter(ui, ui_state);
+            drawSettingsContent(ui, app_state);
+            drawSettingsFooter(ui, app_state);
         }
         body.end();
     }
     root.end();
 }
 
-fn drawSettingsFooter(ui: *UI, ui_state: *UIState) void {
-    const has_changes = ui_state.hasSettingsChanges();
+fn drawSettingsFooter(ui: *UI, app_state: *AppState) void {
+    const has_changes = app_state.hasSettingsChanges();
 
     const footer = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -574,7 +574,7 @@ fn drawSettingsFooter(ui: *UI, ui_state: *UIState) void {
             .corner_radius = 3,
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
-            ui_state.restoreSavedSettings();
+            app_state.restoreSavedSettings();
             ui.closeCurrentWindow();
         }
 
@@ -589,15 +589,15 @@ fn drawSettingsFooter(ui: *UI, ui_state: *UIState) void {
             .corner_radius = 3,
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
-            ui_state.saveSettings();
+            app_state.saveSettings();
             ui.closeCurrentWindow(); // close settings window
-            ui.setVSync(ui_state.settings.vsync);
+            ui.setVSync(app_state.settings.vsync);
         }
     }
     footer.end();
 }
 
-fn drawSettingsSidebar(ui: *UI, ui_state: *UIState) void {
+fn drawSettingsSidebar(ui: *UI, app_state: *AppState) void {
     const sidebar = ui.column(.{
         .sizing = .{ .w = .fixed(130), .h = .grow },
         .bg_color = theme.bg_base,
@@ -607,14 +607,14 @@ fn drawSettingsSidebar(ui: *UI, ui_state: *UIState) void {
     });
     {
         inline for (@typeInfo(SettingsCategory).@"enum".fields) |category| {
-            drawSidebarItem(ui, ui_state, @field(SettingsCategory, category.name));
+            drawSidebarItem(ui, app_state, @field(SettingsCategory, category.name));
         }
     }
     sidebar.end();
 }
 
-fn drawSidebarItem(ui: *UI, ui_state: *UIState, category: SettingsCategory) void {
-    const is_active = ui_state.settings.selected_category == category;
+fn drawSidebarItem(ui: *UI, app_state: *AppState, category: SettingsCategory) void {
+    const is_active = app_state.settings.selected_category == category;
     if (ui.button(.{
         .text = category.displayName(),
         .font_size = 19,
@@ -627,11 +627,11 @@ fn drawSidebarItem(ui: *UI, ui_state: *UIState, category: SettingsCategory) void
         .sizing = .{ .w = .grow, .h = .fit },
         .text_alignment = .left,
     }).clicked(ui.current_window.ctx)) {
-        ui_state.settings.selected_category = category;
+        app_state.settings.selected_category = category;
     }
 }
 
-fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
+fn drawSettingsContent(ui: *UI, app_state: *AppState) void {
     const scroll = ui.scrollArea(.{});
     {
         const content = ui.column(.{
@@ -643,11 +643,11 @@ fn drawSettingsContent(ui: *UI, ui_state: *UIState) void {
         });
 
         {
-            switch (ui_state.settings.selected_category) {
-                .general => drawSettingsGeneralContent(ui, ui_state),
-                .video => drawSettingsVideoContent(ui, ui_state),
-                .shader => drawSettingsShaderContent(ui, ui_state),
-                .controls => drawSettingsControlsContent(ui, ui_state),
+            switch (app_state.settings.selected_category) {
+                .general => drawSettingsGeneralContent(ui, app_state),
+                .video => drawSettingsVideoContent(ui, app_state),
+                .shader => drawSettingsShaderContent(ui, app_state),
+                .controls => drawSettingsControlsContent(ui, app_state),
             }
         }
 
@@ -677,7 +677,7 @@ fn drawContentSection(ui: *UI, params: struct { padding: ?clay.Padding = null, s
     });
 }
 
-fn drawSettingsVideoContent(ui: *UI, ui_state: *UIState) void {
+fn drawSettingsVideoContent(ui: *UI, app_state: *AppState) void {
     drawContentSectionHeader(ui, "General");
     const general_section = drawContentSection(ui, .{});
     {
@@ -691,7 +691,7 @@ fn drawSettingsVideoContent(ui: *UI, ui_state: *UIState) void {
                 .color = theme.text_primary,
             });
             _ = ui.spacer(.{ .sizing = .grow });
-            ui_state.settings.vsync = ui.toggle(.{ .value = ui_state.settings.vsync, .size = 22 }).value();
+            app_state.settings.vsync = ui.toggle(.{ .value = app_state.settings.vsync, .size = 22 }).value();
         }
         row.end();
     }
@@ -700,12 +700,12 @@ fn drawSettingsVideoContent(ui: *UI, ui_state: *UIState) void {
     drawContentSectionHeader(ui, "Display");
     const display_section = drawContentSection(ui, .{});
     {
-        drawAspectRatioRow(ui, ui_state);
+        drawAspectRatioRow(ui, app_state);
     }
     display_section.end();
 }
 
-fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
+fn drawSettingsGeneralContent(ui: *UI, app_state: *AppState) void {
     drawContentSectionHeader(ui, "General");
     const section = drawContentSection(ui, .{});
     {
@@ -719,32 +719,32 @@ fn drawSettingsGeneralContent(ui: *UI, ui_state: *UIState) void {
                 .color = theme.text_primary,
             });
             _ = ui.spacer(.{ .sizing = .grow });
-            ui_state.settings.hide_mouse_on_inactivity = ui
-                .toggle(.{ .value = ui_state.settings.hide_mouse_on_inactivity, .size = 22 })
+            app_state.settings.hide_mouse_on_inactivity = ui
+                .toggle(.{ .value = app_state.settings.hide_mouse_on_inactivity, .size = 22 })
                 .value();
         }
         row.end();
 
-        drawEmulationSpeedRow(ui, ui_state);
+        drawEmulationSpeedRow(ui, app_state);
     }
     section.end();
 }
 
-fn drawSettingsControlsContent(ui: *UI, ui_state: *UIState) void {
+fn drawSettingsControlsContent(ui: *UI, app_state: *AppState) void {
     drawContentSectionHeader(ui, "Controls");
     const controller_keymap_section = drawContentSection(ui, .{});
     {
-        updateControllerBindingCapture(ui, ui_state);
-        updateGamepadBindingCapture(ui, ui_state);
-        updateGeneralBindingCapture(ui, ui_state);
-        drawControllerPlayerSelector(ui, ui_state);
-        drawConnectedGamepadRow(ui, ui_state);
-        drawControllerBindingOverlay(ui, ui_state);
+        updateControllerBindingCapture(ui, app_state);
+        updateGamepadBindingCapture(ui, app_state);
+        updateGeneralBindingCapture(ui, app_state);
+        drawControllerPlayerSelector(ui, app_state);
+        drawConnectedGamepadRow(ui, app_state);
+        drawControllerBindingOverlay(ui, app_state);
 
         if (ui.getGamepadCount() > 0) {
             drawContentSectionHeader(ui, "Analog Stick");
             const gamepad_section = drawContentSection(ui, .{});
-            drawGamepadDeadzoneRow(ui, ui_state);
+            drawGamepadDeadzoneRow(ui, app_state);
             gamepad_section.end();
         }
     }
@@ -761,7 +761,7 @@ fn drawSettingsControlsContent(ui: *UI, ui_state: *UIState) void {
         });
         {
             inline for (@typeInfo(GeneralAction).@"enum".fields) |action_field| {
-                drawGeneralBindingRow(ui, ui_state, @field(GeneralAction, action_field.name));
+                drawGeneralBindingRow(ui, app_state, @field(GeneralAction, action_field.name));
             }
         }
         scroll.end();
@@ -769,9 +769,9 @@ fn drawSettingsControlsContent(ui: *UI, ui_state: *UIState) void {
     general_keymap_section.end();
 }
 
-fn drawGamepadDeadzoneRow(ui: *UI, ui_state: *UIState) void {
+fn drawGamepadDeadzoneRow(ui: *UI, app_state: *AppState) void {
     const alloc = ui.current_window.ctx.frameAlloc();
-    const current: f32 = @floatFromInt(ui_state.settings.gamepad_deadzone);
+    const current: f32 = @floatFromInt(app_state.settings.gamepad_deadzone);
 
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -786,7 +786,7 @@ fn drawGamepadDeadzoneRow(ui: *UI, ui_state: *UIState) void {
         });
         _ = ui.spacer(.{ .sizing = .grow });
         _ = ui.label(.{
-            .text = std.fmt.allocPrint(alloc, "{d}%", .{ui_state.settings.gamepad_deadzone}) catch "?",
+            .text = std.fmt.allocPrint(alloc, "{d}%", .{app_state.settings.gamepad_deadzone}) catch "?",
             .font_size = 14,
             .color = theme.text_value,
         });
@@ -805,19 +805,19 @@ fn drawGamepadDeadzoneRow(ui: *UI, ui_state: *UIState) void {
         .corner_radius = 2,
     });
     const new_val: u8 = @intFromFloat(drag.value());
-    if (ui_state.settings.gamepad_deadzone != new_val) {
-        ui_state.settings.gamepad_deadzone = new_val;
+    if (app_state.settings.gamepad_deadzone != new_val) {
+        app_state.settings.gamepad_deadzone = new_val;
     }
 }
 
-fn drawConnectedGamepadRow(ui: *UI, ui_state: *UIState) void {
+fn drawConnectedGamepadRow(ui: *UI, app_state: *AppState) void {
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .{ .y = .center },
         .gap = 8,
     });
     {
-        if (ui.getConnectedGamepadName(ui_state.settings.selected_controller_player.value())) |name| {
+        if (ui.getConnectedGamepadName(app_state.settings.selected_controller_player.value())) |name| {
             _ = ui.label(.{
                 .text = "Gamepad",
                 .font_size = theme.LABEL_FONT,
@@ -834,7 +834,7 @@ fn drawConnectedGamepadRow(ui: *UI, ui_state: *UIState) void {
     row.end();
 }
 
-fn drawControllerPlayerSelector(ui: *UI, ui_state: *UIState) void {
+fn drawControllerPlayerSelector(ui: *UI, app_state: *AppState) void {
     const row = ui.row(.{
         .sizing = .{ .w = .fit, .h = .fit },
         .gap = 6,
@@ -843,7 +843,7 @@ fn drawControllerPlayerSelector(ui: *UI, ui_state: *UIState) void {
     {
         inline for (@typeInfo(ControllerPlayer).@"enum".fields) |player_field| {
             const player = @field(ControllerPlayer, player_field.name);
-            const is_selected = ui_state.settings.selected_controller_player == player;
+            const is_selected = app_state.settings.selected_controller_player == player;
             if (ui.button(.{
                 .text = player.displayName(),
                 .font_size = 14,
@@ -854,53 +854,53 @@ fn drawControllerPlayerSelector(ui: *UI, ui_state: *UIState) void {
                 .corner_radius = 3,
                 .elevation = 0,
             }).clicked(ui.current_window.ctx)) {
-                ui_state.settings.selected_controller_player = player;
-                ui_state.settings.capture_binding = null;
-                ui_state.settings.capture_general_binding = null;
-                ui_state.settings.capture_gamepad_binding = null;
+                app_state.settings.selected_controller_player = player;
+                app_state.settings.capture_binding = null;
+                app_state.settings.capture_general_binding = null;
+                app_state.settings.capture_gamepad_binding = null;
             }
         }
     }
     row.end();
 }
 
-fn updateControllerBindingCapture(ui: *UI, ui_state: *UIState) void {
-    const target = ui_state.settings.capture_binding orelse return;
+fn updateControllerBindingCapture(ui: *UI, app_state: *AppState) void {
+    const target = app_state.settings.capture_binding orelse return;
     const key = ui.getPressedKey() orelse return;
     if (key == .UNKNOWN) return;
 
-    const player_bindings = ui_state.settings.controller_bindings.forPlayer(target.player);
+    const player_bindings = app_state.settings.controller_bindings.forPlayer(target.player);
     if (player_bindings.get(target.action) != key) {
         player_bindings.set(target.action, key);
     }
-    ui_state.settings.capture_binding = null;
+    app_state.settings.capture_binding = null;
 }
 
-fn updateGamepadBindingCapture(ui: *UI, ui_state: *UIState) void {
-    const target = ui_state.settings.capture_gamepad_binding orelse return;
+fn updateGamepadBindingCapture(ui: *UI, app_state: *AppState) void {
+    const target = app_state.settings.capture_gamepad_binding orelse return;
     const pressed = ui.getPressedGamepadButton() orelse return;
 
-    const player_bindings = ui_state.settings.gamepad_bindings.forPlayer(target.player);
+    const player_bindings = app_state.settings.gamepad_bindings.forPlayer(target.player);
     if (player_bindings.get(target.action) != pressed.btn) {
         player_bindings.set(target.action, pressed.btn);
     }
-    ui_state.settings.capture_gamepad_binding = null;
+    app_state.settings.capture_gamepad_binding = null;
 }
 
-fn updateGeneralBindingCapture(ui: *UI, ui_state: *UIState) void {
-    const action = ui_state.settings.capture_general_binding orelse return;
+fn updateGeneralBindingCapture(ui: *UI, app_state: *AppState) void {
+    const action = app_state.settings.capture_general_binding orelse return;
     const key = ui.getPressedKey() orelse return;
     if (key == .UNKNOWN) return;
 
-    if (ui_state.settings.general_bindings.get(action) != key) {
-        ui_state.settings.general_bindings.set(action, key);
+    if (app_state.settings.general_bindings.get(action) != key) {
+        app_state.settings.general_bindings.set(action, key);
     }
-    ui_state.settings.capture_general_binding = null;
+    app_state.settings.capture_general_binding = null;
 }
 
-fn drawControllerBindingOverlay(ui: *UI, ui_state: *UIState) void {
-    const img_w = ui_state.controller_img.w();
-    const img_h = ui_state.controller_img.h();
+fn drawControllerBindingOverlay(ui: *UI, app_state: *AppState) void {
+    const img_w = app_state.controller_img.w();
+    const img_h = app_state.controller_img.h();
     const display_w: f32 = @min(500.0, @as(f32, @floatFromInt(img_w)));
     const display_h = display_w * @as(f32, @floatFromInt(img_h)) / @as(f32, @floatFromInt(img_w));
 
@@ -909,16 +909,16 @@ fn drawControllerBindingOverlay(ui: *UI, ui_state: *UIState) void {
     });
     _ = ui.canvas(.{
         .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
-        .pixel_format = ui_state.controller_img.format(),
-        .pixels = ui_state.controller_img.pixels(),
+        .pixel_format = app_state.controller_img.format(),
+        .pixels = app_state.controller_img.pixels(),
         .w = img_w,
         .h = img_h,
     });
 
-    const player = ui_state.settings.selected_controller_player;
+    const player = app_state.settings.selected_controller_player;
     inline for (@typeInfo(ControllerAction).@"enum".fields) |action_field| {
         const action = @field(ControllerAction, action_field.name);
-        drawControllerBindingField(ui, ui_state, root.id, player, action);
+        drawControllerBindingField(ui, app_state, root.id, player, action);
     }
 
     root.end();
@@ -926,7 +926,7 @@ fn drawControllerBindingOverlay(ui: *UI, ui_state: *UIState) void {
 
 fn drawControllerBindingField(
     ui: *UI,
-    ui_state: *UIState,
+    app_state: *AppState,
     parent_id: clay.ElementId,
     player: ControllerPlayer,
     action: ControllerAction,
@@ -936,8 +936,8 @@ fn drawControllerBindingField(
     const position = controllerBindingPosition(action);
     const target = ControllerBindingTarget{ .player = player, .action = action };
 
-    const is_capturing_kb = !has_gamepad and isControllerBindingTarget(ui_state.settings.capture_binding, target);
-    const is_capturing_gp = has_gamepad and isControllerBindingTarget(ui_state.settings.capture_gamepad_binding, target);
+    const is_capturing_kb = !has_gamepad and isControllerBindingTarget(app_state.settings.capture_binding, target);
+    const is_capturing_gp = has_gamepad and isControllerBindingTarget(app_state.settings.capture_gamepad_binding, target);
     const is_capturing = is_capturing_kb or is_capturing_gp;
 
     const label: []const u8 = if (is_capturing_gp)
@@ -945,9 +945,9 @@ fn drawControllerBindingField(
     else if (is_capturing_kb)
         "Press key"
     else if (has_gamepad)
-        ui_state.settings.gamepad_bindings.forPlayerConst(player).get(action).displayName()
+        app_state.settings.gamepad_bindings.forPlayerConst(player).get(action).displayName()
     else
-        ui_state.settings.controller_bindings.forPlayerConst(player).get(action).keyName();
+        app_state.settings.controller_bindings.forPlayerConst(player).get(action).keyName();
 
     const float = ui.float(.{
         .attach_to = .to_element_with_id,
@@ -974,13 +974,13 @@ fn drawControllerBindingField(
         });
         if (btn.clicked(ui.current_window.ctx)) {
             if (has_gamepad) {
-                ui_state.settings.capture_gamepad_binding = target;
-                ui_state.settings.capture_binding = null;
+                app_state.settings.capture_gamepad_binding = target;
+                app_state.settings.capture_binding = null;
             } else {
-                ui_state.settings.capture_binding = target;
-                ui_state.settings.capture_gamepad_binding = null;
+                app_state.settings.capture_binding = target;
+                app_state.settings.capture_gamepad_binding = null;
             }
-            ui_state.settings.capture_general_binding = null;
+            app_state.settings.capture_general_binding = null;
         }
     }
     float.end();
@@ -1004,9 +1004,9 @@ fn controllerBindingPosition(action: ControllerAction) clay.Vector2 {
     };
 }
 
-fn drawGeneralBindingRow(ui: *UI, ui_state: *UIState, action: GeneralAction) void {
-    const is_capturing = isGeneralBindingTarget(ui_state.settings.capture_general_binding, action);
-    const key = ui_state.settings.general_bindings.get(action);
+fn drawGeneralBindingRow(ui: *UI, app_state: *AppState, action: GeneralAction) void {
+    const is_capturing = isGeneralBindingTarget(app_state.settings.capture_general_binding, action);
+    const key = app_state.settings.general_bindings.get(action);
     const label = if (is_capturing) "Press key" else key.keyName();
 
     const row = ui.row(.{
@@ -1035,8 +1035,8 @@ fn drawGeneralBindingRow(ui: *UI, ui_state: *UIState, action: GeneralAction) voi
             .font_size = 16,
         });
         if (btn.clicked(ui.current_window.ctx)) {
-            ui_state.settings.capture_general_binding = action;
-            ui_state.settings.capture_binding = null;
+            app_state.settings.capture_general_binding = action;
+            app_state.settings.capture_binding = null;
         }
     }
     row.end();
@@ -1047,7 +1047,7 @@ fn isGeneralBindingTarget(current: ?GeneralAction, action: GeneralAction) bool {
     return active == action;
 }
 
-fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
+fn drawEmulationSpeedRow(ui: *UI, app_state: *AppState) void {
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .{ .y = .center },
@@ -1063,7 +1063,7 @@ fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
         _ = ui.spacer(.{ .sizing = .grow });
 
         const speed_opts = ui.combobox(EmulationSpeed, .{
-            .selected = ui_state.settings.emulation_speed,
+            .selected = app_state.settings.emulation_speed,
             .options = &.{ .half, .normal, .double, .triple, .quadruple },
             .bg_color = theme.bg_hover,
             .bg_color_on_hover = theme.bg_hover,
@@ -1084,14 +1084,14 @@ fn drawEmulationSpeedRow(ui: *UI, ui_state: *UIState) void {
         });
 
         const selected_speed = speed_opts.selected();
-        if (ui_state.settings.emulation_speed != selected_speed) {
-            ui_state.setEmulationSpeed(selected_speed);
+        if (app_state.settings.emulation_speed != selected_speed) {
+            app_state.setEmulationSpeed(selected_speed);
         }
     }
     row.end();
 }
 
-fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
+fn drawAspectRatioRow(ui: *UI, app_state: *AppState) void {
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .{ .y = .center },
@@ -1108,7 +1108,7 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
 
         const aspect_ratio_opts = ui.combobox(utils.AspectRatio, .{
             .id = "aspect_ratio_combo",
-            .selected = ui_state.settings.aspect_ratio,
+            .selected = app_state.settings.aspect_ratio,
             .options = &.{ .none, .@"4_3", .@"16_9" },
             .bg_color = theme.bg_hover,
             .bg_color_on_hover = theme.bg_hover,
@@ -1129,19 +1129,19 @@ fn drawAspectRatioRow(ui: *UI, ui_state: *UIState) void {
         });
 
         const selected_aspect_ratio = aspect_ratio_opts.selected();
-        if (ui_state.settings.aspect_ratio != selected_aspect_ratio) {
-            ui_state.settings.aspect_ratio = selected_aspect_ratio;
+        if (app_state.settings.aspect_ratio != selected_aspect_ratio) {
+            app_state.settings.aspect_ratio = selected_aspect_ratio;
         }
     }
     row.end();
 }
 
-fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
+fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
     drawContentSectionHeader(ui, "Shader");
     {
         const section = drawContentSection(ui, .{});
-        drawShaderPresetRow(ui, ui_state);
-        if (ui_state.settings.shader_loading) {
+        drawShaderPresetRow(ui, app_state);
+        if (app_state.shader_loading) {
             const progress = ui.getShaderProgress();
             const alloc = ui.current_window.ctx.frameAlloc();
             const progress_text = if (progress.total > 0)
@@ -1157,7 +1157,7 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
                 .font_size = 13,
                 .color = theme.accent_purple,
             });
-        } else if (ui_state.settings.shader_error) |err_msg| {
+        } else if (app_state.shader_error) |err_msg| {
             _ = ui.label(.{
                 .text = err_msg,
                 .font_size = 13,
@@ -1166,8 +1166,8 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
         }
 
         const param_infos = ui.getShaderParamInfos();
-        if (!ui_state.settings.shader_loading and param_infos.len > 0) {
-            drawShaderParamsSection(ui, ui_state, "Parameters", param_infos, .main);
+        if (!app_state.shader_loading and param_infos.len > 0) {
+            drawShaderParamsSection(ui, app_state, "Parameters", param_infos, .main);
         }
         section.end();
     }
@@ -1175,14 +1175,14 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
     drawContentSectionHeader(ui, "Border Shader");
     {
         const section = drawContentSection(ui, .{});
-        drawBorderShaderPresetRow(ui, ui_state);
-        if (ui_state.settings.border_shader_loading) {
+        drawBorderShaderPresetRow(ui, app_state);
+        if (app_state.border_shader_loading) {
             _ = ui.label(.{
                 .text = "Compiling...",
                 .font_size = 13,
                 .color = theme.accent_purple,
             });
-        } else if (ui_state.settings.border_shader_error) |err_msg| {
+        } else if (app_state.border_shader_error) |err_msg| {
             _ = ui.label(.{
                 .text = err_msg,
                 .font_size = 13,
@@ -1191,8 +1191,8 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
         }
 
         const border_param_infos = ui.getBorderShaderParamInfos();
-        if (!ui_state.settings.border_shader_loading and border_param_infos.len > 0) {
-            drawShaderParamsSection(ui, ui_state, "Border Parameters", border_param_infos, .border);
+        if (!app_state.border_shader_loading and border_param_infos.len > 0) {
+            drawShaderParamsSection(ui, app_state, "Border Parameters", border_param_infos, .border);
         }
 
         section.end();
@@ -1201,7 +1201,7 @@ fn drawSettingsShaderContent(ui: *UI, ui_state: *UIState) void {
 
 fn drawShaderParamsSection(
     ui: *UI,
-    ui_state: *UIState,
+    app_state: *AppState,
     title: []const u8,
     param_infos: []const pipeline.ParamInfo,
     target: ParamTarget,
@@ -1218,7 +1218,7 @@ fn drawShaderParamsSection(
         });
         {
             for (param_infos) |info| {
-                drawParamRow(ui, ui_state, info, target);
+                drawParamRow(ui, app_state, info, target);
             }
         }
         scroll.end();
@@ -1279,8 +1279,8 @@ fn drawShaderPreview(
     wrapper.end();
 }
 
-fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
-    const can_clear_shader = ui_state.settings.shader_preset_path != null or ui_state.settings.shader_loading;
+fn drawShaderPresetRow(ui: *UI, app_state: *AppState) void {
+    const can_clear_shader = app_state.settings.shader_preset_path != null or app_state.shader_loading;
 
     const header_row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -1311,7 +1311,7 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
 
             c.SDL_ShowOpenFileDialog(
                 shader_dialog_callback,
-                clay.anytypeToAnyopaquePtr(ui_state),
+                clay.anytypeToAnyopaquePtr(app_state),
                 ui.main_window.ptr,
                 &shader_filter_list,
                 shader_filter_list.len,
@@ -1330,12 +1330,13 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
             .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
-            if (ui_state.settings.shader_preset_path) |path| {
-                ui_state.alloc.free(path);
-                ui_state.settings.shader_preset_path = null;
+            if (app_state.settings.shader_preset_path) |path| {
+                app_state.alloc.free(path);
+                app_state.settings.shader_preset_path = null;
             }
-            settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
-            ui_state.settings.should_clear_shader = true;
+            settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.shader_params);
+            app_state.should_load_shader = false;
+            app_state.should_clear_shader = true;
         }
     }
     header_row.end();
@@ -1354,9 +1355,9 @@ fn drawShaderPresetRow(ui: *UI, ui_state: *UIState) void {
         .color = theme.text_secondary,
     });
 
-    if (ui_state.emulation_running) {
+    if (app_state.emulation_running) {
         const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES), NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
+        drawShaderPreview(ui, app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES), NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
         center.end();
     }
 }
@@ -1375,7 +1376,7 @@ fn setParamValue(ui: *UI, target: ParamTarget, name: []const u8, value: f32) voi
     }
 }
 
-fn drawParamRow(ui: *UI, ui_state: *UIState, info: pipeline.ParamInfo, target: ParamTarget) void {
+fn drawParamRow(ui: *UI, app_state: *AppState, info: pipeline.ParamInfo, target: ParamTarget) void {
     const alloc = ui.current_window.ctx.frameAlloc();
 
     // Section title: min == max == 0 (and step == 0 or null).
@@ -1432,7 +1433,7 @@ fn drawParamRow(ui: *UI, ui_state: *UIState, info: pipeline.ParamInfo, target: P
             const new_val: f32 = if (tog.value()) 1.0 else 0.0;
             if (new_val != current) {
                 setParamValue(ui, target, info.name, new_val);
-                ui_state.setShaderParamSetting(target, info.name, new_val);
+                app_state.setShaderParamSetting(target, info.name, new_val);
             }
         } else {
             // Format value label: derive precision from step size.
@@ -1467,7 +1468,7 @@ fn drawParamRow(ui: *UI, ui_state: *UIState, info: pipeline.ParamInfo, target: P
         const new_val = drag.value();
         if (new_val != current) {
             setParamValue(ui, target, info.name, new_val);
-            ui_state.setShaderParamSetting(target, info.name, new_val);
+            app_state.setShaderParamSetting(target, info.name, new_val);
         }
     }
 }
@@ -1478,7 +1479,7 @@ const shader_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
 };
 
 fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
-    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
+    const app_state = clay.anyopaquePtrToType(*AppState, userdata);
 
     if (filelist == null) {
         std.debug.print("An error ocurred while selecting shader file: {s}\n", .{c.SDL_GetError()});
@@ -1491,16 +1492,17 @@ fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u
     const filepath = std.mem.span(filelist.*);
     std.log.debug("User selected shader: {s}", .{filepath});
 
-    if (ui_state.settings.shader_preset_path) |old_path| {
-        ui_state.alloc.free(old_path);
+    if (app_state.settings.shader_preset_path) |old_path| {
+        app_state.alloc.free(old_path);
     }
-    ui_state.settings.shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
-    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.shader_params);
-    ui_state.settings.should_load_shader = true;
+    app_state.settings.shader_preset_path = app_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.shader_params);
+    app_state.should_load_shader = true;
+    app_state.should_clear_shader = false;
 }
 
-fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
-    const can_clear_border_shader = ui_state.settings.border_shader_preset_path != null or ui_state.settings.border_shader_loading;
+fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
+    const can_clear_border_shader = app_state.settings.border_shader_preset_path != null or app_state.border_shader_loading;
 
     const header_row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
@@ -1531,7 +1533,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
 
             c.SDL_ShowOpenFileDialog(
                 border_shader_dialog_callback,
-                clay.anytypeToAnyopaquePtr(ui_state),
+                clay.anytypeToAnyopaquePtr(app_state),
                 ui.main_window.ptr,
                 &shader_filter_list,
                 shader_filter_list.len,
@@ -1550,12 +1552,13 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
             .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
-            if (ui_state.settings.border_shader_preset_path) |path| {
-                ui_state.alloc.free(path);
-                ui_state.settings.border_shader_preset_path = null;
+            if (app_state.settings.border_shader_preset_path) |path| {
+                app_state.alloc.free(path);
+                app_state.settings.border_shader_preset_path = null;
             }
-            settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
-            ui_state.settings.should_clear_border_shader = true;
+            settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
+            app_state.should_load_border_shader = false;
+            app_state.should_clear_border_shader = true;
         }
     }
     header_row.end();
@@ -1574,19 +1577,19 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
         .color = theme.text_secondary,
     });
 
-    const show_border_preview = ui_state.settings.border_shader_preset_path != null or
-        ui_state.settings.border_shader_loading;
+    const show_border_preview = app_state.settings.border_shader_preset_path != null or
+        app_state.border_shader_loading;
     if (show_border_preview) {
-        const preview_aspect_ratio: utils.AspectRatio = switch (ui_state.settings.aspect_ratio) {
+        const preview_aspect_ratio: utils.AspectRatio = switch (app_state.settings.aspect_ratio) {
             .none => .@"4_3",
-            else => ui_state.settings.aspect_ratio,
+            else => app_state.settings.aspect_ratio,
         };
-        const preview_pixels: []const u8 = if (ui_state.emulation_running)
-            ui_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES)
+        const preview_pixels: []const u8 = if (app_state.emulation_running)
+            app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES)
         else
             &black_pixel;
-        const px_w: u32 = if (ui_state.emulation_running) NES_WIDTH else 1;
-        const px_h: u32 = if (ui_state.emulation_running) NES_VISIBLE_HEIGHT else 1;
+        const px_w: u32 = if (app_state.emulation_running) NES_WIDTH else 1;
+        const px_h: u32 = if (app_state.emulation_running) NES_VISIBLE_HEIGHT else 1;
         const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
         drawShaderPreview(ui, preview_pixels, px_w, px_h, .border, preview_aspect_ratio);
         center.end();
@@ -1594,7 +1597,7 @@ fn drawBorderShaderPresetRow(ui: *UI, ui_state: *UIState) void {
 }
 
 fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
-    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
+    const app_state = clay.anyopaquePtrToType(*AppState, userdata);
 
     if (filelist == null) {
         std.debug.print("An error ocurred while selecting border shader file: {s}\n", .{c.SDL_GetError()});
@@ -1607,12 +1610,13 @@ fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]
     const filepath = std.mem.span(filelist.*);
     std.log.debug("User selected border shader: {s}", .{filepath});
 
-    if (ui_state.settings.border_shader_preset_path) |old_path| {
-        ui_state.alloc.free(old_path);
+    if (app_state.settings.border_shader_preset_path) |old_path| {
+        app_state.alloc.free(old_path);
     }
-    ui_state.settings.border_shader_preset_path = ui_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
-    settings.clearShaderParamSettings(ui_state.alloc, &ui_state.settings.border_shader_params);
-    ui_state.settings.should_load_border_shader = true;
+    app_state.settings.border_shader_preset_path = app_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
+    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
+    app_state.should_load_border_shader = true;
+    app_state.should_clear_border_shader = false;
 }
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
@@ -1623,9 +1627,9 @@ fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c
     if (filelist.* == null) { // A pointer to NULL, the user either didn't choose any file or canceled the dialog.
         return;
     }
-    const ui_state = clay.anyopaquePtrToType(*UIState, userdata);
+    const app_state = clay.anyopaquePtrToType(*AppState, userdata);
 
     const filepath = std.mem.span(filelist.*);
     std.log.debug("User selected file: {s}", .{filepath});
-    ui_state.loadRom(filepath) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
+    app_state.loadRom(filepath) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
 }
