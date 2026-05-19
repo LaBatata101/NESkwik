@@ -2200,11 +2200,16 @@ pub const UI = struct {
     fn handleWindowEvent(self: *Self, event: *c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
-                if (self.current_window.id() == self.main_window.id()) {
+                const closed_window_id = event.window.windowID;
+                if (closed_window_id == self.main_window.id()) {
                     self.quit = true;
                 } else {
                     const secondary_window = self.secondary_windows.pop() orelse unreachable;
                     self.pending_close_window = secondary_window.inner;
+
+                    if (self.current_window == secondary_window.inner) {
+                        self.current_window = self.main_window;
+                    }
                 }
             },
             c.SDL_EVENT_WINDOW_RESIZED => {
@@ -2261,10 +2266,6 @@ pub const UI = struct {
 
         self.pending_close_window = null;
         window.deinit(self.allocator, self.gpu_device);
-
-        if (window.id() != self.main_window.id()) {
-            self.current_window = self.main_window;
-        }
     }
 
     fn renderCommands(self: *Self, window: *Window, commands: []clay.RenderCommand) void {
