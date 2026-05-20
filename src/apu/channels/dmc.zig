@@ -38,6 +38,24 @@ pub const DMC = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        enabled: bool,
+        volume: u8,
+        sample_addr: u16,
+        sample_length: u16,
+        current_addr: u16,
+        bytes_remaining: u16,
+        sample_buffer: ?u8,
+        shift_register: u8,
+        bits_remaining: u8,
+        silence: bool,
+        irq_enabled: bool,
+        loop_flag: bool,
+        irq_pending: bool,
+        timer: Timer,
+        waveform_last_amp: i16,
+    };
+
     pub fn init(waveform: Waveform, rom: *Rom) Self {
         return .{
             .enabled = false,
@@ -153,5 +171,43 @@ pub const DMC = struct {
             0x4013 => self.sample_length = (@as(u16, value) << 4) + 1,
             else => {},
         }
+    }
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .enabled = self.enabled,
+            .volume = self.volume,
+            .sample_addr = self.sample_addr,
+            .sample_length = self.sample_length,
+            .current_addr = self.current_addr,
+            .bytes_remaining = self.bytes_remaining,
+            .sample_buffer = self.sample_buffer,
+            .shift_register = self.shift_register,
+            .bits_remaining = self.bits_remaining,
+            .silence = self.silence,
+            .irq_enabled = self.irq_enabled,
+            .loop_flag = self.loop_flag,
+            .irq_pending = self.irq_pending,
+            .timer = self.timer,
+            .waveform_last_amp = self.waveform.last_amp,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.enabled = snapshot.enabled;
+        self.volume = snapshot.volume;
+        self.sample_addr = snapshot.sample_addr;
+        self.sample_length = snapshot.sample_length;
+        self.current_addr = snapshot.current_addr;
+        self.bytes_remaining = snapshot.bytes_remaining;
+        self.sample_buffer = snapshot.sample_buffer;
+        self.shift_register = snapshot.shift_register;
+        self.bits_remaining = snapshot.bits_remaining;
+        self.silence = snapshot.silence;
+        self.irq_enabled = snapshot.irq_enabled;
+        self.loop_flag = snapshot.loop_flag;
+        self.irq_pending = snapshot.irq_pending;
+        self.timer = snapshot.timer;
+        self.waveform.last_amp = snapshot.waveform_last_amp;
     }
 };

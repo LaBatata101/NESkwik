@@ -15,6 +15,7 @@ const Color = @import("core/color.zig").Color;
 const pipeline = @import("../shaders/pipeline.zig");
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
+const save_state = @import("../save_state.zig");
 const state = @import("state.zig");
 const ness = @import("../root.zig");
 const NES_WIDTH = ness.NES_WIDTH;
@@ -239,6 +240,49 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 }
 
                 _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+                const save_state_item = ui.menuItem(.{
+                    .label = "Save State",
+                    .enabled = app_state.emulation_running,
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                    .has_submenu = true,
+                });
+                {
+                    const save_state_submenu = save_state_item.submenu(.{
+                        .width = 270,
+                        .bg_color = theme.bg_section,
+                        .border_color = theme.border,
+                    });
+                    {
+                        drawStateSlotItems(ui, app_state, .save);
+                    }
+                    save_state_submenu.end();
+                }
+                save_state_item.end();
+
+                const load_state_item = ui.menuItem(.{
+                    .label = "Load State",
+                    .enabled = app_state.emulation_running,
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                    .has_submenu = true,
+                });
+                {
+                    const load_state_submenu = load_state_item.submenu(.{
+                        .width = 270,
+                        .bg_color = theme.bg_section,
+                        .border_color = theme.border,
+                    });
+                    {
+                        drawStateSlotItems(ui, app_state, .load);
+                    }
+                    load_state_submenu.end();
+                }
+                load_state_item.end();
+
+                _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
                 if (ui.menuItem(.{
                     .label = "Debug",
                     .enabled = app_state.emulation_running,
@@ -304,6 +348,40 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
         }
     }
     root.end();
+}
+
+const SaveStateMenuMode = enum { save, load };
+
+fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) void {
+    for (0..save_state.SLOT_COUNT) |slot| {
+        const info = app_state.saveStateSlotInfo(slot);
+        const enabled = mode == .save or info.exists;
+        const label = if (info.exists)
+            std.fmt.allocPrint(
+                ui.main_window.ctx.frameAlloc(),
+                "Slot {d} - {s}",
+                .{ slot + 1, &info.display_time },
+            ) catch @panic("OOM")
+        else
+            std.fmt.allocPrint(
+                ui.main_window.ctx.frameAlloc(),
+                "Slot {d}",
+                .{slot + 1},
+            ) catch @panic("OOM");
+
+        if (ui.menuItem(.{
+            .label = label,
+            .enabled = enabled,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+        }).clicked(ui.main_window.ctx)) {
+            switch (mode) {
+                .save => app_state.saveStateSlot(slot),
+                .load => app_state.loadStateSlot(slot),
+            }
+        }
+    }
 }
 
 fn openRomDialog(ui: *UI, app_state: *AppState) void {

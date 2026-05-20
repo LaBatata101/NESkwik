@@ -332,6 +332,43 @@ pub const PPU = struct {
     const ODD_FRAME_SKIP_SAMPLE_CYCLE: u16 = 338;
     const ODD_FRAME_SKIP_APPLY_CYCLE: u16 = 339;
 
+    pub const Snapshot = struct {
+        palette_table: [32]u8,
+        vram: [2048]u8,
+        ctrl_register: ControlRegister,
+        mask_register: MaskRegister,
+        status_register: StatusRegister,
+        oam_addr_register: u8,
+        oam_data_register: [256]u8,
+        scroll_register: ScrollRegister,
+        addr_register: AddrRegister,
+        tmp_addr: AddrRegister,
+        write_toggle: bool,
+        fine_x: u8,
+        oam_dma_addr: u8,
+        internal_data_buf: u8,
+        cycle: u16,
+        scanline: u16,
+        bg_data: BgData,
+        sprite_data: SpriteData,
+        nmi_interrupt: bool,
+        nmi_interrupt_delay: bool,
+        nmi_interrupt_cycle: u64,
+        frame_buffer: Frame,
+        frame_complete: bool,
+        global_cycle: u64,
+        next_vblank_ppu_cycle: u64,
+        next_vblank_cpu_cycle: u64,
+        pending_mapper_addr: ?u16,
+        pending_mapper_cycle: u64,
+        suppress_vblank_set: bool,
+        dynamic_latch: u8,
+        last_cycle_written: u64,
+        frame_is_odd: bool,
+        skip_odd_frame_cycle: bool,
+        current_frame_buffer_index: usize,
+    };
+
     pub fn init(rom: *Rom) Self {
         return .{
             .rom = rom,
@@ -405,6 +442,82 @@ pub const PPU = struct {
         self.frame_is_odd = false;
         self.skip_odd_frame_cycle = false;
         self.last_cycle_written = 0;
+    }
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .palette_table = self.palette_table,
+            .vram = self.vram,
+            .ctrl_register = self.ctrl_register,
+            .mask_register = self.mask_register,
+            .status_register = self.status_register,
+            .oam_addr_register = self.oam_addr_register,
+            .oam_data_register = self.oam_data_register,
+            .scroll_register = self.scroll_register,
+            .addr_register = self.addr_register,
+            .tmp_addr = self.tmp_addr,
+            .write_toggle = self.write_toggle,
+            .fine_x = self.fine_x,
+            .oam_dma_addr = self.oam_dma_addr,
+            .internal_data_buf = self.internal_data_buf,
+            .cycle = self.cycle,
+            .scanline = self.scanline,
+            .bg_data = self.bg_data,
+            .sprite_data = self.sprite_data,
+            .nmi_interrupt = self.nmi_interrupt,
+            .nmi_interrupt_delay = self.nmi_interrupt_delay,
+            .nmi_interrupt_cycle = self.nmi_interrupt_cycle,
+            .frame_buffer = self.frame_buffer,
+            .frame_complete = self.frame_complete,
+            .global_cycle = self.global_cycle,
+            .next_vblank_ppu_cycle = self.next_vblank_ppu_cycle,
+            .next_vblank_cpu_cycle = self.next_vblank_cpu_cycle,
+            .pending_mapper_addr = self.pending_mapper_addr,
+            .pending_mapper_cycle = self.pending_mapper_cycle,
+            .suppress_vblank_set = self.suppress_vblank_set,
+            .dynamic_latch = self.dynamic_latch,
+            .last_cycle_written = self.last_cycle_written,
+            .frame_is_odd = self.frame_is_odd,
+            .skip_odd_frame_cycle = self.skip_odd_frame_cycle,
+            .current_frame_buffer_index = self.current_frame_buffer_index,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.palette_table = snapshot.palette_table;
+        self.vram = snapshot.vram;
+        self.ctrl_register = snapshot.ctrl_register;
+        self.mask_register = snapshot.mask_register;
+        self.status_register = snapshot.status_register;
+        self.oam_addr_register = snapshot.oam_addr_register;
+        self.oam_data_register = snapshot.oam_data_register;
+        self.scroll_register = snapshot.scroll_register;
+        self.addr_register = snapshot.addr_register;
+        self.tmp_addr = snapshot.tmp_addr;
+        self.write_toggle = snapshot.write_toggle;
+        self.fine_x = snapshot.fine_x;
+        self.oam_dma_addr = snapshot.oam_dma_addr;
+        self.internal_data_buf = snapshot.internal_data_buf;
+        self.cycle = snapshot.cycle;
+        self.scanline = snapshot.scanline;
+        self.bg_data = snapshot.bg_data;
+        self.sprite_data = snapshot.sprite_data;
+        self.nmi_interrupt = snapshot.nmi_interrupt;
+        self.nmi_interrupt_delay = snapshot.nmi_interrupt_delay;
+        self.nmi_interrupt_cycle = snapshot.nmi_interrupt_cycle;
+        self.frame_buffer = snapshot.frame_buffer;
+        self.frame_complete = snapshot.frame_complete;
+        self.global_cycle = snapshot.global_cycle;
+        self.next_vblank_ppu_cycle = snapshot.next_vblank_ppu_cycle;
+        self.next_vblank_cpu_cycle = snapshot.next_vblank_cpu_cycle;
+        self.pending_mapper_addr = snapshot.pending_mapper_addr;
+        self.pending_mapper_cycle = snapshot.pending_mapper_cycle;
+        self.suppress_vblank_set = snapshot.suppress_vblank_set;
+        self.dynamic_latch = snapshot.dynamic_latch;
+        self.last_cycle_written = snapshot.last_cycle_written;
+        self.frame_is_odd = snapshot.frame_is_odd;
+        self.skip_odd_frame_cycle = snapshot.skip_odd_frame_cycle;
+        self.current_frame_buffer_index = snapshot.current_frame_buffer_index;
     }
 
     pub fn run_to(self: *Self, cpu_cycle: u64) void {

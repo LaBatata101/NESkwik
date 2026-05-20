@@ -1134,7 +1134,8 @@ pub const DropdownMenu = struct {
 };
 
 pub const MenuItem = struct {
-    id: ?clay.ElementId,
+    id: clay.ElementId,
+    ctx: *UIContext,
     params: Params,
 
     pub const Params = struct {
@@ -1143,6 +1144,7 @@ pub const MenuItem = struct {
         shortcut: ?[]const u8 = null,
         padding: clay.Padding = .{ .left = 8, .right = 8, .top = 6, .bottom = 6 },
         enabled: bool = true,
+        has_submenu: bool = false,
         bg_color: Color = Color.white,
         hover_color: Color = Color.blue,
         text_color: Color = Color.black,
@@ -1172,25 +1174,108 @@ pub const MenuItem = struct {
 
         _ = Label.start(.{ .text = params.label, .font_size = 14, .color = text_col });
 
-        if (params.shortcut) |s| {
+        if (params.shortcut != null or params.has_submenu) {
             _ = Spacer.start(.{ .sizing = .grow });
+        }
+
+        if (params.shortcut) |s| {
             _ = Label.start(.{ .text = s, .font_size = 14, .color = if (is_hovered) Color.lightGray else Color.gray });
         }
 
-        clay.closeElement();
+        if (params.has_submenu) {
+            const arrow_color = if (!params.enabled) Color.gray else if (is_hovered) Color.white else params.text_color;
+            _ = Shape.start(ctx, .{
+                .vertices = &Shape.RIGHT_TRIANGLE,
+                .sizing = .{ .w = .fixed(8), .h = .fixed(10) },
+                .color = arrow_color,
+            });
+        }
+
+        if (!params.has_submenu) {
+            clay.closeElement();
+        }
 
         if (is_hovered and ctx.frame.mouse_released) {
             ctx.frame.menu_item_clicked = true;
         }
 
-        return .{ .id = id, .params = params };
+        return .{ .id = id, .params = params, .ctx = ctx };
+    }
+
+    pub fn submenu(self: *const Self, params: Submenu.Params) Submenu {
+        std.debug.assert(self.params.has_submenu);
+        return Submenu.start(self.ctx, self, params);
+    }
+
+    /// This is a no-op if the menu item does not have a submenu
+    pub fn end(self: *const Self) void {
+        if (!self.params.has_submenu) return;
+
+        clay.closeElement();
     }
 
     pub fn clicked(self: *const Self, ctx: *UIContext) bool {
         if (!self.params.enabled) return false;
-        const id = self.id orelse return false;
-        const is_hovered = clay.pointerOver(id);
+        const is_hovered = clay.pointerOver(self.id);
         return is_hovered and ctx.frame.mouse_released;
+    }
+};
+
+const Submenu = struct {
+    id: clay.ElementId,
+    ctx: *UIContext,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        width: f32 = 200,
+        bg_color: Color = Color.white,
+        border_color: Color = Color.gray,
+        padding: clay.Padding = .all(4),
+        gap: u16 = 2,
+    };
+    const Self = @This();
+
+    fn start(ctx: *UIContext, parent: *const MenuItem, params: Params) Self {
+        const id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
+
+        ctx.pushParent(id);
+        const state = ctx.getOrCreateWidgetState(id, .{ .submenu = .{ .is_open = false } });
+
+        if (parent.params.enabled and clay.pointerOver(parent.id)) {
+            state.submenu.is_open = true;
+        } else if ((state.submenu.is_open and !clay.pointerOver(id)) or (clay.pointerOver(id) and ctx.frame.mouse_released)) {
+            state.submenu.is_open = false;
+        }
+
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(params.width), .h = .fit },
+                .direction = .top_to_bottom,
+                .padding = params.padding,
+                .child_gap = params.gap,
+            },
+            .background_color = params.bg_color.toClay(),
+            .corner_radius = .all(4),
+            .border = if (state.submenu.is_open) .{ .width = .outside(1), .color = params.border_color.toClay() } else .{},
+            .floating = .{
+                .attach_to = .to_element_with_id,
+                .parentId = parent.id.id,
+                .attach_points = .{ .element = .left_top, .parent = .right_top },
+                .z_index = std.math.maxInt(i16),
+            },
+            .transition = floating_panel_transition,
+            .no_render = !state.submenu.is_open,
+        });
+        return .{ .id = id, .ctx = ctx };
+    }
+
+    pub fn end(self: *const Self) void {
+        self.ctx.popParent();
+        clay.closeElement();
     }
 };
 
@@ -1752,6 +1837,11 @@ pub const Shape = struct {
         .{ .x = 0.0, .y = 0.75 },
         .{ .x = 1.0, .y = 0.75 },
         .{ .x = 0.5, .y = 0.25 },
+    };
+    pub const RIGHT_TRIANGLE = [_]clay.Vector2{
+        .{ .x = 0.25, .y = 0.0 },
+        .{ .x = 0.25, .y = 1.0 },
+        .{ .x = 0.75, .y = 0.5 },
     };
     pub const SQUARE = [_]clay.Vector2{
         .{ .x = 0.0, .y = 0.0 },

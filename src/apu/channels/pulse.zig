@@ -90,6 +90,16 @@ pub const Pulse = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        duty: usize,
+        duty_index: usize,
+        envelope: Envelope,
+        sweep: Sweep,
+        timer: Timer,
+        length_counter: LengthCounter,
+        waveform_last_amp: i16,
+    };
+
     pub fn init(is_square2: bool, waveform: Waveform) Self {
         return .{
             .duty = 0,
@@ -150,5 +160,27 @@ pub const Pulse = struct {
             },
             else => {},
         }
+    }
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .duty = self.duty,
+            .duty_index = self.duty_index,
+            .envelope = self.envelope,
+            .sweep = self.sweep,
+            .timer = self.timer,
+            .length_counter = self.length_counter,
+            .waveform_last_amp = self.waveform.last_amp,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.duty = snapshot.duty;
+        self.duty_index = snapshot.duty_index;
+        self.envelope = snapshot.envelope;
+        self.sweep = snapshot.sweep;
+        self.timer = snapshot.timer;
+        self.length_counter = snapshot.length_counter;
+        self.waveform.last_amp = snapshot.waveform_last_amp;
     }
 };

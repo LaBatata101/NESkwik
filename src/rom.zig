@@ -62,6 +62,14 @@ pub const Rom = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        mapper: Mapper.Snapshot,
+
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+            self.mapper.deinit(alloc);
+        }
+    };
+
     pub const InitError = error{InvalidNesFormat};
 
     pub fn init(allocator: std.mem.Allocator, rom_path: []const u8, bytes: []u8) !Self {
@@ -135,6 +143,14 @@ pub const Rom = struct {
 
     pub fn deinit(self: *Self) void {
         self.mapper.deinit();
+    }
+
+    pub fn saveState(self: *const Self, alloc: std.mem.Allocator) !Snapshot {
+        return .{ .mapper = try self.mapper.saveState(alloc) };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) !void {
+        try self.mapper.loadState(snapshot.mapper);
     }
 
     /// Read from PRG ROM ($8000-$FFFF)

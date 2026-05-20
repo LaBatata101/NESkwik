@@ -56,6 +56,28 @@ pub const Mapper4 = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        bank_registers: [10]usize,
+        bank_select: u8,
+        prg_inversion: bool,
+        chr_inversion: bool,
+        irq_flag: bool,
+        irq_counter: u8,
+        irq_reload_flag: bool,
+        irq_counter_reload: u8,
+        irq_enabled: bool,
+        ppu_a12: bool,
+        ppu_a12_low_cycle: u64,
+        mirroring_mode: Mirroring,
+        prg_ram: []u8,
+        chr_ram: []u8,
+
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+            alloc.free(self.prg_ram);
+            alloc.free(self.chr_ram);
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, params: MapperParams) !*Self {
         const self = try allocator.create(Self);
 
@@ -115,6 +137,8 @@ pub const Mapper4 = struct {
         .irq_active = @ptrCast(&Self.irq_active),
         .mirroring = @ptrCast(&Self.mirroring),
         .ppu_address_updated = @ptrCast(&Self.ppu_address_updated),
+        .save_state = @ptrCast(&Self.saveState),
+        .load_state = @ptrCast(&Self.loadState),
     };
 
     pub fn as_mapper(self: *Self) Mapper {
@@ -283,6 +307,49 @@ pub const Mapper4 = struct {
             self.ppu_a12_low_cycle = ppu_cycle;
         }
         self.ppu_a12 = a12;
+    }
+
+    fn saveState(self: *const Self, alloc: std.mem.Allocator) !Mapper.Snapshot {
+        const prg_ram = try self.prg_ram.saveState(alloc);
+        errdefer alloc.free(prg_ram);
+        return .{ .mapper4 = .{
+            .bank_registers = self.bank_registers,
+            .bank_select = self.bank_select,
+            .prg_inversion = self.prg_inversion,
+            .chr_inversion = self.chr_inversion,
+            .irq_flag = self.irq_flag,
+            .irq_counter = self.irq_counter,
+            .irq_reload_flag = self.irq_reload_flag,
+            .irq_counter_reload = self.irq_counter_reload,
+            .irq_enabled = self.irq_enabled,
+            .ppu_a12 = self.ppu_a12,
+            .ppu_a12_low_cycle = self.ppu_a12_low_cycle,
+            .mirroring_mode = self.mirroring_mode,
+            .prg_ram = prg_ram,
+            .chr_ram = try alloc.dupe(u8, self.chr_ram),
+        } };
+    }
+
+    fn loadState(self: *Self, snapshot: Mapper.Snapshot) !void {
+        const data = switch (snapshot) {
+            .mapper4 => |value| value,
+            else => return error.InvalidSnapshot,
+        };
+        if (data.chr_ram.len != self.chr_ram.len) return error.InvalidSnapshot;
+        self.bank_registers = data.bank_registers;
+        self.bank_select = data.bank_select;
+        self.prg_inversion = data.prg_inversion;
+        self.chr_inversion = data.chr_inversion;
+        self.irq_flag = data.irq_flag;
+        self.irq_counter = data.irq_counter;
+        self.irq_reload_flag = data.irq_reload_flag;
+        self.irq_counter_reload = data.irq_counter_reload;
+        self.irq_enabled = data.irq_enabled;
+        self.ppu_a12 = data.ppu_a12;
+        self.ppu_a12_low_cycle = data.ppu_a12_low_cycle;
+        self.mirroring_mode = data.mirroring_mode;
+        try self.prg_ram.loadState(data.prg_ram);
+        @memcpy(self.chr_ram, data.chr_ram);
     }
 };
 

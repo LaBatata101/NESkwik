@@ -24,6 +24,20 @@ pub const Bus = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        ram: [RAM_SIZE]u8,
+        cycles: u64,
+        open_bus: u8,
+        dma_start_delay: u8,
+        dma_cycles: u16,
+        controllers: Controllers,
+        rom: Rom.Snapshot,
+
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+            self.rom.deinit(alloc);
+        }
+    };
+
     pub fn init(rom: *Rom, ppu: *PPU, apu: *APU) Self {
         return .{
             .cycles = 0,
@@ -46,6 +60,28 @@ pub const Bus = struct {
         self.ppu.reset();
         self.apu.reset();
         self.controllers.reset();
+    }
+
+    pub fn saveState(self: *const Self, alloc: std.mem.Allocator) !Snapshot {
+        return .{
+            .ram = self.ram,
+            .cycles = self.cycles,
+            .open_bus = self.open_bus,
+            .dma_start_delay = self.dma_start_delay,
+            .dma_cycles = self.dma_cycles,
+            .controllers = self.controllers,
+            .rom = try self.rom.saveState(alloc),
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) !void {
+        self.ram = snapshot.ram;
+        self.cycles = snapshot.cycles;
+        self.open_bus = snapshot.open_bus;
+        self.dma_start_delay = snapshot.dma_start_delay;
+        self.dma_cycles = snapshot.dma_cycles;
+        self.controllers = snapshot.controllers;
+        try self.rom.loadState(snapshot.rom);
     }
 
     pub fn mem_read(self: *Self, addr: u16) u8 {

@@ -53,6 +53,14 @@ pub const Noise = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        envelope: Envelope,
+        length_counter: LengthCounter,
+        timer: Timer,
+        shifter: LinearFeedbackShiftRegister,
+        waveform_last_amp: i16,
+    };
+
     pub fn init(waveform: Waveform) Self {
         return .{
             .envelope = Envelope.init(),
@@ -106,5 +114,23 @@ pub const Noise = struct {
             3 => self.length_counter.write_counter(value),
             else => {},
         }
+    }
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .envelope = self.envelope,
+            .length_counter = self.length_counter,
+            .timer = self.timer,
+            .shifter = self.shifter,
+            .waveform_last_amp = self.waveform.last_amp,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.envelope = snapshot.envelope;
+        self.length_counter = snapshot.length_counter;
+        self.timer = snapshot.timer;
+        self.shifter = snapshot.shifter;
+        self.waveform.last_amp = snapshot.waveform_last_amp;
     }
 };

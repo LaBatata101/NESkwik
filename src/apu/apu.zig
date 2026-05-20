@@ -56,6 +56,22 @@ pub const APU = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        pulse1: Pulse.Snapshot,
+        pulse2: Pulse.Snapshot,
+        triangle: Triangle.Snapshot,
+        noise: Noise.Snapshot,
+        frame: Frame,
+        dmc: DMC.Snapshot,
+        global_cycle: u64,
+        tick_cycle: u8,
+        next_tick_cycle: u64,
+        next_transfer_cyc: u64,
+        last_frame_cyc: u64,
+        irq_interrupt: bool,
+        jitter: Jitter,
+    };
+
     /// `rom` is used by the DMC channel to read the PRG-ROM.
     pub fn init(allocator: std.mem.Allocator, device: *SDLAudioOut, rom: *Rom) !Self {
         const sample_rate = device.sampleRate();
@@ -112,6 +128,42 @@ pub const APU = struct {
         self.last_frame_cyc = 0;
         self.irq_interrupt = false;
         self.jitter = Jitter.None;
+    }
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .pulse1 = self.pulse1.saveState(),
+            .pulse2 = self.pulse2.saveState(),
+            .triangle = self.triangle.saveState(),
+            .noise = self.noise.saveState(),
+            .frame = self.frame,
+            .dmc = self.dmc.saveState(),
+            .global_cycle = self.global_cycle,
+            .tick_cycle = self.tick_cycle,
+            .next_tick_cycle = self.next_tick_cycle,
+            .next_transfer_cyc = self.next_transfer_cyc,
+            .last_frame_cyc = self.last_frame_cyc,
+            .irq_interrupt = self.irq_interrupt,
+            .jitter = self.jitter,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.pulse_buffer.reset();
+        self.tnd_buffer.reset();
+        self.pulse1.loadState(snapshot.pulse1);
+        self.pulse2.loadState(snapshot.pulse2);
+        self.triangle.loadState(snapshot.triangle);
+        self.noise.loadState(snapshot.noise);
+        self.frame = snapshot.frame;
+        self.dmc.loadState(snapshot.dmc);
+        self.global_cycle = snapshot.global_cycle;
+        self.tick_cycle = snapshot.tick_cycle;
+        self.next_tick_cycle = snapshot.next_tick_cycle;
+        self.next_transfer_cyc = snapshot.next_transfer_cyc;
+        self.last_frame_cyc = snapshot.last_frame_cyc;
+        self.irq_interrupt = snapshot.irq_interrupt;
+        self.jitter = snapshot.jitter;
     }
 
     pub fn irq_triggered(self: *const Self) bool {

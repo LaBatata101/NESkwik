@@ -56,6 +56,14 @@ pub const Triangle = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        counter: LinearCounter,
+        timer: Timer,
+        length_counter: LengthCounter,
+        waveform_last_amp: i16,
+        volume_index: usize,
+    };
+
     pub fn init(waveform: Waveform) Self {
         return .{
             .counter = LinearCounter.init(),
@@ -107,5 +115,23 @@ pub const Triangle = struct {
             },
             else => {},
         }
+    }
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .counter = self.counter,
+            .timer = self.timer,
+            .length_counter = self.length_counter,
+            .waveform_last_amp = self.waveform.last_amp,
+            .volume_index = self.volume_index,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.counter = snapshot.counter;
+        self.timer = snapshot.timer;
+        self.length_counter = snapshot.length_counter;
+        self.waveform.last_amp = snapshot.waveform_last_amp;
+        self.volume_index = snapshot.volume_index;
     }
 };

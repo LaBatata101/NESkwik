@@ -38,9 +38,29 @@ pub const Mapper = struct {
         mirroring: *const fn (ptr: *const anyopaque) Mirroring,
         irq_active: *const fn (ptr: *anyopaque) bool,
         ppu_address_updated: *const fn (ptr: *anyopaque, addr: u16, ppu_cycle: u64) void = @ptrCast(&DefaultImpl.ppu_address_updated),
+        save_state: *const fn (ptr: *const anyopaque, alloc: std.mem.Allocator) anyerror!Snapshot,
+        load_state: *const fn (ptr: *anyopaque, snapshot: Snapshot) anyerror!void,
     };
 
     const Self = @This();
+
+    pub const Snapshot = union(enum(u8)) {
+        mapper0: Mapper0.Snapshot,
+        mapper1: Mapper1.Snapshot,
+        mapper2: Mapper2.Snapshot,
+        mapper3: Mapper3.Snapshot,
+        mapper4: Mapper4.Snapshot,
+
+        pub fn deinit(self: *Snapshot, alloc: std.mem.Allocator) void {
+            switch (self.*) {
+                .mapper0 => |*snapshot| snapshot.deinit(alloc),
+                .mapper1 => |*snapshot| snapshot.deinit(alloc),
+                .mapper2 => |*snapshot| snapshot.deinit(alloc),
+                .mapper3 => |*snapshot| snapshot.deinit(alloc),
+                .mapper4 => |*snapshot| snapshot.deinit(alloc),
+            }
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator, mapper_id: u8, params: MapperParams) !Self {
         switch (mapper_id) {
@@ -114,5 +134,13 @@ pub const Mapper = struct {
 
     pub fn ppu_address_updated(self: *Self, addr: u16, ppu_cycle: u64) void {
         self.vtable.ppu_address_updated(self.ptr, addr, ppu_cycle);
+    }
+
+    pub fn saveState(self: *const Self, alloc: std.mem.Allocator) !Snapshot {
+        return self.vtable.save_state(self.ptr, alloc);
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) !void {
+        return self.vtable.load_state(self.ptr, snapshot);
     }
 };

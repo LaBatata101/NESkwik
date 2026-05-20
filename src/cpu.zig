@@ -116,6 +116,52 @@ pub const CPU = struct {
     bus: *Bus,
 
     const Self = @This();
+    pub const Snapshot = struct {
+        pc: u16,
+        sp: u8,
+        register_a: u8,
+        register_x: u8,
+        register_y: u8,
+        status: ProcessorStatus,
+        irq_delay: ?bool,
+        interrupt_vectoring: bool,
+        interrupt_vectoring_defers_late_nmi: bool,
+        defer_nmi_after_vector: bool,
+        cycles_wait: u8,
+        extra_cycles: u8,
+    };
+
+    pub fn saveState(self: *const Self) Snapshot {
+        return .{
+            .pc = self.pc,
+            .sp = self.sp,
+            .register_a = self.register_a,
+            .register_x = self.register_x,
+            .register_y = self.register_y,
+            .status = self.status,
+            .irq_delay = self.irq_delay,
+            .interrupt_vectoring = self.interrupt_vectoring,
+            .interrupt_vectoring_defers_late_nmi = self.interrupt_vectoring_defers_late_nmi,
+            .defer_nmi_after_vector = self.defer_nmi_after_vector,
+            .cycles_wait = self.cycles_wait,
+            .extra_cycles = self.extra_cycles,
+        };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+        self.pc = snapshot.pc;
+        self.sp = snapshot.sp;
+        self.register_a = snapshot.register_a;
+        self.register_x = snapshot.register_x;
+        self.register_y = snapshot.register_y;
+        self.status = snapshot.status;
+        self.irq_delay = snapshot.irq_delay;
+        self.interrupt_vectoring = snapshot.interrupt_vectoring;
+        self.interrupt_vectoring_defers_late_nmi = snapshot.interrupt_vectoring_defers_late_nmi;
+        self.defer_nmi_after_vector = snapshot.defer_nmi_after_vector;
+        self.cycles_wait = snapshot.cycles_wait;
+        self.extra_cycles = snapshot.extra_cycles;
+    }
 
     const STACK_TOP: u8 = 0xFD;
     const STACK_START: u16 = 0x0100;

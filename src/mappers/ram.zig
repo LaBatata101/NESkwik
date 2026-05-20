@@ -11,6 +11,8 @@ pub const Ram = struct {
         deinit: *const fn (ptr: *anyopaque) void,
         read: *const fn (ptr: *const anyopaque, addr: u16) u8,
         write: *const fn (ptr: *const anyopaque, addr: u16, value: u8) void,
+        save_state: *const fn (ptr: *const anyopaque, alloc: std.mem.Allocator) anyerror![]u8,
+        load_state: *const fn (ptr: *anyopaque, data: []const u8) anyerror!void,
     };
 
     pub fn deinit(self: *Self) void {
@@ -24,6 +26,14 @@ pub const Ram = struct {
     pub fn read(self: *const Self, addr: u16) u8 {
         return self.vtable.read(self.ptr, addr);
     }
+
+    pub fn saveState(self: *const Self, alloc: std.mem.Allocator) ![]u8 {
+        return self.vtable.save_state(self.ptr, alloc);
+    }
+
+    pub fn loadState(self: *Self, data: []const u8) !void {
+        return self.vtable.load_state(self.ptr, data);
+    }
 };
 
 pub const VolatileRam = struct {
@@ -35,6 +45,8 @@ pub const VolatileRam = struct {
         .deinit = @ptrCast(&Self.deinit),
         .read = @ptrCast(&Self.read),
         .write = @ptrCast(&Self.write),
+        .save_state = @ptrCast(&Self.saveState),
+        .load_state = @ptrCast(&Self.loadState),
     };
 
     pub fn init(alloc: std.mem.Allocator, size: usize) !*Self {
@@ -62,6 +74,15 @@ pub const VolatileRam = struct {
         return self.buffer[addr % self.buffer.len];
     }
 
+    fn saveState(self: *const Self, alloc: std.mem.Allocator) ![]u8 {
+        return alloc.dupe(u8, self.buffer);
+    }
+
+    fn loadState(self: *Self, data: []const u8) !void {
+        if (data.len != self.buffer.len) return error.InvalidSnapshot;
+        @memcpy(self.buffer, data);
+    }
+
     pub fn as_ram(self: *Self) Ram {
         return .{ .ptr = self, .vtable = &VTable };
     }
@@ -78,6 +99,8 @@ pub const BatteryBackedRam = struct {
         .deinit = @ptrCast(&Self.deinit),
         .read = @ptrCast(&Self.read),
         .write = @ptrCast(&Self.write),
+        .save_state = @ptrCast(&Self.saveState),
+        .load_state = @ptrCast(&Self.loadState),
     };
 
     pub fn init(alloc: std.mem.Allocator, path: []const u8, size: usize) !*Self {
@@ -121,6 +144,15 @@ pub const BatteryBackedRam = struct {
 
     fn read(self: *const Self, addr: u16) u8 {
         return self.buffer[addr % self.buffer.len];
+    }
+
+    fn saveState(self: *const Self, alloc: std.mem.Allocator) ![]u8 {
+        return alloc.dupe(u8, self.buffer);
+    }
+
+    fn loadState(self: *Self, data: []const u8) !void {
+        if (data.len != self.buffer.len) return error.InvalidSnapshot;
+        @memcpy(self.buffer, data);
     }
 
     pub fn as_ram(self: *Self) Ram {

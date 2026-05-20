@@ -25,6 +25,15 @@ pub const Mapper2 = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        selected_bank: u8,
+        chr_ram: []u8,
+
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+            alloc.free(self.chr_ram);
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, params: MapperParams) !*Self {
         const self = try allocator.create(Self);
 
@@ -60,6 +69,8 @@ pub const Mapper2 = struct {
         .prg_ram_write = @ptrCast(&Self.prg_ram_write),
         .irq_active = @ptrCast(&Self.irq_active),
         .mirroring = @ptrCast(&Self.mirroring),
+        .save_state = @ptrCast(&Self.saveState),
+        .load_state = @ptrCast(&Self.loadState),
     };
 
     pub fn as_mapper(self: *Self) Mapper {
@@ -126,6 +137,23 @@ pub const Mapper2 = struct {
     pub fn irq_active(self: *Self) bool {
         _ = self;
         return false;
+    }
+
+    pub fn saveState(self: *const Self, alloc: std.mem.Allocator) !Mapper.Snapshot {
+        return .{ .mapper2 = .{
+            .selected_bank = self.selected_bank,
+            .chr_ram = try alloc.dupe(u8, self.chr_ram),
+        } };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Mapper.Snapshot) !void {
+        const data = switch (snapshot) {
+            .mapper2 => |value| value,
+            else => return error.InvalidSnapshot,
+        };
+        if (data.chr_ram.len != self.chr_ram.len) return error.InvalidSnapshot;
+        self.selected_bank = data.selected_bank;
+        @memcpy(self.chr_ram, data.chr_ram);
     }
 };
 

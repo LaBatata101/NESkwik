@@ -53,6 +53,22 @@ pub const Mapper1 = struct {
 
     const Self = @This();
 
+    pub const Snapshot = struct {
+        load_register: u8,
+        write_index: u8,
+        control: u8,
+        prg_bank: u8,
+        chr_bank_1: u8,
+        chr_bank_2: u8,
+        prg_ram: []u8,
+        chr_ram: []u8,
+
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+            alloc.free(self.prg_ram);
+            alloc.free(self.chr_ram);
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, params: MapperParams) !*Self {
         const self = try allocator.create(Self);
 
@@ -102,6 +118,8 @@ pub const Mapper1 = struct {
         .prg_ram_write = @ptrCast(&Self.prg_ram_write),
         .irq_active = @ptrCast(&Self.irq_active),
         .mirroring = @ptrCast(&Self.mirroring),
+        .save_state = @ptrCast(&Self.saveState),
+        .load_state = @ptrCast(&Self.loadState),
     };
 
     pub fn as_mapper(self: *Self) Mapper {
@@ -250,6 +268,38 @@ pub const Mapper1 = struct {
     pub fn irq_active(self: *Self) bool {
         _ = self;
         return false;
+    }
+
+    pub fn saveState(self: *const Self, alloc: std.mem.Allocator) !Mapper.Snapshot {
+        const prg_ram = try self.prg_ram.saveState(alloc);
+        errdefer alloc.free(prg_ram);
+        return .{ .mapper1 = .{
+            .load_register = self.load_register,
+            .write_index = self.write_index,
+            .control = self.control,
+            .prg_bank = self.prg_bank,
+            .chr_bank_1 = self.chr_bank_1,
+            .chr_bank_2 = self.chr_bank_2,
+            .prg_ram = prg_ram,
+            .chr_ram = try alloc.dupe(u8, self.chr_ram),
+        } };
+    }
+
+    pub fn loadState(self: *Self, snapshot: Mapper.Snapshot) !void {
+        const data = switch (snapshot) {
+            .mapper1 => |value| value,
+            else => return error.InvalidSnapshot,
+        };
+        if (data.chr_ram.len != self.chr_ram.len) return error.InvalidSnapshot;
+        self.load_register = data.load_register;
+        self.write_index = data.write_index;
+        self.control = data.control;
+        self.prg_bank = data.prg_bank;
+        self.chr_bank_1 = data.chr_bank_1;
+        self.chr_bank_2 = data.chr_bank_2;
+        try self.prg_ram.loadState(data.prg_ram);
+        @memcpy(self.chr_ram, data.chr_ram);
+        self.update_offsets();
     }
 };
 

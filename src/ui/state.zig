@@ -14,6 +14,7 @@ const ControllerButton = @import("../controller.zig").ControllerButton;
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
 const paths = @import("../paths.zig");
+const save_state = @import("../save_state.zig");
 const ness = @import("../root.zig");
 const sdlError = ness.sdlError;
 
@@ -463,6 +464,28 @@ pub const AppState = struct {
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.settings.emulation_speed = speed;
+    }
+
+    pub fn saveStateSlot(self: *Self, slot: usize) void {
+        const path = self.current_rom_path orelse return;
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        save_state.saveSlot(self.alloc, path, &self.system.?, slot) catch |err|
+            std.log.err("save state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
+    }
+
+    pub fn loadStateSlot(self: *Self, slot: usize) void {
+        const path = self.current_rom_path orelse return;
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        save_state.loadSlot(self.alloc, path, &self.system.?, slot) catch |err| {
+            std.log.err("load state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
+        };
+    }
+
+    pub fn saveStateSlotInfo(self: *Self, slot: usize) save_state.SlotInfo {
+        const path = self.current_rom_path orelse return .{};
+        return save_state.slotInfo(self.alloc, path, slot);
     }
 
     pub fn loadRom(self: *Self, path: []const u8) !void {

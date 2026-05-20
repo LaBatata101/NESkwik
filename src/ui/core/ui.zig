@@ -315,6 +315,7 @@ pub const WidgetState = union(enum) {
     text_input: TextInputState,
     scroll: ScrollState,
     dropdown_menu: DropdownMenuState,
+    submenu: SubMenuState,
     combobox: ComboboxState,
     tooltip: TooltipState,
     grid: GridState,
@@ -331,6 +332,9 @@ pub const WidgetState = union(enum) {
         scrollbar_visible: bool = false,
     };
     pub const DropdownMenuState = struct {
+        is_open: bool,
+    };
+    pub const SubMenuState = struct {
         is_open: bool,
     };
     pub const ComboboxState = struct {
