@@ -24,6 +24,10 @@
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.338.tar.gz",
             .hash = "N-V-__8AAMZuLQIcPe--JSv0kn_Ga8tsjgbkaojW0OHW2Rfd",
         },
+        .zeit = .{
+            .url = "git+https://github.com/rockorager/zeit.git#d1c288293256648124c150b249a819352f3ac18c",
+            .hash = "zeit-0.6.0-5I6bk7V8AgAY0-hM-vUYtKZUFYhXct-VRkqISNNTfEfb",
+        },
     },
     .paths = .{
         "build.zig",

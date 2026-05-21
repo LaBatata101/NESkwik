@@ -64,6 +64,12 @@ pub fn build(b: *std.Build) void {
     const spirv_cross_lib = spirv_cross_dep.artifact("spirv-cross-c");
     mod.linkLibrary(spirv_cross_lib);
 
+    const zeit_dep = b.dependency("zeit", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("zeit", zeit_dep.module("zeit"));
+
     const vk_headers = b.dependency("vulkan_headers", .{});
     mod.addIncludePath(vk_headers.path("include"));
 

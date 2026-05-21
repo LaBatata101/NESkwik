@@ -1,20 +1,28 @@
 const std = @import("std");
 const ness = @import("ness");
+const logging = ness.logging;
 
 const c = ness.c;
 const gui = ness.gui;
 const Rom = ness.Rom;
 const UI = ness.ui.UI;
-const trace = ness.trace;
 const debug = ness.debug;
 const System = ness.System;
 const widgets = ness.ui.widgets;
 const sdlError = ness.sdlError;
 
+pub const std_options: std.Options = .{
+    .logFn = logging.logFn,
+};
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    logging.init(allocator) catch |err| {
+        std.debug.print("Failed to initialize log file: {s}\n", .{@errorName(err)});
+    };
+    defer logging.deinit(allocator);
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
