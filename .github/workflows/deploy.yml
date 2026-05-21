@@ -1,0 +1,135 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  resolve-tag:
+    name: Resolve tag
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Detect completed tag build
+        id: tag
+        env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          tag="$(git tag --points-at "$HEAD_SHA" | grep -Fx "$HEAD_BRANCH" | head -n 1 || true)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: resolve-tag
+    if: needs.resolve-tag.outputs.tag != ''
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            artifact_suffix: linux-x86_64
+          - name: Windows
+            os: windows-latest
+            artifact_suffix: windows-x86_64
+          - name: macOS
+            os: macos-latest
+            artifact_suffix: macos-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Vulkan loader (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev
+
+      - name: Install Vulkan loader (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vulkan-loader
+
+      - name: Build release binary
+        run: zig build --release=fast
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dist = "dist/ness-${{ matrix.artifact_suffix }}"
+          New-Item -ItemType Directory -Force $dist
+          Copy-Item zig-out/bin/ness.exe $dist/
+          Copy-Item third-party/vulkan-windows/lib/vulkan-1.dll $dist/
+          Compress-Archive -Path "$dist/*" -DestinationPath "$dist.zip"
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          dist="dist/ness-${{ matrix.artifact_suffix }}"
+          mkdir -p "$dist"
+          cp zig-out/bin/ness "$dist/"
+          tar -czf "$dist.tar.gz" -C dist "ness-${{ matrix.artifact_suffix }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ness-${{ matrix.artifact_suffix }}
+          path: |
+            dist/ness-${{ matrix.artifact_suffix }}.zip
+            dist/ness-${{ matrix.artifact_suffix }}.tar.gz
+          if-no-files-found: ignore
+
+  release:
+    name: Create GitHub release
+    needs:
+      - resolve-tag
+      - build
+    if: needs.resolve-tag.outputs.tag != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* --title "$TAG" --generate-notes
+          fi
