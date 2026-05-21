@@ -1,7 +1,5 @@
 const std = @import("std");
-const builtin = @import("builtin");
-
-const c = @import("root.zig").c;
+const zeit = @import("zeit");
 
 const APU = @import("apu/apu.zig").APU;
 const Bus = @import("bus.zig").Bus;
@@ -50,7 +48,7 @@ pub fn saveSlot(alloc: std.mem.Allocator, rom_path: []const u8, system: *System,
     defer alloc.free(path);
 
     var snapshot = Snapshot{
-        .saved_at = std.time.timestamp(),
+        .saved_at = (try zeit.instant(.{})).unixTimestamp(),
         .cpu = system.cpu.saveState(),
         .bus = try system.bus.saveState(alloc),
         .ppu = system.ppu.saveState(),
@@ -91,7 +89,7 @@ pub fn slotInfo(alloc: std.mem.Allocator, rom_path: []const u8, slot: usize) Slo
 
     var info: SlotInfo = .{ .exists = true };
     info.saved_at = readHeaderTimestamp(file) catch return .{};
-    info.display_time = formatTimestamp(info.saved_at);
+    info.display_time = formatTimestamp(alloc, info.saved_at);
     return info;
 }
 
@@ -455,58 +453,23 @@ fn makeDirAll(path: []const u8) !void {
     };
 }
 
-fn formatTimestamp(timestamp: i64) [19]u8 {
+fn formatTimestamp(alloc: std.mem.Allocator, timestamp: i64) [19]u8 {
     if (timestamp <= 0) return [_]u8{' '} ** 19;
 
-    if (localTime(timestamp)) |tm| {
-        return formatDateTime(
-            @intCast(tm.tm_year + 1900),
-            @intCast(tm.tm_mon + 1),
-            @intCast(tm.tm_mday),
-            @intCast(tm.tm_hour),
-            @intCast(tm.tm_min),
-            @intCast(tm.tm_sec),
-        );
-    }
+    var timezone = zeit.local(alloc, null) catch zeit.utc;
+    defer timezone.deinit();
 
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(timestamp) };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const instant = zeit.instant(.{
+        .source = .{ .unix_timestamp = timestamp },
+        .timezone = &timezone,
+    }) catch return [_]u8{' '} ** 19;
 
-    return formatDateTime(
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-    );
+    return formatDateTime(instant.time());
 }
 
-fn localTime(timestamp: i64) ?c.struct_tm {
-    var raw: c.time_t = @intCast(timestamp);
-    var tm: c.struct_tm = undefined;
-
-    switch (builtin.os.tag) {
-        .windows => {
-            if (c.localtime_s(&tm, &raw) != 0) return null;
-            return tm;
-        },
-        else => {
-            if (c.localtime_r(&raw, &tm) == null) return null;
-            return tm;
-        },
-    }
-}
-
-fn formatDateTime(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) [19]u8 {
+fn formatDateTime(time: zeit.Time) [19]u8 {
     var buf: [19]u8 = undefined;
-    const text = std.fmt.bufPrint(
-        &buf,
-        "{d:0>4}/{d:0>2}/{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
-        .{ year, month, day, hour, minute, second },
-    ) catch unreachable;
-    std.debug.assert(text.len == buf.len);
+    var writer: std.Io.Writer = .fixed(&buf);
+    time.strftime(&writer, "%Y/%m/%d %H:%M:%S") catch unreachable;
     return buf;
 }
