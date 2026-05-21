@@ -14,6 +14,51 @@ const sdlError = ness.sdlError;
 pub const std_options: std.Options = .{
     .logFn = logging.logFn,
 };
+
+pub const panic = std.debug.FullPanic(customPanic);
+
+fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    const alloc = std.heap.page_allocator;
+    var trace: std.Io.Writer.Allocating = .init(alloc);
+    defer trace.deinit();
+    const trace_writer = &trace.writer;
+
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
+    defer buffer.deinit();
+    const writer = &buffer.writer;
+
+    writer.print("The program crashed with the following message:\n\"{s}\"\n\n", .{msg}) catch {};
+    if (logging.path()) |log_path| {
+        writer.print("Check the log file at {s}\n\n", .{log_path}) catch {};
+    } else {
+        writer.print("Log file unavailable.\n\n", .{}) catch {};
+    }
+
+    if (std.debug.getSelfDebugInfo()) |debug_info| {
+        std.debug.writeCurrentStackTrace(trace_writer, debug_info, .no_color, first_trace_addr) catch |err| {
+            writer.print("Unable to dump stack trace: {s}\n", .{@errorName(err)}) catch {};
+        };
+        const stacktrace = trace.written();
+        if (stacktrace.len > 1024) {
+            writer.print("Stacktrace:\n{s}...\n", .{stacktrace[0..1024]}) catch {};
+        } else {
+            writer.print("Stacktrace:\n{s}\n", .{stacktrace}) catch {};
+        }
+    } else |err| {
+        writer.print("Unable to dump stack trace:\n\tUnable to open debug info: {s}\n", .{@errorName(err)}) catch {};
+    }
+
+    const panic_msg = alloc.dupeZ(u8, buffer.written()) catch unreachable;
+    defer alloc.free(panic_msg);
+
+    logging.writePanic(buffer.written());
+    std.debug.print("{s}", .{panic_msg});
+
+    _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik", panic_msg.ptr, null);
+
+    std.process.exit(1);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
