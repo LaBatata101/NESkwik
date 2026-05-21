@@ -13,7 +13,6 @@ const NES_VISIBLE_HEIGHT = @import("../root.zig").NES_VISIBLE_HEIGHT;
 const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
 const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const NES_WIDTH = @import("../root.zig").NES_WIDTH;
-const NES_HEIGHT = @import("../root.zig").NES_HEIGHT;
 const SYSTEM_PALETTE = @import("../render.zig").SYSTEM_PALETTE;
 
 pub fn drawUI(ui: *UI, app_state: *AppState) void {
@@ -93,7 +92,7 @@ fn drawGameScreen(ui: *UI, app_state: *AppState) void {
         .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
         .pixels = app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
         .w = NES_WIDTH,
-        .h = NES_HEIGHT,
+        .h = NES_VISIBLE_HEIGHT,
     });
     wrapper.end();
 }
