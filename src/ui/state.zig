@@ -500,10 +500,10 @@ pub const AppState = struct {
 
         const cwd = try std.process.getCwdAlloc(self.alloc);
         defer self.alloc.free(cwd);
-        const rom_abs_path = try std.fs.path.resolve(self.alloc, &.{ cwd, path });
-        defer self.alloc.free(rom_abs_path);
+        const rom_fullpath = try std.fs.path.resolve(self.alloc, &.{ cwd, path });
+        defer self.alloc.free(rom_fullpath);
 
-        const file = std.fs.openFileAbsolute(rom_abs_path, .{}) catch |err| switch (err) {
+        const file = std.fs.openFileAbsolute(rom_fullpath, .{}) catch |err| switch (err) {
             else => {
                 std.debug.print("Error while opening file: {any}\n", .{err});
                 std.process.exit(1);
@@ -514,12 +514,12 @@ pub const AppState = struct {
         const file_size = try file.getEndPos();
         try file.seekTo(0);
 
-        std.log.debug("Reading file: {s}", .{rom_abs_path});
+        std.log.debug("Reading file: {s}", .{rom_fullpath});
         if (self.rom_bytes) |bytes| self.alloc.free(bytes);
         self.rom_bytes = try self.alloc.alloc(u8, file_size);
         _ = try file.read(self.rom_bytes.?);
 
-        self.rom = try Rom.init(self.alloc, path, self.rom_bytes.?);
+        self.rom = try Rom.init(self.alloc, rom_fullpath, self.rom_bytes.?);
         self.system = try System.init(self.alloc, &self.rom.?, .{});
         self.system.?.reset();
         self.publishFrame(self.system.?.frame_buffer());
@@ -527,7 +527,7 @@ pub const AppState = struct {
         self.render_home_ui = false;
 
         if (self.current_rom_path) |p| self.alloc.free(p);
-        self.current_rom_path = self.alloc.dupe(u8, path) catch null;
+        self.current_rom_path = self.alloc.dupe(u8, rom_fullpath) catch null;
         self.game_start_time_ms = std.time.milliTimestamp();
         try self.startEmulationThread();
     }
