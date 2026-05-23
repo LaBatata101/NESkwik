@@ -87,7 +87,6 @@ jobs:
           $dist = "dist/ness-${{ matrix.artifact_suffix }}"
           New-Item -ItemType Directory -Force $dist
           Copy-Item zig-out/bin/ness.exe $dist/
-          Copy-Item third-party/vulkan-windows/lib/vulkan-1.dll $dist/
           Compress-Archive -Path "$dist/*" -DestinationPath "$dist.zip"
 
       - name: Prepare artifact (Unix)
