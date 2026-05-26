@@ -975,22 +975,6 @@ fn updateLinkObjects(apk: *Apk, root_artifact: *Step.Compile, raw_top_level_apk_
     }
 }
 
-/// Copy-paste of "dependsOnSystemLibrary" that only checks if that system library is included to
-/// workaround a bug with in Zig 0.15.0-dev.1092+d772c0627
-fn dependsOnSystemLibrary(apk: *Apk, compile: *Step.Compile, name: []const u8) bool {
-    for (apk.getCompileDependencies(compile, true)) |dep_compile| {
-        for (apk.getGraph(dep_compile.root_module).modules) |mod| {
-            for (mod.link_objects.items) |lo| {
-                switch (lo) {
-                    .system_lib => |lib| if (std.mem.eql(u8, lib.name, name)) return true,
-                    else => {},
-                }
-            }
-        }
-    }
-    return false;
-}
-
 fn updateSharedLibraryOptions(artifact: *std.Build.Step.Compile) void {
     if (artifact.linkage) |linkage| {
         if (linkage != .dynamic) {
@@ -1010,23 +994,6 @@ fn updateSharedLibraryOptions(artifact: *std.Build.Step.Compile) void {
     if (artifact.root_module.optimize) |optimize| {
         // NOTE(jae): ZigAndroidTemplate used: (optimize == .ReleaseSmall);
         artifact.root_module.strip = optimize == .ReleaseSmall;
-    }
-
-    // TODO(jae): 2024-09-19 - Copy-pasted from https://github.com/ikskuh/ZigAndroidTemplate/blob/master/Sdk.zig
-    // Remove when https://github.com/ziglang/zig/issues/7935 is resolved.
-    if (artifact.root_module.resolved_target) |target| {
-        if (target.result.cpu.arch == .x86) {
-            const use_link_z_notext_workaround: bool = if (artifact.bundle_compiler_rt) |bcr| bcr else false;
-            if (use_link_z_notext_workaround) {
-                // NOTE(jae): 2024-09-22
-                // This workaround can prevent your libmain.so from loading. At least in my testing with running Android 10 (Q, API Level 29)
-                //
-                // This is due to:
-                // "Text Relocations Enforced for API Level 23"
-                // See: https://android.googlesource.com/platform/bionic/+/refs/tags/ndk-r14/android-changes-for-ndk-developers.md
-                artifact.link_z_notext = true;
-            }
-        }
     }
 
     // NOTE(jae): 2024-09-01
