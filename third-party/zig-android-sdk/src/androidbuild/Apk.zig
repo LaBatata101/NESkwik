@@ -588,12 +588,6 @@ fn doInstallApk(apk: *Apk) Allocator.Error!*Step.InstallFile {
                 artifact.root_module.link_libc = true;
             }
             apk.updateArtifact(artifact, apk_files);
-
-            // Apply workaround for Zig 0.14.0 stable
-            //
-            // This *must* occur after apk.updateArtifact (apk.updateLinkObjects) for the root package otherwise
-            // you may get an error like: "unable to find dynamic system library 'c++abi_zig_workaround'"
-            apk.applyLibLinkCppWorkaroundIssue19(artifact);
         }
     }
 
@@ -972,66 +966,12 @@ fn updateLinkObjects(apk: *Apk, root_artifact: *Step.Compile, raw_top_level_apk_
 
                         // Update libraries linked to this library
                         apk.updateLinkObjects(artifact, raw_top_level_apk_files);
-
-                        // Apply workaround for Zig 0.14.0 and Zig 0.15.X
-                        apk.applyLibLinkCppWorkaroundIssue19(artifact);
                     },
                     else => continue,
                 }
             },
             else => {},
         }
-    }
-}
-
-/// Hack/Workaround issue #19 where Zig has issues with "linkLibCpp()" in Zig 0.14.0 stable
-/// - Zig Android SDK: https://github.com/silbinarywolf/zig-android-sdk/issues/19
-/// - Zig: https://github.com/ziglang/zig/issues/23302
-///
-/// This applies in two cases:
-/// - If the artifact has "link_libcpp = true"
-/// - If the artifact is linking to another artifact that has "link_libcpp = true", ie. artifact.dependsOnSystemLibrary("c++abi_zig_workaround")
-fn applyLibLinkCppWorkaroundIssue19(apk: *Apk, artifact: *Step.Compile) void {
-    const b = apk.b;
-
-    const should_apply_fix = (artifact.root_module.link_libcpp == true or
-        apk.dependsOnSystemLibrary(artifact, "c++abi_zig_workaround"));
-    if (!should_apply_fix) {
-        return;
-    }
-
-    const system_target = getAndroidTriple(artifact.root_module.resolved_target.?) catch |err| @panic(@errorName(err));
-    const lib_path: LazyPath = .{
-        .cwd_relative = b.pathJoin(&.{ apk.ndk.sysroot_path, "usr", "lib", system_target, "libc++abi.a" }),
-    };
-    const libcpp_workaround = b.addWriteFiles();
-    const libcppabi_dir = libcpp_workaround.addCopyFile(lib_path, "libc++abi_zig_workaround.a").dirname();
-
-    artifact.root_module.addLibraryPath(libcppabi_dir);
-
-    // NOTE(jae): 2025-11-18
-    // Due to Android include files not being provided by Zig, we should provide them if the library is linking against C++
-    // This resolves an issue where if you are trying to build the openxr_loader C++ code from source, it can't find standard library includes like <string> or <algorithm>
-    artifact.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/c++/v1", .{apk.ndk.sysroot_path}) });
-
-    if (artifact.root_module.link_libcpp == true) {
-        // NOTE(jae): 2025-04-06
-        // Don't explicitly linkLibCpp
-        artifact.root_module.link_libcpp = null;
-
-        // NOTE(jae): 2025-04-06 - https://github.com/silbinarywolf/zig-android-sdk/issues/28
-        // Resolve issue where in Zig 0.14.0 stable that '__gxx_personality_v0' is missing when starting
-        // an SDL2 or SDL3 application.
-        //
-        // Tested on x86_64 with:
-        // - build_tools_version = "35.0.1"
-        // - ndk_version = "29.0.13113456"
-        artifact.root_module.linkSystemLibrary("c++abi_zig_workaround", .{});
-
-        // NOTE(jae): 2025-04-06
-        // unresolved symbol "_Unwind_Resume" error occurs when SDL2 is loaded,
-        // so we link the "unwind" library
-        artifact.root_module.linkSystemLibrary("unwind", .{});
     }
 }
 
