@@ -505,26 +505,19 @@ pub const AppState = struct {
         if (self.rom) |*rom| rom.deinit();
         if (self.system) |*system| system.deinit();
 
-        const cwd = try std.process.getCwdAlloc(self.alloc);
-        defer self.alloc.free(cwd);
-        const rom_fullpath = try std.fs.path.resolve(self.alloc, &.{ cwd, path });
-        defer self.alloc.free(rom_fullpath);
+        const rom_fullpath = if (builtin.abi.isAndroid()) path else blk: {
+            const cwd = try std.process.getCwdAlloc(self.alloc);
+            defer self.alloc.free(cwd);
+            const rom_fullpath = try std.fs.path.resolve(self.alloc, &.{ cwd, path });
 
-        const file = std.fs.openFileAbsolute(rom_fullpath, .{}) catch |err| switch (err) {
-            else => {
-                std.debug.print("Error while opening file: {any}\n", .{err});
-                std.process.exit(1);
-            },
+            break :blk rom_fullpath;
         };
-        defer file.close();
-
-        const file_size = try file.getEndPos();
-        try file.seekTo(0);
+        defer if (!builtin.abi.isAndroid()) self.alloc.free(rom_fullpath);
 
         std.log.debug("Reading file: {s}", .{rom_fullpath});
+
         if (self.rom_bytes) |bytes| self.alloc.free(bytes);
-        self.rom_bytes = try self.alloc.alloc(u8, file_size);
-        _ = try file.read(self.rom_bytes.?);
+        self.rom_bytes = try file.readFile(self.alloc, rom_fullpath);
 
         self.rom = try Rom.init(self.alloc, rom_fullpath, self.rom_bytes.?);
         self.system = try System.init(self.alloc, &self.rom.?, .{});
