@@ -5,12 +5,10 @@
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .sdl = .{
-            .url = "git+https://github.com/castholm/SDL.git#887fa805e40d5c7bb3955ae69b89ed566c6a0471",
-            .hash = "sdl-0.4.0+3.4.0-SDL--rq2owEZsySGuHCuVJ9naEvH3i3e_pyUIjziBtJ-",
+            .path = "third-party/SDL/",
         },
         .sdl_ttf = .{
-            .url = "git+https://github.com/LaBatata101/SDL_ttf.git#00f7f97c3bbaa9988f563a285ee570f331c2050c",
-            .hash = "sdl_ttf-3.2.0-GgzNnUsjBwCvS4XkgkMtFQOZD96DJ2jl5fSJNGzuitAM",
+            .path = "third-party/SDL_ttf",
         },
         .spirv_cross = .{
             .url = "git+https://github.com/LaBatata101/SPIRV-Cross_zig.git#ad0bb016f3ddc68f666e7e2a955889b171d8f2a9",
@@ -28,10 +26,20 @@
             .url = "git+https://github.com/rockorager/zeit.git#74be5a2afb346b2a6a6349abbb609e89ec7e65a6",
             .hash = "zeit-0.6.0-5I6bk4t8AgCP0UGGHVF_khlmWZkAF5XtfQWEKCyLoptU",
         },
+        .android = .{
+            .path = "third-party/zig-android-sdk",
+        },
     },
     .paths = .{
+        "android",
         "build.zig",
         "build.zig.zon",
+        "resources",
+        "shaders",
         "src",
+        "third-party/SDL",
+        "third-party/blip_buf-1.1.0",
+        "third-party/clay",
+        "third-party/zig-android-sdk",
     },
 }

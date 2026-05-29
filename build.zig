@@ -1,9 +1,164 @@
 const std = @import("std");
+const android = @import("android");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const exe_name = "ness";
+    const package_name = "com.labatata.neskwik";
+
+    const root_target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const mod = b.addModule("ness", .{
+    const android_targets = android.standardTargets(b, root_target);
+
+    var root_target_single = [_]std.Build.ResolvedTarget{root_target};
+    const targets: []std.Build.ResolvedTarget = if (android_targets.len == 0)
+        root_target_single[0..]
+    else
+        android_targets;
+
+    const android_apk: ?*android.Apk = blk: {
+        if (android_targets.len == 0) break :blk null;
+
+        const android_sdk = android.Sdk.create(b, .{});
+        const apk = android_sdk.createApk(.{
+            .name = exe_name,
+            .api_level = .android15,
+            .build_tools_version = "36.1.0",
+            .ndk_version = "28.2.13676358",
+        });
+
+        apk.setKeyStore(android_sdk.createKeyStore(.example));
+        apk.setAndroidManifest(b.path("android/AndroidManifest.xml"));
+        apk.addResourceDirectory(b.path("android/res"));
+        apk.addJavaSourceFile(.{ .file = b.path("android/src/ZigSDLActivity.java") });
+        addAndroidLibcxxShared(b, apk, android_targets);
+
+        const sdl_java_dep = b.dependency("sdl", .{
+            .target = android_targets[0],
+            // TODO: investigate why `.ReleaseFast` makes the app crash
+            .optimize = .ReleaseSafe, // NOTE: apart from `.Debug` other release modes doesn't seem to work
+            .preferred_linkage = .static,
+        });
+        const sdl_java_files = sdl_java_dep.namedWriteFiles("sdljava");
+        for (sdl_java_files.files.items) |file| {
+            apk.addJavaSourceFile(.{ .file = file.contents.copy });
+        }
+
+        break :blk apk;
+    };
+
+    for (targets) |target| {
+        const deps = createNessModule(b, target, optimize);
+
+        const app_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = optimize == .ReleaseFast,
+            .imports = &.{
+                .{ .name = "ness", .module = deps.mod },
+            },
+        });
+
+        if (target.result.abi.isAndroid()) {
+            const apk = android_apk orelse @panic("Android APK should be initialized");
+            const android_dep = b.dependency("android", .{
+                .optimize = optimize,
+                .target = target,
+            });
+            app_module.addImport("android", android_dep.module("android"));
+
+            const app_lib = b.addLibrary(.{
+                .name = "main",
+                .root_module = app_module,
+                .linkage = .dynamic,
+                .use_llvm = true,
+            });
+            linkAppLibraries(app_lib, deps);
+            app_lib.root_module.linkSystemLibrary("c++_shared", .{});
+            apk.addArtifact(app_lib);
+        } else {
+            const exe = b.addExecutable(.{
+                .name = exe_name,
+                .use_llvm = true,
+                .root_module = app_module,
+            });
+            linkAppLibraries(exe, deps);
+
+            b.installArtifact(exe);
+
+            const run_step = b.step("run", "Run the app");
+            const run_cmd = b.addRunArtifact(exe);
+            run_step.dependOn(&run_cmd.step);
+
+            run_cmd.step.dependOn(b.getInstallStep());
+
+            if (b.args) |args| {
+                run_cmd.addArgs(args);
+            }
+
+            addTestStep(b, target, optimize, deps, exe);
+        }
+    }
+
+    if (android_apk) |apk| {
+        const installed_apk = apk.addInstallApk();
+        b.getInstallStep().dependOn(&installed_apk.step);
+
+        const run_step = b.step("run", "Install and run the app on an Android device");
+        const adb_install = apk.sdk.addAdbInstall(installed_apk.source);
+        const adb_start = apk.sdk.addAdbStart(package_name ++ "/" ++ package_name ++ ".ZigSDLActivity");
+        adb_start.step.dependOn(&adb_install.step);
+        run_step.dependOn(&adb_start.step);
+    }
+}
+
+fn addAndroidLibcxxShared(b: *std.Build, apk: *android.Apk, targets: []const std.Build.ResolvedTarget) void {
+    for (targets) |target| {
+        const system_triple = androidSystemTriple(b, target);
+        const libcxx_path: std.Build.LazyPath = .{
+            .cwd_relative = b.fmt("{s}/usr/lib/{s}/libc++_shared.so", .{
+                apk.ndk.sysroot_path,
+                system_triple,
+            }),
+        };
+
+        switch (target.result.cpu.arch) {
+            .aarch64 => apk.addLibraryFile(.arm64_v8a, libcxx_path),
+            .arm => apk.addLibraryFile(.armeabi_v7a, libcxx_path),
+            .x86_64 => apk.addLibraryFile(.x86_64, libcxx_path),
+            .x86 => apk.addLibraryFile(.x86, libcxx_path),
+            else => @panic(b.fmt("unsupported Android target arch: {s}", .{@tagName(target.result.cpu.arch)})),
+        }
+    }
+}
+
+fn androidSystemTriple(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+    if (!target.result.abi.isAndroid()) {
+        @panic("expected Android target");
+    }
+    return switch (target.result.cpu.arch) {
+        .aarch64 => "aarch64-linux-android",
+        .arm => "arm-linux-androideabi",
+        .x86_64 => "x86_64-linux-android",
+        .x86 => "i686-linux-android",
+        else => @panic(b.fmt("unsupported Android target arch: {s}", .{@tagName(target.result.cpu.arch)})),
+    };
+}
+
+const NessDeps = struct {
+    mod: *std.Build.Module,
+    sdl_lib: *std.Build.Step.Compile,
+    blip_buf_lib: *std.Build.Step.Compile,
+    clay_lib: *std.Build.Step.Compile,
+    sdl_ttf_lib: *std.Build.Step.Compile,
+    glslang_lib: *std.Build.Step.Compile,
+    spirv_cross_lib: *std.Build.Step.Compile,
+};
+
+fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) NessDeps {
+    const preferred_linkage: std.builtin.LinkMode = if (target.result.abi.isAndroid()) .dynamic else .static;
+
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
@@ -11,6 +166,7 @@ pub fn build(b: *std.Build) void {
     const sdl_dep = b.dependency("sdl", .{
         .target = target,
         .optimize = optimize,
+        .preferred_linkage = preferred_linkage,
     });
     const sdl_lib = sdl_dep.artifact("SDL3");
     mod.linkLibrary(sdl_lib);
@@ -46,6 +202,7 @@ pub fn build(b: *std.Build) void {
     const sdl_ttf_dep = b.dependency("sdl_ttf", .{
         .target = target,
         .optimize = optimize,
+        .preferred_link_mode = preferred_linkage,
     });
     const sdl_ttf_lib = sdl_ttf_dep.artifact("SDL3_ttf");
     mod.linkLibrary(sdl_ttf_lib);
@@ -89,36 +246,33 @@ pub fn build(b: *std.Build) void {
     mod.addAnonymousImport("play_icon", .{ .root_source_file = b.path("resources/icons/play_arrow_32x32.png") });
     mod.addAnonymousImport("stop_icon", .{ .root_source_file = b.path("resources/icons/stop_32x32.png") });
 
-    const exe = b.addExecutable(.{
-        .name = "ness",
-        .use_llvm = true,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = optimize == .ReleaseFast,
-            .imports = &.{
-                .{ .name = "ness", .module = mod },
-            },
-        }),
-    });
-    exe.linkLibrary(clay_lib);
-    exe.linkLibrary(sdl_ttf_lib);
-    exe.linkLibrary(glslang_lib);
-    exe.linkLibrary(spirv_cross_lib);
+    return .{
+        .mod = mod,
+        .sdl_lib = sdl_lib,
+        .blip_buf_lib = blip_buf_lib,
+        .clay_lib = clay_lib,
+        .sdl_ttf_lib = sdl_ttf_lib,
+        .glslang_lib = glslang_lib,
+        .spirv_cross_lib = spirv_cross_lib,
+    };
+}
 
-    b.installArtifact(exe);
+fn linkAppLibraries(compile: *std.Build.Step.Compile, deps: NessDeps) void {
+    compile.linkLibrary(deps.sdl_lib);
+    compile.linkLibrary(deps.blip_buf_lib);
+    compile.linkLibrary(deps.clay_lib);
+    compile.linkLibrary(deps.sdl_ttf_lib);
+    compile.linkLibrary(deps.glslang_lib);
+    compile.linkLibrary(deps.spirv_cross_lib);
+}
 
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-
+fn addTestStep(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    deps: NessDeps,
+    exe: *std.Build.Step.Compile,
+) void {
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
     const no_run = b.option(bool, "no-run", "Don't run the test") orelse false;
     const rom_tests_enabled = b.option(bool, "rom-tests", "Run ROM tests. This is very slow!") orelse false;
@@ -134,7 +288,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
-                    .{ .name = "ness", .module = mod },
+                    .{ .name = "ness", .module = deps.mod },
                 },
             }),
         });
@@ -147,8 +301,8 @@ pub fn build(b: *std.Build) void {
         });
         test_exe.root_module.addIncludePath(b.path("third-party/blip_buf-1.1.0"));
 
-        test_exe.root_module.linkLibrary(sdl_lib);
-        test_exe.root_module.linkLibrary(blip_buf_lib);
+        test_exe.root_module.linkLibrary(deps.sdl_lib);
+        test_exe.root_module.linkLibrary(deps.blip_buf_lib);
         test_exe.root_module.link_libc = true;
 
         const run_rom_tests = b.addRunArtifact(test_exe);
@@ -166,7 +320,7 @@ pub fn build(b: *std.Build) void {
     } else {
         const mod_tests = b.addTest(.{
             .name = "ness-mod-test",
-            .root_module = mod,
+            .root_module = deps.mod,
             .filters = test_filters,
             .use_llvm = true,
             .test_runner = .{ .path = b.path("src/test_runners/test_runner.zig"), .mode = .simple },

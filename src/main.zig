@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const android = if (builtin.abi.isAndroid()) @import("android") else struct {};
 const ness = @import("ness");
 const logging = ness.logging;
 
@@ -12,13 +14,40 @@ const widgets = ness.ui.widgets;
 const sdlError = ness.sdlError;
 
 pub const std_options: std.Options = .{
-    .logFn = logging.logFn,
+    .logFn = if (builtin.abi.isAndroid()) android.logFn else logging.logFn,
 };
 
 pub const panic = std.debug.FullPanic(customPanic);
 
+comptime {
+    if (builtin.abi.isAndroid()) {
+        @export(&SDL_main, .{ .name = "SDL_main", .linkage = .strong });
+    }
+}
+
+fn SDL_main() callconv(.c) void {
+    if (!comptime builtin.abi.isAndroid()) {
+        @compileError("SDL_main should not be called outside of Android builds");
+    }
+    main() catch |err| {
+        std.log.err("{t}", .{err});
+        if (@errorReturnTrace()) |trace| {
+            std.debug.dumpStackTrace(trace.*);
+        }
+    };
+}
+
 fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     const alloc = std.heap.page_allocator;
+
+    if (builtin.abi.isAndroid()) {
+        const panic_msg = alloc.dupeZ(u8, msg) catch unreachable;
+        defer alloc.free(panic_msg);
+
+        _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik", msg.ptr, null);
+        android.panic.call(panic_msg, first_trace_addr);
+    }
+
     var trace: std.Io.Writer.Allocating = .init(alloc);
     defer trace.deinit();
     const trace_writer = &trace.writer;
