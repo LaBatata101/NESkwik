@@ -581,13 +581,14 @@ fn wrappedGameCardTitleLines(ui: *UI, title: []const u8) u16 {
 }
 
 fn measureGameCardTitleWidth(ui: *UI, text: []const u8) f32 {
-    sdlError(c.TTF_SetFontSize(ui.font, @floatFromInt(14)));
+    const scale = ui.main_window.display_scale;
+    sdlError(c.TTF_SetFontSize(ui.font, 14.0 * scale));
 
     var w: c_int = 0;
     var h: c_int = 0;
     sdlError(c.TTF_GetStringSize(ui.font, text.ptr, text.len, &w, &h));
 
-    return @floatFromInt(w);
+    return @as(f32, @floatFromInt(w)) / scale;
 }
 
 fn formatPlayTime(secs: u64, alloc: std.mem.Allocator) []const u8 {
