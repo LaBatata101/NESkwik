@@ -1764,12 +1764,20 @@ pub const UI = struct {
             return error.GLSlangFailedToInitialize;
         }
 
-        const vk_version = vulkan.detect_vulkan_version();
+        const vk_version = if (builtin.abi.isAndroid())
+            c.VK_MAKE_VERSION(1, 0, 0)
+        else
+            vulkan.detect_vulkan_version();
         std.log.debug("Detected Vulkan version: {}.{}.{}", .{
             c.VK_VERSION_MAJOR(vk_version),
             c.VK_VERSION_MINOR(vk_version),
             c.VK_VERSION_PATCH(vk_version),
         });
+
+        sdlError(c.SDL_SetHint(c.SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0"));
+
+        const props = c.SDL_CreateProperties();
+        defer c.SDL_DestroyProperties(props);
 
         var vkOptions: c.SDL_GPUVulkanOptions = .{
             .vulkan_api_version = c.VK_MAKE_API_VERSION(
@@ -1779,18 +1787,17 @@ pub const UI = struct {
                 c.VK_VERSION_PATCH(vk_version),
             ),
         };
-
-        sdlError(c.SDL_SetHint(c.SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0"));
-
-        const props = c.SDL_CreateProperties();
-        defer c.SDL_DestroyProperties(props);
-
         sdlError(c.SDL_SetPointerProperty(
             props,
             c.SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER,
             @ptrCast(&vkOptions),
         ));
+
         sdlError(c.SDL_SetBooleanProperty(props, c.SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true));
+        if (builtin.abi.isAndroid()) {
+            sdlError(c.SDL_SetBooleanProperty(props, c.SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false));
+        }
+
         sdlError(c.SDL_SetBooleanProperty(
             props,
             c.SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN,
@@ -1843,8 +1850,10 @@ pub const UI = struct {
             "SDL window={}x{} pixels={}x{} scale={} safe_area={any}",
             .{ main_window.window_width, main_window.window_height, main_window.pixel_width, main_window.pixel_height, main_window.display_scale, main_window.safe_area },
         );
-        sdlError(c.SDL_SetWindowMinimumSize(main_window.ptr, 300, 480));
-        setWindowIcon(main_window.ptr);
+        if (!builtin.abi.isAndroid()) {
+            sdlError(c.SDL_SetWindowMinimumSize(main_window.ptr, 300, 480));
+            setWindowIcon(main_window.ptr);
+        }
 
         const shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
         const border_shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
@@ -1868,7 +1877,6 @@ pub const UI = struct {
                 break :blk arr;
             },
         };
-
         // Open any gamepads already connected at startup.
         var gp_count: c_int = 0;
         const gp_ids = c.SDL_GetGamepads(&gp_count);
