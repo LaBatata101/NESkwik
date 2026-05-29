@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const game_history = @import("../game_history.zig");
 const c = @import("../root.zig").c;
@@ -15,6 +16,7 @@ const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
 const paths = @import("../paths.zig");
 const save_state = @import("../save_state.zig");
+const file = @import("../utils/file.zig");
 const ness = @import("../root.zig");
 const sdlError = ness.sdlError;
 
@@ -74,6 +76,7 @@ pub const AppState = struct {
     game_start_time_ms: i64 = 0,
 
     paused: bool = false,
+    lifecycle_suspended: std.atomic.Value(bool) = .init(false),
 
     last_mouse_activity_time: u64,
     is_cursor_hidden: bool = false,
@@ -271,7 +274,11 @@ pub const AppState = struct {
 
         while (!self.emulation_stop.load(.acquire)) {
             self.emulation_lock.lock();
-            const can_run = self.emulation_running and self.system != null and !self.paused and !self.step_mode;
+            const can_run = self.emulation_running and
+                self.system != null and
+                !self.lifecycle_suspended.load(.acquire) and
+                !self.paused and
+                !self.step_mode;
             if (can_run) {
                 const speed = self.settings.emulation_speed;
                 const multiplier = speed.multiplier();
@@ -647,6 +654,19 @@ pub const AppState = struct {
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.paused = !self.paused;
+    }
+
+    pub fn setLifecycleSuspended(self: *Self, suspended: bool) void {
+        if (self.lifecycle_suspended.swap(suspended, .acq_rel) == suspended) return;
+
+        if (suspended) {
+            self.controller1_bits.store(0, .release);
+            self.controller2_bits.store(0, .release);
+        }
+
+        if (self.system) |*system| {
+            system.setAudioPaused(suspended);
+        }
     }
 
     pub fn toggleDebug(self: *Self) void {

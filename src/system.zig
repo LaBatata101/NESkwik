@@ -152,6 +152,10 @@ pub const System = struct {
         self.bus.reset();
     }
 
+    pub fn setAudioPaused(self: *Self, paused: bool) void {
+        self.apu.device.setPaused(paused);
+    }
+
     pub fn is_frame_complete(self: *Self) bool {
         if (self.ppu.frame_complete) {
             self.ppu.frame_complete = false;

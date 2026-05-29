@@ -23,6 +23,7 @@ pub const SDLAudioOut = struct {
     stream: *c.SDL_AudioStream,
     // To disable the audio output when running the test ROMs from CLI.
     disable: bool = false,
+    paused: std.atomic.Value(bool) = .init(false),
     current_speed: f32 = 1.0,
 
     const Self = @This();
@@ -87,12 +88,23 @@ pub const SDLAudioOut = struct {
         _ = c.SDL_SetAudioStreamFormat(self.stream, &src_spec, null);
     }
 
-    pub fn play(self: *Self, buffer: []const Sample) void {
-        if (self.disable) return;
+    pub fn setPaused(self: *Self, paused: bool) void {
+        self.paused.store(paused, .release);
+        self.clearQueuedSamples();
+        if (paused) {
+            _ = c.SDL_PauseAudioStreamDevice(self.stream);
+        } else {
+            _ = c.SDL_ResumeAudioStreamDevice(self.stream);
+        }
+    }
 
-        self.wait(buffer.len);
+    pub fn play(self: *Self, buffer: []const Sample) void {
+        if (self.disable or self.paused.load(.acquire)) return;
+
+        if (!self.wait(buffer.len)) return;
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (self.paused.load(.acquire)) return;
 
         if (self.buffer.too_slow) {
             std.log.warn("SDL: Audio transfer can't keep up", .{});
@@ -121,13 +133,29 @@ pub const SDLAudioOut = struct {
         return @floatFromInt(OUT_SAMPLE_RATE);
     }
 
-    pub fn wait(self: *Self, in_size: usize) void {
+    pub fn wait(self: *Self, in_size: usize) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         while (self.buffer.input_samples + in_size > BUFFER_SIZE) {
+            if (self.paused.load(.acquire)) return false;
             self.cond.wait(&self.mutex);
         }
+
+        return !self.paused.load(.acquire);
+    }
+
+    fn clearQueuedSamples(self: *Self) void {
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            self.buffer.input_samples = 0;
+            self.buffer.input_counter = self.buffer.playback_counter;
+            self.buffer.too_slow = false;
+            self.cond.signal();
+        }
+        _ = c.SDL_ClearAudioStream(self.stream);
     }
 };
 

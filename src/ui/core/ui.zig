@@ -156,6 +156,26 @@ pub const UIContext = struct {
         allocator.destroy(self);
     }
 
+    fn releaseCachedTextures(self: *Self, device: ?*c.SDL_GPUDevice) void {
+        var text_iter = self.text_cache.iterator();
+        while (text_iter.next()) |cached_text| {
+            c.SDL_ReleaseGPUTexture(device, cached_text.value_ptr.texture);
+        }
+        self.text_cache.clearRetainingCapacity();
+
+        var canvas_iter = self.canvas_cache.iterator();
+        while (canvas_iter.next()) |item| {
+            c.SDL_ReleaseGPUTexture(device, item.value_ptr.texture);
+        }
+        self.canvas_cache.clearRetainingCapacity();
+    }
+
+    fn discardFrameMemory(self: *Self) void {
+        _ = self.frame_arena.reset(.free_all);
+        self.frame.text_input = .empty;
+        self.parent_stack = .empty;
+    }
+
     pub fn update(self: *Self) void {
         self.input.update(self.dt);
 
@@ -917,11 +937,11 @@ pub const Renderer = struct {
         };
 
         const pixels = [_]u8{ 255, 255, 255, 255 };
-        const transfer_buffer = c.SDL_CreateGPUTransferBuffer(
+        const transfer_buffer = sdlError(c.SDL_CreateGPUTransferBuffer(
             device,
             &.{ .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 4 },
-        );
-        const map: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(device, transfer_buffer, false));
+        ));
+        const map: [*]u8 = @ptrCast(@alignCast(sdlError(c.SDL_MapGPUTransferBuffer(device, transfer_buffer, false))));
         @memcpy(map[0..4], &pixels);
         c.SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
 
@@ -936,6 +956,16 @@ pub const Renderer = struct {
             .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX,
             .instance_step_rate = 0,
         }};
+        const white_texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
+            .type = c.SDL_GPU_TEXTURETYPE_2D,
+            .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            .width = 1,
+            .height = 1,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        }));
+
         self.* = .{
             .allocator = allocator,
             .device = device,
@@ -943,7 +973,7 @@ pub const Renderer = struct {
             .indices = .empty,
             .draw_calls = .empty,
             .clip_stack = .empty,
-            .current_texture = self.white_texture,
+            .current_texture = white_texture,
             .pipeline = sdlError(c.SDL_CreateGPUGraphicsPipeline(device, &.{
                 .vertex_shader = vert,
                 .fragment_shader = frag,
@@ -963,27 +993,19 @@ pub const Renderer = struct {
                 .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
                 .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
             })),
-            .white_texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
-                .type = c.SDL_GPU_TEXTURETYPE_2D,
-                .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                .width = 1,
-                .height = 1,
-                .layer_count_or_depth = 1,
-                .num_levels = 1,
-                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-            })),
-            .vertex_buffer = c.SDL_CreateGPUBuffer(
+            .white_texture = white_texture,
+            .vertex_buffer = sdlError(c.SDL_CreateGPUBuffer(
                 device,
                 &.{ .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX, .size = 4 },
-            ),
-            .index_buffer = c.SDL_CreateGPUBuffer(
+            )),
+            .index_buffer = sdlError(c.SDL_CreateGPUBuffer(
                 device,
                 &.{ .usage = c.SDL_GPU_BUFFERUSAGE_INDEX, .size = 4 },
-            ),
+            )),
         };
 
-        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(device);
-        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf);
+        const cmd_buf = sdlError(c.SDL_AcquireGPUCommandBuffer(device));
+        const copy_pass = sdlError(c.SDL_BeginGPUCopyPass(cmd_buf));
         var src = c.SDL_GPUTextureTransferInfo{ .transfer_buffer = transfer_buffer };
         var dst = c.SDL_GPUTextureRegion{ .texture = self.white_texture, .w = 1, .h = 1, .d = 1 };
         c.SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
@@ -1711,6 +1733,7 @@ pub const UI = struct {
     quit: bool = false,
     pending_close_window: ?*Window = null,
     fps_manager: FPSManager,
+    app_suspended: bool = false,
 
     shader_pipeline: ?*pipeline.ShaderPipeline = null,
     border_shader_pipeline: ?*pipeline.ShaderPipeline = null,
@@ -1931,6 +1954,10 @@ pub const UI = struct {
         return self.quit;
     }
 
+    pub fn isAppSuspended(self: *const Self) bool {
+        return self.app_suspended;
+    }
+
     pub fn hasPassedSinceMS(self: *const Self, start: u64, ms: u64) bool {
         return self.current_window.ctx.hasPassedSinceMS(start, ms);
     }
@@ -2124,7 +2151,12 @@ pub const UI = struct {
         sdlError(c.SDL_PushEvent(&event));
     }
 
-    pub fn beginFrame(self: *Self) void {
+    pub fn beginFrame(self: *Self) bool {
+        if (self.app_suspended) {
+            self.waitForResumeEvent();
+            if (self.app_suspended or self.quit) return false;
+        }
+
         self.main_window.ctx.reset();
         for (self.secondary_windows.items) |window| {
             window.inner.ctx.reset();
@@ -2145,12 +2177,15 @@ pub const UI = struct {
         while (c.SDL_PollEvent(&event)) {
             self.handleEvent(&event);
         }
+        if (self.app_suspended or self.quit) return false;
+
         self.processPendingWindowClose();
 
         self.main_window.update();
         self.updateGamepadStates(self.main_window.ctx.dt);
 
         clay.beginLayout();
+        return true;
     }
 
     pub fn endFrame(self: *Self) void {
@@ -2231,6 +2266,35 @@ pub const UI = struct {
         for (self.gamepads.items) |*state| state.update(dt);
     }
 
+    fn waitForResumeEvent(self: *Self) void {
+        var event: c.SDL_Event = undefined;
+        if (c.SDL_WaitEventTimeout(&event, 250)) {
+            self.handleEvent(&event);
+        }
+
+        while (c.SDL_PollEvent(&event)) {
+            self.handleEvent(&event);
+        }
+    }
+
+    fn handleLowMemory(self: *Self) void {
+        self.pending_shader_render = null;
+        self.border_shader_rendered_this_frame = false;
+        self.main_window.ctx.discardFrameMemory();
+        self.main_window.renderer.reset();
+        for (self.secondary_windows.items) |window| {
+            window.inner.ctx.discardFrameMemory();
+            window.inner.renderer.reset();
+        }
+
+        if (!self.app_suspended) {
+            self.main_window.ctx.releaseCachedTextures(self.gpu_device);
+            for (self.secondary_windows.items) |window| {
+                window.inner.ctx.releaseCachedTextures(self.gpu_device);
+            }
+        }
+    }
+
     pub fn getGamepadAxis(self: *const Self, gamepad_idx: ControllerPlayer, axis: c.SDL_GamepadAxis) i16 {
         return c.SDL_GetGamepadAxis(self.gamepads.items[gamepad_idx.value()].handle, axis);
     }
@@ -2245,6 +2309,38 @@ pub const UI = struct {
     fn handleEvent(self: *Self, event: *c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_QUIT, c.SDL_EVENT_TERMINATING => {
+                self.quit = true;
+                return;
+            },
+            c.SDL_EVENT_LOW_MEMORY => {
+                self.handleLowMemory();
+                std.log.warn("SDL low-memory event received", .{});
+                return;
+            },
+            c.SDL_EVENT_WILL_ENTER_BACKGROUND => {
+                self.app_suspended = true;
+                self.pending_shader_render = null;
+                self.border_shader_rendered_this_frame = false;
+                std.log.debug("SDL app entering background", .{});
+                return;
+            },
+            c.SDL_EVENT_DID_ENTER_BACKGROUND => {
+                self.app_suspended = true;
+                std.log.debug("SDL app entered background", .{});
+                return;
+            },
+            c.SDL_EVENT_WILL_ENTER_FOREGROUND => {
+                std.log.debug("SDL app entering foreground", .{});
+                return;
+            },
+            c.SDL_EVENT_DID_ENTER_FOREGROUND => {
+                self.app_suspended = false;
+                self.main_window.refreshSizeAndSafeArea();
+                std.log.debug("SDL app entered foreground", .{});
+                return;
+            },
+            c.SDL_EVENT_RENDER_DEVICE_RESET, c.SDL_EVENT_RENDER_DEVICE_LOST => {
+                std.log.err("SDL render device reset/lost; exiting because GPU resource recreation is not implemented", .{});
                 self.quit = true;
                 return;
             },
@@ -2406,18 +2502,21 @@ pub const UI = struct {
             }
         }
 
-        const cmd = c.SDL_AcquireGPUCommandBuffer(self.gpu_device);
+        const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(self.gpu_device));
         var swapchain_tex: ?*c.SDL_GPUTexture = null;
         var win_w: u32 = 0;
         var win_h: u32 = 0;
-        sdlError(c.SDL_WaitAndAcquireGPUSwapchainTexture(
+        _ = c.SDL_WaitAndAcquireGPUSwapchainTexture(
             cmd,
             window.ptr,
             &swapchain_tex,
             &win_w,
             &win_h,
-        ));
-        if (swapchain_tex == null) return;
+        );
+        if (swapchain_tex == null) {
+            sdlError(c.SDL_CancelGPUCommandBuffer(cmd));
+            return;
+        }
 
         const vertices_len: u32 = @intCast(window.renderer.vertices.items.len);
         const indices_len: u32 = @intCast(window.renderer.indices.items.len);
