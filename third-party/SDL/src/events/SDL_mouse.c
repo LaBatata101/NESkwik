@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -188,25 +188,6 @@ static void SDLCALL SDL_PenMouseEventsChanged(void *userdata, const char *name, 
     mouse->pen_mouse_events = SDL_GetStringBoolean(hint, true);
 }
 
-static void SDLCALL SDL_PenTouchEventsChanged(void *userdata, const char *name, const char *oldValue, const char *hint)
-{
-    SDL_Mouse *mouse = (SDL_Mouse *)userdata;
-
-    mouse->pen_touch_events = SDL_GetStringBoolean(hint, true);
-
-    if (mouse->pen_touch_events) {
-        if (!mouse->added_pen_touch_device) {
-            SDL_AddTouch(SDL_PEN_TOUCHID, SDL_TOUCH_DEVICE_DIRECT, "pen_input");
-            mouse->added_pen_touch_device = true;
-        }
-    } else {
-        if (mouse->added_pen_touch_device) {
-            SDL_DelTouch(SDL_PEN_TOUCHID);
-            mouse->added_pen_touch_device = false;
-        }
-    }
-}
-
 static void SDLCALL SDL_MouseAutoCaptureChanged(void *userdata, const char *name, const char *oldValue, const char *hint)
 {
     SDL_Mouse *mouse = (SDL_Mouse *)userdata;
@@ -288,9 +269,6 @@ bool SDL_PreInitMouse(void)
 
     SDL_AddHintCallback(SDL_HINT_PEN_MOUSE_EVENTS,
                         SDL_PenMouseEventsChanged, mouse);
-
-    SDL_AddHintCallback(SDL_HINT_PEN_TOUCH_EVENTS,
-                        SDL_PenTouchEventsChanged, mouse);
 
     SDL_AddHintCallback(SDL_HINT_MOUSE_AUTO_CAPTURE,
                         SDL_MouseAutoCaptureChanged, mouse);
@@ -422,7 +400,7 @@ SDL_MouseID *SDL_GetMice(int *count)
     int i;
     SDL_MouseID *mice;
 
-    mice = (SDL_JoystickID *)SDL_malloc((SDL_mouse_count + 1) * sizeof(*mice));
+    mice = (SDL_MouseID *)SDL_malloc((SDL_mouse_count + 1) * sizeof(*mice));
     if (mice) {
         if (count) {
             *count = SDL_mouse_count;
@@ -1155,9 +1133,6 @@ void SDL_QuitMouse(void)
 
     SDL_RemoveHintCallback(SDL_HINT_PEN_MOUSE_EVENTS,
                         SDL_PenMouseEventsChanged, mouse);
-
-    SDL_RemoveHintCallback(SDL_HINT_PEN_TOUCH_EVENTS,
-                        SDL_PenTouchEventsChanged, mouse);
 
     SDL_RemoveHintCallback(SDL_HINT_MOUSE_AUTO_CAPTURE,
                         SDL_MouseAutoCaptureChanged, mouse);

@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 2023 Max Maisel <max.maisel@posteo.de>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -84,7 +84,7 @@ typedef enum
 	STEAM_BUTTON_LEFTPAD_CLICKED_MASK,  // Left Pressure Click  0x04000000
 	STEAM_LEFT_TRIGGER_MASK,            // Left Trigger Click   0x08000000
     STEAM_RIGHT_AUX_MASK,               // Right Pinky Touch   0x10000000
-	STEAM_LEFT_AUX_MASK,                // Left Pinky Touch    0x20000000 
+	STEAM_LEFT_AUX_MASK,                // Left Pinky Touch    0x20000000
     */
 } TritonButtons;
 
@@ -228,14 +228,20 @@ static void HIDAPI_DriverSteamTriton_HandleBatteryStatus(SDL_HIDAPI_Device *devi
 {
     SDL_PowerState state;
 
-    if (device->is_bluetooth) {
+    switch (pTritonBatteryStatus->ucChargeState) {
+    case k_EChargeStateDischarging:
         state = SDL_POWERSTATE_ON_BATTERY;
-    } else if (IsProteusDongle(device->product_id)) {
-        state = SDL_POWERSTATE_ON_BATTERY;
-    } else if (pTritonBatteryStatus->ucBatteryLevel == 100) {
-        state = SDL_POWERSTATE_CHARGED;
-    } else {
+        break;
+    case k_EChargeStateCharging:
         state = SDL_POWERSTATE_CHARGING;
+        break;
+    case k_EChargeStateChargingDone:
+        state = SDL_POWERSTATE_CHARGED;
+        break;
+    default:
+        // Error state?
+        state = SDL_POWERSTATE_UNKNOWN;
+        break;
     }
     SDL_SendJoystickPowerInfo(joystick, state, pTritonBatteryStatus->ucBatteryLevel);
 }
@@ -380,6 +386,7 @@ static bool HIDAPI_DriverSteamTriton_UpdateDevice(SDL_HIDAPI_Device *device)
 
         switch (data[0]) {
         case ID_TRITON_CONTROLLER_STATE:
+        case ID_TRITON_CONTROLLER_STATE_BLE:
             if (!joystick) {
                 HIDAPI_DriverSteamTriton_SetControllerConnected(device, true);
                 if (device->num_joysticks > 0) {
@@ -431,7 +438,7 @@ static bool HIDAPI_DriverSteamTriton_RumbleJoystick(SDL_HIDAPI_Device *device, S
 {
     int rc;
 
-    //RKRK Not sure about size. Probalby 64+1 is OK for ORs
+    //RKRK Not sure about size. Probably 64+1 is OK for ORs
     Uint8 buffer[HID_RUMBLE_OUTPUT_REPORT_BYTES];
     OutputReportMsg *msg = (OutputReportMsg *)(buffer);
 

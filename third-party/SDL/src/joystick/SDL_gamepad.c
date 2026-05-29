@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -2360,14 +2360,25 @@ static GamepadMapping_t *SDL_PrivateGetGamepadMapping(SDL_JoystickID instance_id
     return mapping;
 }
 
+static bool SDL_PrivateIsGamepadPlatformMatch(const char *platform, size_t platform_len)
+{
+#ifdef SDL_PLATFORM_MACOS
+    // We also accept the older SDL2 platform name for macOS
+    if (SDL_strncasecmp(platform, "Mac OS X", platform_len) == 0) {
+        return true;
+    }
+#endif
+
+    return SDL_strncasecmp(platform, SDL_GetPlatform(), platform_len) == 0;
+}
+
 /*
  * Add or update an entry into the Mappings Database
  */
 int SDL_AddGamepadMappingsFromIO(SDL_IOStream *src, bool closeio)
 {
-    const char *platform = SDL_GetPlatform();
     int gamepads = 0;
-    char *buf, *line, *line_end, *tmp, *comma, line_platform[64];
+    char *buf, *line, *line_end, *tmp, *comma, *platform;
     size_t db_size;
     size_t platform_len;
 
@@ -2396,13 +2407,11 @@ int SDL_AddGamepadMappingsFromIO(SDL_IOStream *src, bool closeio)
             tmp += SDL_GAMEPAD_PLATFORM_FIELD_SIZE;
             comma = SDL_strchr(tmp, ',');
             if (comma) {
-                platform_len = comma - tmp + 1;
-                if (platform_len + 1 < SDL_arraysize(line_platform)) {
-                    SDL_strlcpy(line_platform, tmp, platform_len);
-                    if (SDL_strncasecmp(line_platform, platform, platform_len) == 0 &&
-                        SDL_AddGamepadMapping(line) > 0) {
-                        gamepads++;
-                    }
+                platform = tmp;
+                platform_len = comma - platform;
+                if (SDL_PrivateIsGamepadPlatformMatch(platform, platform_len) &&
+                    SDL_AddGamepadMapping(line) > 0) {
+                    gamepads++;
                 }
             }
         }
@@ -3219,28 +3228,29 @@ bool SDL_IsGamepad(SDL_JoystickID instance_id)
  */
 bool SDL_ShouldIgnoreGamepad(Uint16 vendor_id, Uint16 product_id, Uint16 version, const char *name)
 {
-    int i;
-    for (i = 0; i < SDL_arraysize(SDL_gamepad_blacklist_words); i++) {
-        const struct SDL_GamepadBlacklistWords *blacklist_word = &SDL_gamepad_blacklist_words[i];
+    if (name) {
+        for (int i = 0; i < SDL_arraysize(SDL_gamepad_blacklist_words); i++) {
+            const struct SDL_GamepadBlacklistWords *blacklist_word = &SDL_gamepad_blacklist_words[i];
 
-        switch (blacklist_word->pos) {
-            case GAMEPAD_BLACKLIST_BEGIN:
-                if (SDL_startswith(name, blacklist_word->str)) {
-                    return true;
-                }
-                break;
+            switch (blacklist_word->pos) {
+                case GAMEPAD_BLACKLIST_BEGIN:
+                    if (SDL_startswith(name, blacklist_word->str)) {
+                        return true;
+                    }
+                    break;
 
-            case GAMEPAD_BLACKLIST_END:
-                if (SDL_endswith(name, blacklist_word->str)) {
-                    return true;
-                }
-                break;
+                case GAMEPAD_BLACKLIST_END:
+                    if (SDL_endswith(name, blacklist_word->str)) {
+                        return true;
+                    }
+                    break;
 
-            case GAMEPAD_BLACKLIST_ANYWHERE:
-                if (SDL_strstr(name, blacklist_word->str) != NULL) {
-                    return true;
-                }
-                break;
+                case GAMEPAD_BLACKLIST_ANYWHERE:
+                    if (SDL_strstr(name, blacklist_word->str) != NULL) {
+                        return true;
+                    }
+                    break;
+            }
         }
     }
 
