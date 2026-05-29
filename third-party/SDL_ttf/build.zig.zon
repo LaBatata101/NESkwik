@@ -1,0 +1,26 @@
+.{
+    .name = .sdl_ttf,
+    .version = "3.2.0",
+    .fingerprint = 0xa05f652f9dcd0c1a, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.2",
+
+    .dependencies = .{
+        .freetype = .{
+            .url = "git+https://github.com/LaBatata101/freetype.git#3eb0e4a591bae073f63a1ba6058df313e03e341f",
+            .hash = "freetype-0.0.0-cLfC_1tJcwCa_ASL6vZ0M6TTko4LMHy_eq8TNCpHx8x5",
+        },
+        .sdl = .{
+            .path = "../SDL/",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "include",
+        // For example...
+        //"LICENSE",
+        //"README.md",
+    },
+}
