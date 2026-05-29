@@ -153,7 +153,10 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
         }
     }
 
-    const root = ui.column(.{});
+    const root = ui.column(.{
+        .padding = ui.main_window.safeAreaPadding(),
+        .bg_color = theme.bg_base,
+    });
     {
         if (!ui.isWindowFullscreen()) {
             const menubar = ui.menuBar(.{

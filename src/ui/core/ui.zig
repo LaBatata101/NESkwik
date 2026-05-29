@@ -1567,6 +1567,7 @@ pub const Window = struct {
     window_width: i32,
     window_height: i32,
     display_scale: f32,
+    safe_area: c.SDL_Rect,
     title: []const u8,
 
     fn fullWindowArea(width: i32, height: i32) c.SDL_Rect {
@@ -1588,6 +1589,10 @@ pub const Window = struct {
         self.display_scale = c.SDL_GetWindowDisplayScale(self.ptr);
         self.width = @as(f32, @floatFromInt(self.pixel_width)) / self.display_scale;
         self.height = @as(f32, @floatFromInt(self.pixel_height)) / self.display_scale;
+
+        var safe_area = fullWindowArea(self.window_width, self.window_height);
+        sdlError(c.SDL_GetWindowSafeArea(self.ptr, &safe_area));
+        self.safe_area = safe_area;
     }
 
     fn logicalFromWindowX(self: *const Window, value: f32) f32 {
@@ -1608,6 +1613,17 @@ pub const Window = struct {
 
     fn mouseScaleY(self: *const Window) f32 {
         return self.logicalFromWindowY(1.0);
+    }
+
+    pub fn safeAreaPadding(self: *const Window) clay.Padding {
+        const right_inset = self.window_width - (self.safe_area.x + self.safe_area.w);
+        const bottom_inset = self.window_height - (self.safe_area.y + self.safe_area.h);
+        return .{
+            .left = @intFromFloat(@round(self.logicalFromWindowX(@floatFromInt(self.safe_area.x)))),
+            .right = @intFromFloat(@round(self.logicalFromWindowX(@floatFromInt(right_inset)))),
+            .top = @intFromFloat(@round(self.logicalFromWindowY(@floatFromInt(self.safe_area.y)))),
+            .bottom = @intFromFloat(@round(self.logicalFromWindowY(@floatFromInt(bottom_inset)))),
+        };
     }
 
     fn logicalRectToPixel(self: *const Window, rect: c.SDL_Rect) c.SDL_Rect {
@@ -1863,6 +1879,7 @@ pub const UI = struct {
             .window_width = width,
             .window_height = height,
             .display_scale = 1.0,
+            .safe_area = Window.fullWindowArea(width, height),
             .title = title,
             .ctx = ui_ctx,
             .renderer = try Renderer.init(allocator, gpu_device, main_window.ptr, vk_version),
@@ -2116,6 +2133,7 @@ pub const UI = struct {
             .window_width = width,
             .window_height = height,
             .display_scale = 1.0,
+            .safe_area = Window.fullWindowArea(width, height),
             .title = title,
             .ctx = UIContext.init(
                 self.allocator,
@@ -2424,6 +2442,7 @@ pub const UI = struct {
             },
             c.SDL_EVENT_WINDOW_RESIZED,
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
+            c.SDL_EVENT_WINDOW_SAFE_AREA_CHANGED,
             c.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
             => {
                 self.current_window.refreshSizeAndSafeArea();
