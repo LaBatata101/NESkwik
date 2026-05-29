@@ -105,7 +105,7 @@ fn callFn(f: anytype, args: anytype) void {
             switch (info.payload) {
                 void, noreturn => {
                     @call(.auto, f, args) catch |err| {
-                        std.debug.print("error: {s}\n", .{@errorName(err)});
+                        std.log.err("error: {s}\n", .{@errorName(err)});
                         if (@errorReturnTrace()) |trace| {
                             std.debug.dumpStackTrace(trace.*);
                         }

@@ -1560,7 +1560,7 @@ fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u
     const app_state = clay.anyopaquePtrToType(*AppState, userdata);
 
     if (filelist == null) {
-        std.debug.print("An error ocurred while selecting shader file: {s}\n", .{c.SDL_GetError()});
+        std.log.err("An error ocurred while selecting shader file: {s}\n", .{c.SDL_GetError()});
         return;
     }
     if (filelist.* == null) {
@@ -1678,7 +1678,7 @@ fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]
     const app_state = clay.anyopaquePtrToType(*AppState, userdata);
 
     if (filelist == null) {
-        std.debug.print("An error ocurred while selecting border shader file: {s}\n", .{c.SDL_GetError()});
+        std.log.err("An error ocurred while selecting border shader file: {s}\n", .{c.SDL_GetError()});
         return;
     }
     if (filelist.* == null) {
@@ -1699,7 +1699,7 @@ fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]
 
 fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
     if (filelist == null) {
-        std.debug.print("An error ocurred while selecting the file: {s}\n", .{c.SDL_GetError()});
+        std.log.err("An error ocurred while selecting the file: {s}\n", .{c.SDL_GetError()});
         return;
     }
     if (filelist.* == null) { // A pointer to NULL, the user either didn't choose any file or canceled the dialog.

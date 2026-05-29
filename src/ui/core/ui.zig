@@ -17,7 +17,7 @@ const PIXELOID_FONT = @embedFile("pixeloid_font");
 const APP_ICON = @embedFile("app_icon");
 
 fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
-    std.debug.print("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
+    std.log.err("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
 }
 
 fn measureText(
@@ -1721,7 +1721,7 @@ pub const UI = struct {
 
         const font_bytes = c.SDL_IOFromConstMem(PIXELOID_FONT, PIXELOID_FONT.len);
         const font = c.TTF_OpenFontIO(font_bytes, true, 16) orelse {
-            std.debug.print("Could not load font: {s}\n", .{c.SDL_GetError()});
+            std.log.err("Could not load font: {s}\n", .{c.SDL_GetError()});
             return error.FontLoadFailed;
         };
 

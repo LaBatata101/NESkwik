@@ -793,7 +793,7 @@ fn resolveIncludeRecursive(
             try included_files.put(resolved_path, {});
 
             const file = std.fs.cwd().openFile(resolved_path, .{}) catch |err| {
-                std.debug.print("Failed to open include file: {s}\n", .{resolved_path});
+                std.log.err("Failed to open include file: {s}\n", .{resolved_path});
                 return err;
             };
             const content = try file.readToEndAlloc(alloc, std.math.maxInt(usize));
