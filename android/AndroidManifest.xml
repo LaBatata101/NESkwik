@@ -67,16 +67,10 @@
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
-        android:hardwareAccelerated="true" >
-
-        <!-- Example of setting SDL hints from AndroidManifest.xml:
-        <meta-data android:name="SDL_ENV.SDL_ACCELEROMETER_AS_JOYSTICK" android:value="0"/>
-         -->
-        <meta-data
-            android:name="SDL_ENV.XDG_CACHE_HOME"
-            android:value="/data/user/0/com.labatata.neskwik/cache" />
+        android:hardwareAccelerated="true"
+        >
      
-        <activity android:name=".ZigSDLActivity"
+        <activity android:name="NeskwikActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"

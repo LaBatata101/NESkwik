@@ -29,13 +29,12 @@ pub fn build(b: *std.Build) void {
         apk.setKeyStore(android_sdk.createKeyStore(.example));
         apk.setAndroidManifest(b.path("android/AndroidManifest.xml"));
         apk.addResourceDirectory(b.path("android/res"));
-        apk.addJavaSourceFile(.{ .file = b.path("android/src/ZigSDLActivity.java") });
+        apk.addJavaSourceFile(.{ .file = b.path("android/src/NeskwikActivity.java") });
         addAndroidLibcxxShared(b, apk, android_targets);
 
         const sdl_java_dep = b.dependency("sdl", .{
             .target = android_targets[0],
-            // TODO: investigate why `.ReleaseFast` makes the app crash
-            .optimize = .ReleaseSafe, // NOTE: apart from `.Debug` other release modes doesn't seem to work
+            .optimize = optimize,
             .preferred_linkage = .static,
         });
         const sdl_java_files = sdl_java_dep.namedWriteFiles("sdljava");
@@ -106,7 +105,7 @@ pub fn build(b: *std.Build) void {
 
         const run_step = b.step("run", "Install and run the app on an Android device");
         const adb_install = apk.sdk.addAdbInstall(installed_apk.source);
-        const adb_start = apk.sdk.addAdbStart(package_name ++ "/" ++ package_name ++ ".ZigSDLActivity");
+        const adb_start = apk.sdk.addAdbStart(package_name ++ "/" ++ package_name ++ ".NeskwikActivity");
         adb_start.step.dependOn(&adb_install.step);
         run_step.dependOn(&adb_start.step);
     }
