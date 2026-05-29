@@ -2,7 +2,7 @@ const std = @import("std");
 const android = @import("android");
 
 pub fn build(b: *std.Build) void {
-    const exe_name = "ness";
+    const exe_name = "neskwik";
     const package_name = "com.labatata.neskwik";
 
     const root_target = b.standardTargetOptions(.{});
