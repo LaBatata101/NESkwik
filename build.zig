@@ -229,14 +229,6 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     const vk_headers = b.dependency("vulkan_headers", .{});
     mod.addIncludePath(vk_headers.path("include"));
 
-    if (target.result.os.tag == .windows) {
-        mod.addLibraryPath(.{ .cwd_relative = "third-party/vulkan-windows/lib/" });
-
-        mod.linkSystemLibrary("vulkan-1", .{});
-    } else {
-        mod.linkSystemLibrary("vulkan", .{});
-    }
-
     mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("resources/fonts/PixeloidSans.ttf") });
     mod.addAnonymousImport("nes_controller_img", .{ .root_source_file = b.path("resources/images/nes-controller.png") });
     mod.addAnonymousImport("app_icon", .{ .root_source_file = b.path("resources/icons/nes-icon-256x256.png") });

@@ -1,18 +1,36 @@
 const c = @import("../root.zig").c;
 
+var cached_version: ?c_uint = null;
+
 pub fn detect_vulkan_version() c_uint {
-    const vkProcAddr = c.vkGetInstanceProcAddr(null, "vkEnumerateInstanceVersion");
-    if (vkProcAddr == null) {
-        // Vulkan 1.0 only
-        return c.GLSLANG_TARGET_VULKAN_1_0;
+    if (cached_version) |version| return version;
+
+    const version = detect_vulkan_version_impl();
+    cached_version = version;
+    return version;
+}
+
+fn detect_vulkan_version_impl() c_uint {
+    if (!c.SDL_Vulkan_LoadLibrary(null)) {
+        return c.VK_MAKE_VERSION(1, 0, 0);
     }
-    const vkEnumerateInstanceVersion: *const fn (*u32) callconv(.c) c.VkResult = @ptrCast(vkProcAddr.?);
+
+    const raw_get_proc_addr = c.SDL_Vulkan_GetVkGetInstanceProcAddr() orelse {
+        return c.VK_MAKE_VERSION(1, 0, 0);
+    };
+    const VkGetInstanceProcAddr = *const fn (c.VkInstance, [*c]const u8) callconv(.c) c.PFN_vkVoidFunction;
+    const vkGetInstanceProcAddr: VkGetInstanceProcAddr = @ptrCast(raw_get_proc_addr);
+
+    const raw_enumerate_instance_version = vkGetInstanceProcAddr(null, "vkEnumerateInstanceVersion") orelse {
+        return c.VK_MAKE_VERSION(1, 0, 0);
+    };
+    const VkEnumerateInstanceVersion = *const fn ([*c]u32) callconv(.c) c.VkResult;
+    const vkEnumerateInstanceVersion: VkEnumerateInstanceVersion = @ptrCast(raw_enumerate_instance_version);
 
     var version: u32 = 0;
     if (vkEnumerateInstanceVersion(&version) != c.VK_SUCCESS) {
-        @panic("Failed to get Vulkan version");
+        return c.VK_MAKE_VERSION(1, 0, 0);
     }
-
     return @intCast(version);
 }
 
