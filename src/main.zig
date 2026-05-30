@@ -108,23 +108,24 @@ pub fn main() !void {
 
     ui.setVSync(app_state.settings.vsync);
 
-    _ = args.skip();
-    if (args.next()) |arg0| {
-        if (std.mem.eql(u8, arg0, "--debug")) {
-            app_state.toggleDebug();
+    if (!builtin.abi.isAndroid()) {
+        _ = args.skip();
+        if (args.next()) |arg0| {
+            if (std.mem.eql(u8, arg0, "--debug")) {
+                app_state.toggleDebug();
 
-            if (args.next()) |arg1| {
-                try app_state.loadRom(arg1);
+                if (args.next()) |arg1| {
+                    try app_state.loadRom(arg1);
+                } else {
+                    std.debug.print("ROM file path not provided\n", .{});
+                    std.process.exit(1);
+                }
             } else {
-                std.debug.print("ROM file path not provided\n", .{});
-                std.process.exit(1);
+                try app_state.loadRom(arg0);
             }
-        } else {
-            try app_state.loadRom(arg0);
+            app_state.render_home_ui = false;
         }
-        app_state.render_home_ui = false;
     }
-
     ui.setFramerate(.unlimited);
 
     while (!ui.shouldClose()) {
