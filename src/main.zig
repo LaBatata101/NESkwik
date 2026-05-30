@@ -39,15 +39,6 @@ fn SDL_main() callconv(.c) void {
 
 fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     const alloc = std.heap.page_allocator;
-
-    if (builtin.abi.isAndroid()) {
-        const panic_msg = alloc.dupeZ(u8, msg) catch unreachable;
-        defer alloc.free(panic_msg);
-
-        _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik", msg.ptr, null);
-        android.panic.call(panic_msg, first_trace_addr);
-    }
-
     var trace: std.Io.Writer.Allocating = .init(alloc);
     defer trace.deinit();
     const trace_writer = &trace.writer;
@@ -56,11 +47,15 @@ fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     defer buffer.deinit();
     const writer = &buffer.writer;
 
-    writer.print("The program crashed with the following message:\n\"{s}\"\n\n", .{msg}) catch {};
-    if (logging.path()) |log_path| {
-        writer.print("Check the log file at {s}\n\n", .{log_path}) catch {};
+    if (builtin.abi.isAndroid()) {
+        writer.print("{s}\n", .{msg}) catch {};
     } else {
-        writer.print("Log file unavailable.\n\n", .{}) catch {};
+        writer.print("The program crashed with the following message:\n\"{s}\"\n\n", .{msg}) catch {};
+        if (logging.path()) |log_path| {
+            writer.print("Check the log file at {s}\n\n", .{log_path}) catch {};
+        } else {
+            writer.print("Log file unavailable.\n\n", .{}) catch {};
+        }
     }
 
     if (std.debug.getSelfDebugInfo()) |debug_info| {
@@ -83,7 +78,7 @@ fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     logging.writePanic(buffer.written());
     std.debug.print("{s}", .{panic_msg});
 
-    _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik", panic_msg.ptr, null);
+    _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik Error", panic_msg.ptr, null);
 
     std.process.exit(1);
 }
