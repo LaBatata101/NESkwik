@@ -101,10 +101,9 @@ pub const SDLAudioOut = struct {
     pub fn play(self: *Self, buffer: []const Sample) void {
         if (self.disable or self.paused.load(.acquire)) return;
 
-        if (!self.wait(buffer.len)) return;
+        self.wait(buffer.len);
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.paused.load(.acquire)) return;
 
         if (self.buffer.too_slow) {
             std.log.warn("SDL: Audio transfer can't keep up", .{});
@@ -133,16 +132,13 @@ pub const SDLAudioOut = struct {
         return @floatFromInt(OUT_SAMPLE_RATE);
     }
 
-    pub fn wait(self: *Self, in_size: usize) bool {
+    pub fn wait(self: *Self, in_size: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         while (self.buffer.input_samples + in_size > BUFFER_SIZE) {
-            if (self.paused.load(.acquire)) return false;
             self.cond.wait(&self.mutex);
         }
-
-        return !self.paused.load(.acquire);
     }
 
     fn clearQueuedSamples(self: *Self) void {

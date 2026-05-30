@@ -170,7 +170,7 @@ pub const UIContext = struct {
         self.canvas_cache.clearRetainingCapacity();
     }
 
-    fn discardFrameMemory(self: *Self) void {
+    fn freeFrameArena(self: *Self) void {
         _ = self.frame_arena.reset(.free_all);
         self.frame.text_input = .empty;
         self.parent_stack = .empty;
@@ -1045,6 +1045,14 @@ pub const Renderer = struct {
         }) catch @panic("Failed to allocate");
     }
 
+    fn releaseMemory(self: *Self) void {
+        self.vertices.clearAndFree(self.allocator);
+        self.indices.clearAndFree(self.allocator);
+        self.draw_calls.clearAndFree(self.allocator);
+        self.clip_stack.clearAndFree(self.allocator);
+        // TODO: free `current_texture`??
+    }
+
     fn flush(self: *Self) void {
         const last = &self.draw_calls.items[self.draw_calls.items.len - 1];
 
@@ -1749,7 +1757,7 @@ pub const UI = struct {
     quit: bool = false,
     pending_close_window: ?*Window = null,
     fps_manager: FPSManager,
-    app_suspended: bool = false,
+    is_suspended: bool = false,
 
     shader_pipeline: ?*pipeline.ShaderPipeline = null,
     border_shader_pipeline: ?*pipeline.ShaderPipeline = null,
@@ -1968,11 +1976,20 @@ pub const UI = struct {
 
     pub fn shouldClose(self: *Self) bool {
         self.current_window.ctx.dt = @as(f32, @floatFromInt(self.fps_manager.delay())) / c.SDL_MS_PER_SECOND;
-        return self.quit;
-    }
 
-    pub fn isAppSuspended(self: *const Self) bool {
-        return self.app_suspended;
+        // Stop rendering if the Android app goes to background
+        if (builtin.abi.isAndroid() and self.is_suspended) {
+            var event: c.SDL_Event = undefined;
+            while (true) {
+                while (c.SDL_PollEvent(&event)) {
+                    self.handleEvent(&event);
+                }
+                if (!self.is_suspended) break;
+                c.SDL_Delay(1);
+            }
+        }
+
+        return self.quit;
     }
 
     pub fn hasPassedSinceMS(self: *const Self, start: u64, ms: u64) bool {
@@ -2140,7 +2157,12 @@ pub const UI = struct {
                 .{ .w = @floatFromInt(width), .h = @floatFromInt(height) },
                 CLAY_ERROR_HANDLER,
             ) catch @panic("OOM"),
-            .renderer = Renderer.init(self.allocator, self.gpu_device, window.ptr, vulkan.detect_vulkan_version()) catch @panic("OOM"),
+            .renderer = Renderer.init(
+                self.allocator,
+                self.gpu_device,
+                window.ptr,
+                vulkan.detect_vulkan_version(),
+            ) catch @panic("OOM"),
         };
         window.refreshSizeAndSafeArea();
 
@@ -2169,12 +2191,7 @@ pub const UI = struct {
         sdlError(c.SDL_PushEvent(&event));
     }
 
-    pub fn beginFrame(self: *Self) bool {
-        if (self.app_suspended) {
-            self.waitForResumeEvent();
-            if (self.app_suspended or self.quit) return false;
-        }
-
+    pub fn beginFrame(self: *Self) void {
         self.main_window.ctx.reset();
         for (self.secondary_windows.items) |window| {
             window.inner.ctx.reset();
@@ -2195,7 +2212,6 @@ pub const UI = struct {
         while (c.SDL_PollEvent(&event)) {
             self.handleEvent(&event);
         }
-        if (self.app_suspended or self.quit) return false;
 
         self.processPendingWindowClose();
 
@@ -2203,7 +2219,6 @@ pub const UI = struct {
         self.updateGamepadStates(self.main_window.ctx.dt);
 
         clay.beginLayout();
-        return true;
     }
 
     pub fn endFrame(self: *Self) void {
@@ -2284,28 +2299,17 @@ pub const UI = struct {
         for (self.gamepads.items) |*state| state.update(dt);
     }
 
-    fn waitForResumeEvent(self: *Self) void {
-        var event: c.SDL_Event = undefined;
-        if (c.SDL_WaitEventTimeout(&event, 250)) {
-            self.handleEvent(&event);
-        }
-
-        while (c.SDL_PollEvent(&event)) {
-            self.handleEvent(&event);
-        }
-    }
-
-    fn handleLowMemory(self: *Self) void {
+    fn handleAndroidLowMemory(self: *Self) void {
         self.pending_shader_render = null;
         self.border_shader_rendered_this_frame = false;
-        self.main_window.ctx.discardFrameMemory();
-        self.main_window.renderer.reset();
+        self.main_window.ctx.freeFrameArena();
+        self.main_window.renderer.releaseMemory();
         for (self.secondary_windows.items) |window| {
-            window.inner.ctx.discardFrameMemory();
-            window.inner.renderer.reset();
+            window.inner.ctx.freeFrameArena();
+            window.inner.renderer.releaseMemory();
         }
 
-        if (!self.app_suspended) {
+        if (!self.is_suspended) {
             self.main_window.ctx.releaseCachedTextures(self.gpu_device);
             for (self.secondary_windows.items) |window| {
                 window.inner.ctx.releaseCachedTextures(self.gpu_device);
@@ -2331,35 +2335,20 @@ pub const UI = struct {
                 return;
             },
             c.SDL_EVENT_LOW_MEMORY => {
-                self.handleLowMemory();
-                std.log.warn("SDL low-memory event received", .{});
+                self.handleAndroidLowMemory();
                 return;
             },
-            c.SDL_EVENT_WILL_ENTER_BACKGROUND => {
-                self.app_suspended = true;
+            c.SDL_EVENT_WILL_ENTER_BACKGROUND => { // TODO: pause the emulation on background
+                self.is_suspended = true;
                 self.pending_shader_render = null;
                 self.border_shader_rendered_this_frame = false;
-                std.log.debug("SDL app entering background", .{});
+                std.log.debug("GOING TO BACKGROUND", .{});
                 return;
             },
-            c.SDL_EVENT_DID_ENTER_BACKGROUND => {
-                self.app_suspended = true;
-                std.log.debug("SDL app entered background", .{});
-                return;
-            },
-            c.SDL_EVENT_WILL_ENTER_FOREGROUND => {
-                std.log.debug("SDL app entering foreground", .{});
-                return;
-            },
+            c.SDL_EVENT_DID_ENTER_BACKGROUND => return,
+            c.SDL_EVENT_WILL_ENTER_FOREGROUND => return,
             c.SDL_EVENT_DID_ENTER_FOREGROUND => {
-                self.app_suspended = false;
-                self.main_window.refreshSizeAndSafeArea();
-                std.log.debug("SDL app entered foreground", .{});
-                return;
-            },
-            c.SDL_EVENT_RENDER_DEVICE_RESET, c.SDL_EVENT_RENDER_DEVICE_LOST => {
-                std.log.err("SDL render device reset/lost; exiting because GPU resource recreation is not implemented", .{});
-                self.quit = true;
+                self.is_suspended = false;
                 return;
             },
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {

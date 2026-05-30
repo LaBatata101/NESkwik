@@ -127,20 +127,8 @@ pub fn main() !void {
 
     ui.setFramerate(.unlimited);
 
-    var lifecycle_suspended = false;
     while (!ui.shouldClose()) {
-        if (!ui.beginFrame()) {
-            if (lifecycle_suspended != ui.isAppSuspended()) {
-                lifecycle_suspended = ui.isAppSuspended();
-                app_state.setLifecycleSuspended(lifecycle_suspended);
-            }
-            continue;
-        }
-
-        if (lifecycle_suspended != ui.isAppSuspended()) {
-            lifecycle_suspended = ui.isAppSuspended();
-            app_state.setLifecycleSuspended(lifecycle_suspended);
-        }
+        ui.beginFrame();
 
         app_state.update(ui);
         gui.drawGUI(ui, &app_state);
