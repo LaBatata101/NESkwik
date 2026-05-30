@@ -31,6 +31,8 @@ const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const NES_CONTROLLER_IMG = @embedFile("nes_controller_img");
 const NO_FRAME: u8 = std.math.maxInt(u8);
 const CURSOR_HIDE_DELAY_MS = 3000;
+const NES_TARGET_FPS: u64 = 60;
+const SPEED_SAMPLE_MS: u64 = 1000;
 
 const ControllerPlayer = bindings.ControllerPlayer;
 const ControllerAction = bindings.ControllerAction;
@@ -99,6 +101,8 @@ pub const AppState = struct {
     /// Last border shader load error message (owned).
     border_shader_error: ?[]u8 = null,
 
+    show_fps: bool = false,
+
     settings: EmulatorSettings = .{},
     saved_settings: EmulatorSettings = .{},
     config_dir: ?[]u8 = null,
@@ -113,6 +117,7 @@ pub const AppState = struct {
     ui_frame_idx: std.atomic.Value(u8) = .init(0),
     writing_frame_idx: std.atomic.Value(u8) = .init(NO_FRAME),
     render_frame_idx: u8 = 0,
+    emulation_speed_percent: std.atomic.Value(u64) = .init(0),
 
     const Self = @This();
     pub const DebugSnapshot = struct {
@@ -272,6 +277,8 @@ pub const AppState = struct {
 
     fn emulationThreadMain(self: *Self) void {
         var frame_acc: f32 = 0.0;
+        var speed_frame_count: u64 = 0;
+        var speed_window_start: u64 = c.SDL_GetTicks();
 
         while (!self.emulation_stop.load(.acquire)) {
             self.emulation_lock.lock();
@@ -292,14 +299,26 @@ pub const AppState = struct {
                     self.system.?.applyControllerSnapshot(self.controllerSnapshot());
                     self.system.?.run_frame();
                     self.publishFrame(self.system.?.frame_buffer());
+                    speed_frame_count += 1;
                 }
-            } else {
-                frame_acc = 0.0;
+
+                const now = c.SDL_GetTicks();
+                const diff = now -% speed_window_start;
+                if (diff >= SPEED_SAMPLE_MS) {
+                    const percent = @divFloor(speed_frame_count * c.SDL_MS_PER_SECOND * 100, diff * NES_TARGET_FPS);
+                    self.emulation_speed_percent.store(percent, .release);
+                    speed_frame_count = 0;
+                    speed_window_start = now;
+                }
             }
             self.emulation_lock.unlock();
 
             c.SDL_Delay(1);
         }
+    }
+
+    pub fn currentEmulationSpeedPercent(self: *const Self) u64 {
+        return self.emulation_speed_percent.load(.acquire);
     }
 
     fn publishFrame(self: *Self, pixels: []const u8) void {

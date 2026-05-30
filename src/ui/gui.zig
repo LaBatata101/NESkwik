@@ -296,6 +296,14 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 }).clicked(ui.main_window.ctx)) {
                     app_state.toggleDebug();
                 }
+                if (ui.menuItem(.{
+                    .label = if (app_state.show_fps) "Hide FPS" else "Show FPS",
+                    .bg_color = theme.bg_section,
+                    .hover_color = theme.accent_blue,
+                    .text_color = theme.text_secondary,
+                }).clicked(ui.main_window.ctx)) {
+                    app_state.show_fps = !app_state.show_fps;
+                }
                 _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
 
                 if (ui.menuItem(.{
@@ -314,6 +322,28 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 emulation_menu.end();
             }
             menubar.end();
+
+        if (app_state.show_fps) {
+            const f = ui.float(.{
+                .attach_to = .to_element_with_id,
+                .z_index = 5,
+                .parentId = root.id.id,
+                .attach_points = .{ .parent = .left_top, .element = .left_top },
+                .offset = .{
+                    .x = 5 + @as(f32, @floatFromInt(window_safe_padding.left)),
+                    .y = 30 + @as(f32, @floatFromInt(window_safe_padding.bottom)),
+                },
+            });
+            _ = ui.label(.{
+                .text = std.fmt.allocPrint(
+                    ui.main_window.ctx.frameAlloc(),
+                    "FPS: {}\nSpeed: {}%",
+                    .{ ui.fps_manager.getFPS(), app_state.currentEmulationSpeedPercent() },
+                ) catch @panic("OOM"),
+                .font_size = 20,
+                .color = .red,
+            });
+            f.end();
         }
 
         if (app_state.render_home_ui) {
