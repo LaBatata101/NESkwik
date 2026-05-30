@@ -132,7 +132,6 @@ pub const GameHistory = struct {
         const data_dir_path = self.data_dir orelse return error.DataDirUnavailable;
         const hist_dir_path = try std.fs.path.join(alloc, &.{ data_dir_path, HISTORY_SUBDIR });
 
-        // Ensure <data-dir>/ness exists (single level; its parent always exists).
         std.fs.makeDirAbsolute(data_dir_path) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
@@ -141,7 +140,7 @@ pub const GameHistory = struct {
         var data_dir = try std.fs.openDirAbsolute(data_dir_path, .{});
         defer data_dir.close();
 
-        // Ensure <data-dir>/ness/history exists.
+        // Ensure <data-dir>/neskwik/history exists.
         data_dir.makeDir(HISTORY_SUBDIR) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,

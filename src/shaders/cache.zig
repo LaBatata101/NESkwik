@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const paths = @import("../paths.zig");
 
 const MAGIC: [4]u8 = "NSHC".*;
 const VERSION: u32 = 1;
@@ -16,17 +17,31 @@ pub const SpirvPair = struct {
 
 pub const ShaderCache = struct {
     alloc: std.mem.Allocator,
-    dir: []u8,
+    dir: std.fs.Dir,
+
+    const SHADERS_SUBDIR = "shaders";
 
     pub fn init(alloc: std.mem.Allocator) !ShaderCache {
-        const dir = try cacheDir(alloc);
-        errdefer alloc.free(dir);
-        try makeDirAll(dir);
-        return .{ .alloc = alloc, .dir = dir };
+        const cache_path = try paths.getCacheDir(alloc);
+        defer alloc.free(cache_path);
+
+        std.fs.makeDirAbsolute(cache_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        const cache_dir = try std.fs.openDirAbsolute(cache_path, .{});
+
+        cache_dir.makeDir(SHADERS_SUBDIR) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        return .{ .alloc = alloc, .dir = cache_dir };
     }
 
     pub fn deinit(self: *ShaderCache) void {
-        self.alloc.free(self.dir);
+        self.dir.close();
     }
 
     /// Hash of (vk_version, glsl_version, vertex_src, fragment_src).
@@ -48,29 +63,27 @@ pub const ShaderCache = struct {
 
     /// Returns the cached SPIR-V pair, or null on miss. Caller owns the slices.
     pub fn lookup(self: *const ShaderCache, alloc: std.mem.Allocator, key: [32]u8) ?SpirvPair {
-        const path = self.entryPath(key) catch return null;
-        defer self.alloc.free(path);
-        const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+        const filename = self.spirv_filename(key) catch return null;
+        defer self.alloc.free(filename);
+
+        const file = self.dir.openFile(filename, .{}) catch return null;
         defer file.close();
         return readEntry(alloc, file) catch null;
     }
 
     /// Stores the SPIR-V pair.
     pub fn store(self: *const ShaderCache, key: [32]u8, vert: []const u8, frag: []const u8) !void {
-        const path = try self.entryPath(key);
-        defer self.alloc.free(path);
-        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+        const filename = try self.spirv_filename(key);
+        defer self.alloc.free(filename);
+
+        const file = try self.dir.createFile(filename, .{});
         defer file.close();
         try writeEntry(file, vert, frag);
     }
 
-    fn entryPath(self: *const ShaderCache, key: [32]u8) ![]u8 {
+    fn spirv_filename(self: *const ShaderCache, key: [32]u8) ![]u8 {
         const hex = std.fmt.bytesToHex(key, .lower);
-        return std.fmt.allocPrint(
-            self.alloc,
-            "{s}" ++ std.fs.path.sep_str ++ "{s}.spirv",
-            .{ self.dir, &hex },
-        );
+        return std.fmt.allocPrint(self.alloc, "{s}.spirv", .{&hex});
     }
 };
 
@@ -113,47 +126,4 @@ fn writeEntry(file: std.fs.File, vert: []const u8, frag: []const u8) !void {
     std.mem.writeInt(u32, &len_buf, @intCast(frag.len), .little);
     try file.writeAll(&len_buf);
     try file.writeAll(frag);
-}
-
-/// Creates `path` and all missing parent directories.
-fn makeDirAll(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
-        error.PathAlreadyExists => return,
-        error.FileNotFound => {
-            const parent = std.fs.path.dirname(path) orelse return error.FileNotFound;
-            try makeDirAll(parent);
-            try std.fs.makeDirAbsolute(path);
-        },
-        else => return err,
-    };
-}
-
-/// Returns the OS-appropriate shader cache directory (owned by caller).
-fn cacheDir(alloc: std.mem.Allocator) ![]u8 {
-    // Subdirectory appended to the OS base cache path.
-    const rel = "nesskwik" ++ std.fs.path.sep_str ++ "shaders";
-
-    switch (builtin.os.tag) {
-        .windows => {
-            const base = std.process.getEnvVarOwned(alloc, "LOCALAPPDATA") catch
-                try std.process.getEnvVarOwned(alloc, "APPDATA");
-            defer alloc.free(base);
-            return std.fmt.allocPrint(alloc, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ base, rel });
-        },
-        .macos => {
-            const home = try std.process.getEnvVarOwned(alloc, "HOME");
-            defer alloc.free(home);
-            return std.fmt.allocPrint(alloc, "{s}/Library/Caches/{s}", .{ home, rel });
-        },
-        else => {
-            // XDG_CACHE_HOME takes priority; fall back to ~/.cache.
-            if (std.process.getEnvVarOwned(alloc, "XDG_CACHE_HOME") catch null) |xdg| {
-                defer alloc.free(xdg);
-                return std.fmt.allocPrint(alloc, "{s}/{s}", .{ xdg, rel });
-            }
-            const home = try std.process.getEnvVarOwned(alloc, "HOME");
-            defer alloc.free(home);
-            return std.fmt.allocPrint(alloc, "{s}/.cache/{s}", .{ home, rel });
-        },
-    }
 }

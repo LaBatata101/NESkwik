@@ -17,6 +17,7 @@ const settings = @import("settings.zig");
 const paths = @import("../paths.zig");
 const save_state = @import("../save_state.zig");
 const file = @import("../utils/file.zig");
+const android = @import("../utils/android.zig");
 const ness = @import("../root.zig");
 const sdlError = ness.sdlError;
 
@@ -551,7 +552,14 @@ pub const AppState = struct {
 
     fn saveCurrentGame(self: *Self) void {
         const path = self.current_rom_path orelse return;
-        const name = std.fs.path.stem(path);
+        const name = if (builtin.abi.isAndroid()) blk: {
+            const name = android.displayName(self.alloc, path) catch |err|
+                {
+                    std.log.err("Failed to get ROM name: {s}", .{@errorName(err)});
+                    break :blk "UNKNOW";
+                };
+            break :blk name orelse "UNKNOW";
+        } else std.fs.path.stem(path);
 
         const elapsed_ms = std.time.milliTimestamp() - self.game_start_time_ms;
         const elapsed_secs: u64 = if (elapsed_ms > 0) @intCast(@divFloor(elapsed_ms, 1000)) else 0;
