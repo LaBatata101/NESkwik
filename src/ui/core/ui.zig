@@ -89,6 +89,13 @@ const CanvasCacheItem = struct {
     height: u32,
 };
 
+const MAX_ACTIVE_TOUCHES = 5;
+const FingerState = struct {
+    down: bool = false,
+    x: f32 = 0,
+    y: f32 = 0,
+};
+
 pub const UIContext = struct {
     /// The time between the current and previous frame.
     dt: f32,
@@ -110,6 +117,7 @@ pub const UIContext = struct {
     mouse_y: f32 = 0,
     prev_mouse_x: f32 = 0,
     prev_mouse_y: f32 = 0,
+    fingers: [MAX_ACTIVE_TOUCHES]FingerState,
 
     frame_arena: std.heap.ArenaAllocator,
     persistent_arena: std.heap.ArenaAllocator,
@@ -143,6 +151,7 @@ pub const UIContext = struct {
         ctx.canvas_cache = std.AutoArrayHashMap(u32, CanvasCacheItem).init(persistent_arena_alloc);
 
         ctx.input = InputContext.init();
+        ctx.fingers = [_]FingerState{.{}} ** MAX_ACTIVE_TOUCHES;
 
         return ctx;
     }
@@ -320,6 +329,49 @@ pub const UIContext = struct {
 
         self.frame.mouse_delta.x += dx;
         self.frame.mouse_delta.y += dy;
+    }
+
+    fn setFingerDown(self: *Self, finger_id: c.SDL_FingerID, value: bool) void {
+        if (finger_id > MAX_ACTIVE_TOUCHES) {
+            std.log.warn("FingerID: {} greater than supported MAX_ACTIVE_TOUCHES", .{finger_id});
+            return;
+        }
+
+        // SDL finger ID starts at 1
+        self.fingers[finger_id - 1].down = value;
+    }
+
+    fn setFingerPos(self: *Self, finger_id: c.SDL_FingerID, x: f32, y: f32) void {
+        if (finger_id > MAX_ACTIVE_TOUCHES) {
+            std.log.warn("FingerID: {} greater than supported MAX_ACTIVE_TOUCHES", .{finger_id});
+            return;
+        }
+
+        self.fingers[finger_id - 1].x = x;
+        self.fingers[finger_id - 1].y = y;
+    }
+
+    fn hasFingerDown(self: *const Self) bool {
+        for (self.fingers) |finger| {
+            if (finger.down) return true;
+        }
+        return false;
+    }
+
+    pub fn activeFingerOverElement(self: *const Self, id: clay.ElementId) bool {
+        const data = clay.getElementData(id);
+        if (!data.found) return false;
+
+        for (self.fingers) |finger| {
+            if (finger.down and pointInBox(.{ .x = finger.x, .y = finger.y }, data.bounding_box)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn pointInBox(point: clay.Vector2, box: clay.BoundingBox) bool {
+        return point.x >= box.x and point.x <= box.x + box.width and point.y >= box.y and point.y <= box.y + box.height;
     }
 
     fn mouseMotion(self: *const Self) bool {
@@ -1690,8 +1742,11 @@ pub const Window = struct {
         };
     }
 
-    fn activateMeasureScale(self: *const Window) void {
-        active_measure_scale = self.display_scale;
+    fn logicalTouchOffset(self: *const Window, x: f32, y: f32) clay.Vector2 {
+        return .{
+            .x = x * @as(f32, @floatFromInt(self.window_width)) * self.mouseScaleX(),
+            .y = y * @as(f32, @floatFromInt(self.window_height)) * self.mouseScaleY(),
+        };
     }
 
     fn deinit(self: *@This(), alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
@@ -2444,7 +2499,7 @@ pub const UI = struct {
         }
 
         // Only process the events of the focused window
-        if (event.window.windowID == self.current_window.id()) {
+        if (event.window.windowID == self.current_window.id() or event.tfinger.windowID == self.current_window.id()) {
             self.handleWindowEvent(event);
         }
     }
@@ -2472,6 +2527,26 @@ pub const UI = struct {
                 self.current_window.mouseScaleX(),
                 self.current_window.mouseScaleY(),
             ),
+            c.SDL_EVENT_FINGER_DOWN => {
+                const pos = self.current_window.logicalTouchOffset(event.tfinger.x, event.tfinger.y);
+
+                self.current_window.ctx.setFingerPos(event.tfinger.fingerID, pos.x, pos.y);
+                self.current_window.ctx.setFingerDown(event.tfinger.fingerID, true);
+                self.current_window.ctx.frame.mouse_pressed = true;
+                self.current_window.ctx.frame.mouse_down = true;
+            },
+            c.SDL_EVENT_FINGER_UP, c.SDL_EVENT_FINGER_CANCELED => {
+                self.current_window.ctx.setFingerDown(event.tfinger.fingerID, false);
+
+                self.current_window.ctx.frame.mouse_released = true;
+                self.current_window.ctx.frame.mouse_down = self.current_window.ctx.hasFingerDown();
+            },
+            c.SDL_EVENT_FINGER_MOTION => {
+                const touch = event.tfinger;
+                const pos = self.current_window.logicalTouchOffset(touch.x, touch.y);
+                const delta = self.current_window.logicalTouchOffset(touch.dx, touch.dy);
+
+                self.current_window.ctx.updatePointerPosition(pos.x, pos.y, delta.x, delta.y);
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
