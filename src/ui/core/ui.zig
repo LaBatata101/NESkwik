@@ -16,29 +16,39 @@ const ControllerPlayer = @import("../bindings.zig").ControllerPlayer;
 const PIXELOID_FONT = @embedFile("pixeloid_font");
 const APP_ICON = @embedFile("app_icon");
 
-var active_measure_scale: f32 = 1.0;
-
 fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
     std.log.err("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
 }
 
-fn measureText(
-    text: []const u8,
-    config: *clay.TextElementConfig,
-    user_data: *c.TTF_Font,
-) clay.Dimensions {
-    const font = user_data;
-    const scale = active_measure_scale;
-    sdlError(c.TTF_SetFontSize(font, @as(f32, @floatFromInt(config.font_size)) * scale));
+const FontUserData = struct {
+    font: *c.TTF_Font,
+    scale: *const f32,
 
-    var w: c_int = 0;
-    var h: c_int = 0;
-    sdlError(c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h));
+    fn effectiveScale(self: *const @This()) f32 {
+        return self.scale.*;
+    }
 
-    return clay.Dimensions{
-        .w = @as(f32, @floatFromInt(w)) / scale,
-        .h = @as(f32, @floatFromInt(h)) / scale,
-    };
+    fn setLogicalSize(self: *const @This(), font_size: u16) void {
+        sdlError(c.TTF_SetFontSize(self.font, @as(f32, @floatFromInt(font_size)) * self.effectiveScale()));
+    }
+
+    fn measure(self: *const @This(), text: []const u8, font_size: u16) clay.Dimensions {
+        self.setLogicalSize(font_size);
+
+        var w: c_int = 0;
+        var h: c_int = 0;
+        sdlError(c.TTF_GetStringSize(self.font, text.ptr, text.len, &w, &h));
+
+        const scale = self.effectiveScale();
+        return .{
+            .w = @as(f32, @floatFromInt(w)) / scale,
+            .h = @as(f32, @floatFromInt(h)) / scale,
+        };
+    }
+};
+
+fn measureText(text: []const u8, config: *clay.TextElementConfig, user_data: *const FontUserData) clay.Dimensions {
+    return user_data.measure(text, config.font_size);
 }
 
 pub fn setMouseCursorText(value: bool) void {
@@ -293,14 +303,23 @@ pub const UIContext = struct {
         return w;
     }
 
-    fn updateMousePosScaled(self: *Self, motion: c.SDL_MouseMotionEvent, scale_x: f32, scale_y: f32) void {
+    fn updateMousePos(self: *Self, motion: c.SDL_MouseMotionEvent, scale_x: f32, scale_y: f32) void {
+        self.updatePointerPosition(
+            motion.x * scale_x,
+            motion.y * scale_y,
+            motion.xrel * scale_x,
+            motion.yrel * scale_y,
+        );
+    }
+
+    fn updatePointerPosition(self: *Self, x: f32, y: f32, dx: f32, dy: f32) void {
         self.prev_mouse_x = self.mouse_x;
         self.prev_mouse_y = self.mouse_y;
-        self.mouse_x = motion.x * scale_x;
-        self.mouse_y = motion.y * scale_y;
+        self.mouse_x = x;
+        self.mouse_y = y;
 
-        self.frame.mouse_delta.x += motion.xrel * scale_x;
-        self.frame.mouse_delta.y += motion.yrel * scale_y;
+        self.frame.mouse_delta.x += dx;
+        self.frame.mouse_delta.y += dy;
     }
 
     fn mouseMotion(self: *const Self) bool {
@@ -1568,49 +1587,48 @@ pub const Window = struct {
     ctx: *UIContext,
     ptr: ?*c.SDL_Window,
     renderer: *Renderer,
-    width: f32,
-    height: f32,
-    pixel_width: u32,
-    pixel_height: u32,
+    /// Logical UI width in Clay/render units, derived from `pixel_width / display_scale`.
+    logical_width: f32,
+    /// Logical UI height in Clay/render units, derived from `pixel_height / display_scale`.
+    logical_height: f32,
+    /// Drawable framebuffer width in physical pixels.
+    pixel_width: i32,
+    /// Drawable framebuffer height in physical pixels.
+    pixel_height: i32,
+    /// SDL window width in window/screen coordinates, used by input events.
     window_width: i32,
+    /// SDL window height in window/screen coordinates, used by input events.
     window_height: i32,
+    /// Scale factor between logical UI units and physical drawable pixels.
     display_scale: f32,
     safe_area: c.SDL_Rect,
     title: []const u8,
+    font_user_data: FontUserData,
 
     fn fullWindowArea(width: i32, height: i32) c.SDL_Rect {
         return .{ .x = 0, .y = 0, .w = width, .h = height };
     }
 
-    fn refreshSizeAndSafeArea(self: *Window) void {
+    fn updateWindowSize(self: *Window) void {
+        self.display_scale = currentDisplayScale(self.ptr);
+
         sdlError(c.SDL_GetWindowSize(self.ptr, &self.window_width, &self.window_height));
+        sdlError(c.SDL_GetWindowSizeInPixels(self.ptr, &self.pixel_width, &self.pixel_height));
 
-        var pixel_width: i32 = 0;
-        var pixel_height: i32 = 0;
-        if (!c.SDL_GetWindowSizeInPixels(self.ptr, &pixel_width, &pixel_height)) {
-            pixel_width = self.window_width;
-            pixel_height = self.window_height;
-        }
-        self.pixel_width = @intCast(pixel_width);
-        self.pixel_height = @intCast(pixel_height);
+        self.logical_width = @as(f32, @floatFromInt(self.pixel_width)) / self.display_scale;
+        self.logical_height = @as(f32, @floatFromInt(self.pixel_height)) / self.display_scale;
+    }
 
-        self.display_scale = c.SDL_GetWindowDisplayScale(self.ptr);
-        self.width = @as(f32, @floatFromInt(self.pixel_width)) / self.display_scale;
-        self.height = @as(f32, @floatFromInt(self.pixel_height)) / self.display_scale;
-
-        var safe_area = fullWindowArea(self.window_width, self.window_height);
-        sdlError(c.SDL_GetWindowSafeArea(self.ptr, &safe_area));
-        self.safe_area = safe_area;
+    fn currentDisplayScale(window: ?*c.SDL_Window) f32 {
+        return c.SDL_GetWindowDisplayScale(window);
     }
 
     fn logicalFromWindowX(self: *const Window, value: f32) f32 {
-        if (self.window_width <= 0) return value / self.display_scale;
         const pixel_density = @as(f32, @floatFromInt(self.pixel_width)) / @as(f32, @floatFromInt(self.window_width));
         return value * pixel_density / self.display_scale;
     }
 
     fn logicalFromWindowY(self: *const Window, value: f32) f32 {
-        if (self.window_height <= 0) return value / self.display_scale;
         const pixel_density = @as(f32, @floatFromInt(self.pixel_height)) / @as(f32, @floatFromInt(self.window_height));
         return value * pixel_density / self.display_scale;
     }
@@ -1635,28 +1653,40 @@ pub const Window = struct {
     }
 
     fn logicalRectToPixel(self: *const Window, rect: c.SDL_Rect) c.SDL_Rect {
-        const x = @as(f32, @floatFromInt(rect.x)) * self.display_scale;
-        const y = @as(f32, @floatFromInt(rect.y)) * self.display_scale;
-        const right = @as(f32, @floatFromInt(rect.x + rect.w)) * self.display_scale;
-        const bottom = @as(f32, @floatFromInt(rect.y + rect.h)) * self.display_scale;
-        return .{
-            .x = @intFromFloat(@floor(x)),
-            .y = @intFromFloat(@floor(y)),
-            .w = @intFromFloat(@ceil(right) - @floor(x)),
-            .h = @intFromFloat(@ceil(bottom) - @floor(y)),
-        };
+        return self.logicalBoundsToPixel(
+            @floatFromInt(rect.x),
+            @floatFromInt(rect.y),
+            @floatFromInt(rect.w),
+            @floatFromInt(rect.h),
+        );
     }
 
     fn logicalViewportToPixel(self: *const Window, viewport: pipeline.Viewport) pipeline.Viewport {
-        const x = @as(f32, @floatFromInt(viewport.x)) * self.display_scale;
-        const y = @as(f32, @floatFromInt(viewport.y)) * self.display_scale;
-        const right = @as(f32, @floatFromInt(viewport.x + @as(i32, @intCast(viewport.w)))) * self.display_scale;
-        const bottom = @as(f32, @floatFromInt(viewport.y + @as(i32, @intCast(viewport.h)))) * self.display_scale;
+        const rect = self.logicalBoundsToPixel(
+            @floatFromInt(viewport.x),
+            @floatFromInt(viewport.y),
+            @floatFromInt(viewport.w),
+            @floatFromInt(viewport.h),
+        );
         return .{
-            .x = @intFromFloat(@floor(x)),
-            .y = @intFromFloat(@floor(y)),
-            .w = @intFromFloat(@ceil(right) - @floor(x)),
-            .h = @intFromFloat(@ceil(bottom) - @floor(y)),
+            .x = rect.x,
+            .y = rect.y,
+            .w = @intCast(rect.w),
+            .h = @intCast(rect.h),
+        };
+    }
+
+    fn logicalBoundsToPixel(self: *const Window, x: f32, y: f32, w: f32, h: f32) c.SDL_Rect {
+        const scale = self.display_scale;
+        const pixel_x = @floor(x * scale);
+        const pixel_y = @floor(y * scale);
+        const pixel_right = @ceil((x + w) * scale);
+        const pixel_bottom = @ceil((y + h) * scale);
+        return .{
+            .x = @intFromFloat(pixel_x),
+            .y = @intFromFloat(pixel_y),
+            .w = @intFromFloat(pixel_right - pixel_x),
+            .h = @intFromFloat(pixel_bottom - pixel_y),
         };
     }
 
@@ -1674,8 +1704,7 @@ pub const Window = struct {
 
     fn update(self: *Window) void {
         self.ctx.update();
-        self.activateMeasureScale();
-        clay.setLayoutDimensions(.{ .w = self.width, .h = self.height });
+        clay.setLayoutDimensions(.{ .w = self.logical_width, .h = self.logical_height });
     }
 
     pub fn id(self: *const Window) c.SDL_WindowID {
@@ -1865,35 +1894,36 @@ pub const UI = struct {
             CLAY_ERROR_HANDLER,
         );
 
-        clay.setMeasureTextFunction(*c.TTF_Font, font, measureText);
-
         if (std.process.getEnvVarOwned(allocator, "UI_DEBUG")) |value| {
             clay.setDebugModeEnabled(std.mem.eql(u8, value, "1"));
             allocator.free(value);
         } else |_| {}
 
         const main_window = try allocator.create(Window);
+        const win_ptr = sdlError(c.SDL_CreateWindow(
+            title.ptr,
+            width,
+            height,
+            c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
+        ));
         main_window.* = .{
-            .ptr = sdlError(c.SDL_CreateWindow(
-                title.ptr,
-                width,
-                height,
-                c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
-            )),
-            .height = @floatFromInt(height),
-            .width = @floatFromInt(width),
+            .ptr = win_ptr,
+            .logical_height = @floatFromInt(height),
+            .logical_width = @floatFromInt(width),
             .pixel_width = @intCast(width),
             .pixel_height = @intCast(height),
             .window_width = width,
             .window_height = height,
-            .display_scale = 1.0,
+            .display_scale = Window.currentDisplayScale(win_ptr),
             .safe_area = Window.fullWindowArea(width, height),
             .title = title,
             .ctx = ui_ctx,
-            .renderer = try Renderer.init(allocator, gpu_device, main_window.ptr, vk_version),
+            .renderer = try Renderer.init(allocator, gpu_device, win_ptr, vk_version),
+            .font_user_data = .{ .font = font, .scale = &main_window.display_scale },
         };
 
-        main_window.refreshSizeAndSafeArea();
+        clay.setMeasureTextFunction(*const FontUserData, &main_window.font_user_data, measureText);
+
         std.log.debug(
             "SDL window={}x{} pixels={}x{} scale={} safe_area={any}",
             .{ main_window.window_width, main_window.window_height, main_window.pixel_width, main_window.pixel_height, main_window.display_scale, main_window.safe_area },
@@ -2136,20 +2166,21 @@ pub const UI = struct {
         const previous_clay_ctx = clay.getCurrentContext();
 
         const window = self.allocator.create(Window) catch @panic("OOM");
+        const win_ptr = sdlError(c.SDL_CreateWindow(
+            title.ptr,
+            width,
+            height,
+            c.SDL_WINDOW_ALWAYS_ON_TOP | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
+        ));
         window.* = .{
-            .ptr = sdlError(c.SDL_CreateWindow(
-                title.ptr,
-                width,
-                height,
-                c.SDL_WINDOW_ALWAYS_ON_TOP | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
-            )),
-            .width = @floatFromInt(width),
-            .height = @floatFromInt(height),
+            .ptr = win_ptr,
+            .logical_width = @floatFromInt(width),
+            .logical_height = @floatFromInt(height),
             .pixel_width = @intCast(width),
             .pixel_height = @intCast(height),
             .window_width = width,
             .window_height = height,
-            .display_scale = 1.0,
+            .display_scale = Window.currentDisplayScale(win_ptr),
             .safe_area = Window.fullWindowArea(width, height),
             .title = title,
             .ctx = UIContext.init(
@@ -2160,17 +2191,17 @@ pub const UI = struct {
             .renderer = Renderer.init(
                 self.allocator,
                 self.gpu_device,
-                window.ptr,
+                win_ptr,
                 vulkan.detect_vulkan_version(),
             ) catch @panic("OOM"),
+            .font_user_data = .{ .font = self.font, .scale = &window.display_scale },
         };
-        window.refreshSizeAndSafeArea();
 
         setWindowIcon(window.ptr);
         sdlError(c.SDL_SetWindowParent(window.ptr, self.main_window.ptr));
         sdlError(c.SDL_SetWindowModal(window.ptr, true));
 
-        clay.setMeasureTextFunction(*c.TTF_Font, self.font, measureText);
+        clay.setMeasureTextFunction(*const FontUserData, &window.font_user_data, measureText);
 
         self.secondary_windows.append(self.allocator, .{
             .inner = window,
@@ -2233,8 +2264,8 @@ pub const UI = struct {
             if (self.border_shader_pipeline) |bsp| {
                 if (!self.border_shader_rendered_this_frame) {
                     bsp.renderForPreview(
-                        self.main_window.pixel_width,
-                        self.main_window.pixel_height,
+                        @intCast(self.main_window.pixel_width),
+                        @intCast(self.main_window.pixel_height),
                     ) catch {};
                 }
             }
@@ -2274,6 +2305,10 @@ pub const UI = struct {
 
     pub fn mouseMotion(self: *const Self) bool {
         return self.current_window.ctx.mouseMotion();
+    }
+
+    pub fn measureTextWidth(self: *const Self, text: []const u8, font_size: u16) f32 {
+        return self.current_window.font_user_data.measure(text, font_size).w;
     }
 
     pub fn getGamepadCount(self: *const Self) usize {
@@ -2429,14 +2464,15 @@ pub const UI = struct {
                     }
                 }
             },
-            c.SDL_EVENT_WINDOW_RESIZED,
-            c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
-            c.SDL_EVENT_WINDOW_SAFE_AREA_CHANGED,
-            c.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
-            => {
-                self.current_window.refreshSizeAndSafeArea();
+            c.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED => self.current_window.updateWindowSize(),
+            c.SDL_EVENT_WINDOW_SAFE_AREA_CHANGED => sdlError(c.SDL_GetWindowSafeArea(self.current_window.ptr, &self.current_window.safe_area)),
+            c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, c.SDL_EVENT_WINDOW_RESIZED => self.current_window.updateWindowSize(),
+            c.SDL_EVENT_MOUSE_MOTION => self.current_window.ctx.updateMousePos(
+                event.motion,
+                self.current_window.mouseScaleX(),
+                self.current_window.mouseScaleY(),
+            ),
             },
-            c.SDL_EVENT_MOUSE_MOTION => self.current_window.ctx.updateMousePosScaled(event.motion, self.current_window.mouseScaleX(), self.current_window.mouseScaleY()),
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     self.current_window.ctx.frame.mouse_pressed = true;
@@ -2578,10 +2614,10 @@ pub const UI = struct {
             window.renderer.draw_calls.items.len;
 
         const MVP = [16]f32{
-            2.0 / window.width, 0,                    0, 0,
-            0,                  -2.0 / window.height, 0, 0,
-            0,                  0,                    1, 0,
-            -1,                 1,                    0, 1,
+            2.0 / window.logical_width, 0,                            0, 0,
+            0,                          -2.0 / window.logical_height, 0, 0,
+            0,                          0,                            1, 0,
+            -1,                         1,                            0, 1,
         };
 
         // Pass 1: background UI elements (clear swapchain first).
@@ -3043,8 +3079,7 @@ pub const UI = struct {
             return;
         }
 
-        const text_scale = window.display_scale;
-        sdlError(c.TTF_SetFontSize(self.font, @as(f32, @floatFromInt(text_data.font_size)) * text_scale));
+        window.font_user_data.setLogicalSize(text_data.font_size);
 
         var hasher = std.hash.XxHash32.init(0);
         hasher.update(text_slice.chars[0..@intCast(text_slice.length)]);
@@ -3054,7 +3089,7 @@ pub const UI = struct {
             @bitCast(color[2]),
             @bitCast(color[3]),
             text_data.font_size,
-            @bitCast(text_scale),
+            @bitCast(window.font_user_data.effectiveScale()),
         });
         const key = hasher.final();
         const font_item = blk: {
@@ -3113,8 +3148,8 @@ pub const UI = struct {
 
                 const item: TextCacheItem = .{
                     .texture = texture,
-                    .width = @as(f32, @floatFromInt(surface.*.w)) / text_scale,
-                    .height = @as(f32, @floatFromInt(surface.*.h)) / text_scale,
+                    .width = @as(f32, @floatFromInt(surface.*.w)) / window.font_user_data.effectiveScale(),
+                    .height = @as(f32, @floatFromInt(surface.*.h)) / window.font_user_data.effectiveScale(),
                 };
 
                 window.ctx.text_cache.put(key, item) catch @panic("Failed to allocate memory!");

@@ -490,6 +490,7 @@ fn drawHomeUI(ui: *UI, app_state: *AppState) void {
 const CARD_W: f32 = 200;
 const CARD_THUMB_H: f32 = 175; // 200 * 224 / 256
 const CARD_CONTENT_W: f32 = CARD_W - 20;
+const CARD_TITLE_FONT_SIZE: u16 = 14;
 const CARD_TITLE_LINE_H: u16 = 16;
 const CARD_TITLE_MAX_LINES: u16 = 3;
 const CARD_PLAY_TIME_LINE_H: u16 = 14;
@@ -554,7 +555,7 @@ fn drawGameCard(ui: *UI, app_state: *AppState, entry: *const game_history.GameEn
         {
             _ = ui.label(.{
                 .text = entry.name,
-                .font_size = 14,
+                .font_size = CARD_TITLE_FONT_SIZE,
                 .line_height = CARD_TITLE_LINE_H,
                 .color = theme.text_primary,
             });
@@ -584,7 +585,7 @@ fn maxGameCardTitleLines(ui: *UI, entries: []const game_history.GameEntry) u16 {
 }
 
 fn wrappedGameCardTitleLines(ui: *UI, title: []const u8) u16 {
-    const space_w = measureGameCardTitleWidth(ui, " ");
+    const space_w = ui.measureTextWidth(" ", CARD_TITLE_FONT_SIZE);
 
     var lines: u16 = 1;
     var line_w: f32 = 0;
@@ -597,7 +598,7 @@ fn wrappedGameCardTitleLines(ui: *UI, title: []const u8) u16 {
         const word_start = pos;
         while (pos < title.len and !std.ascii.isWhitespace(title[pos])) : (pos += 1) {}
 
-        const word_w = measureGameCardTitleWidth(ui, title[word_start..pos]);
+        const word_w = ui.measureTextWidth(title[word_start..pos], CARD_TITLE_FONT_SIZE);
         if (line_w == 0) {
             line_w = word_w;
         } else if (line_w + space_w + word_w > CARD_CONTENT_W) {
@@ -611,17 +612,6 @@ fn wrappedGameCardTitleLines(ui: *UI, title: []const u8) u16 {
     }
 
     return lines;
-}
-
-fn measureGameCardTitleWidth(ui: *UI, text: []const u8) f32 {
-    const scale = ui.main_window.display_scale;
-    sdlError(c.TTF_SetFontSize(ui.font, 14.0 * scale));
-
-    var w: c_int = 0;
-    var h: c_int = 0;
-    sdlError(c.TTF_GetStringSize(ui.font, text.ptr, text.len, &w, &h));
-
-    return @as(f32, @floatFromInt(w)) / scale;
 }
 
 fn formatPlayTime(secs: u64, alloc: std.mem.Allocator) []const u8 {
