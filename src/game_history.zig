@@ -149,11 +149,9 @@ pub const GameHistory = struct {
         var hist_dir = try data_dir.openDir(HISTORY_SUBDIR, .{});
         defer hist_dir.close();
 
-        const stem = std.fs.path.stem(rom_path);
-
         // Write metadata JSON.
         {
-            const json_name = try std.fmt.allocPrint(alloc, "{s}.json", .{stem});
+            const json_name = try std.fmt.allocPrint(alloc, "{s}.json", .{name});
             const json_bytes = try std.json.Stringify.valueAlloc(alloc, .{
                 .name = name,
                 .rom_path = rom_path,
@@ -169,7 +167,7 @@ pub const GameHistory = struct {
         if (pixels.len == THUMBNAIL_BYTES) {
             const png_path = try std.fs.path.join(
                 alloc,
-                &.{ hist_dir_path, try std.fmt.allocPrint(alloc, "{s}.png", .{stem}) },
+                &.{ hist_dir_path, try std.fmt.allocPrint(alloc, "{s}.png", .{name}) },
             );
             try saveThumbnailPng(alloc, pixels, png_path);
         }
