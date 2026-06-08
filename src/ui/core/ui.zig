@@ -228,7 +228,7 @@ pub const UIContext = struct {
             .{ .x = self.mouse_x, .y = self.mouse_y },
             self.frame.mouse_down,
         );
-        clay.updateScrollContainers(false, .{
+        clay.updateScrollContainers(builtin.abi.isAndroid(), .{
             .x = self.frame.scroll.delta_x,
             .y = self.frame.scroll.delta_y,
         }, self.dt);
@@ -2532,6 +2532,7 @@ pub const UI = struct {
 
                 self.current_window.ctx.setFingerPos(event.tfinger.fingerID, pos.x, pos.y);
                 self.current_window.ctx.setFingerDown(event.tfinger.fingerID, true);
+
                 self.current_window.ctx.frame.mouse_pressed = true;
                 self.current_window.ctx.frame.mouse_down = true;
             },
