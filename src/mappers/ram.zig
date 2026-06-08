@@ -1,6 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const mmap = @import("../root.zig").mmap.mmap;
 const munmap = @import("../root.zig").mmap.munmap;
+const paths = @import("../paths.zig");
+const android = if (builtin.abi.isAndroid()) @import("../utils/android.zig") else struct {};
 
 pub const Ram = struct {
     ptr: *anyopaque,
@@ -106,10 +109,7 @@ pub const BatteryBackedRam = struct {
     pub fn init(alloc: std.mem.Allocator, path: []const u8, size: usize) !*Self {
         const self = try alloc.create(Self);
 
-        const dir = std.fs.path.dirname(path) orelse @panic("Path is root directory");
-        const base = std.fs.path.stem(path);
-
-        const save_path = try std.fmt.allocPrint(alloc, "{s}{c}{s}.sav", .{ dir, std.fs.path.sep, base });
+        const save_path = try savePath(alloc, path);
         const file = try std.fs.createFileAbsolute(save_path, .{
             .read = true,
             .truncate = false,
@@ -121,6 +121,7 @@ pub const BatteryBackedRam = struct {
         }
 
         const buffer = try mmap(&file, size);
+        errdefer munmap(buffer);
 
         self.* = .{
             .alloc = alloc,
@@ -157,5 +158,42 @@ pub const BatteryBackedRam = struct {
 
     pub fn as_ram(self: *Self) Ram {
         return .{ .ptr = self, .vtable = &VTable };
+    }
+
+    fn savePath(alloc: std.mem.Allocator, rom_path: []const u8) ![]u8 {
+        if (builtin.abi.isAndroid()) {
+            const data_dir_path = try paths.getDataDir(alloc);
+            defer alloc.free(data_dir_path);
+
+            std.fs.makeDirAbsolute(data_dir_path) catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => return err,
+            };
+
+            var data_dir = try std.fs.openDirAbsolute(data_dir_path, .{});
+            defer data_dir.close();
+
+            // Ensure <data-dir>/neskwik/save-files exists.
+            data_dir.makeDir("save-files") catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => return err,
+            };
+
+            const display_name = try android.displayName(alloc, rom_path);
+            const stem = display_name orelse std.fs.path.stem(rom_path);
+
+            const dir = try std.fs.path.join(alloc, &.{ data_dir_path, "save-files" });
+            defer alloc.free(dir);
+
+            return std.fmt.allocPrint(
+                alloc,
+                "{s}" ++ std.fs.path.sep_str ++ "{s}.sav",
+                .{ dir, stem },
+            );
+        }
+
+        const dir = std.fs.path.dirname(rom_path) orelse return error.InvalidRomPath;
+        const base = std.fs.path.stem(rom_path);
+        return std.fmt.allocPrint(alloc, "{s}" ++ std.fs.path.sep_str ++ "{s}.sav", .{ dir, base });
     }
 };
