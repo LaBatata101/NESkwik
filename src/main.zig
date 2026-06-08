@@ -76,7 +76,11 @@ fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     defer alloc.free(panic_msg);
 
     logging.writePanic(buffer.written());
-    std.debug.print("{s}", .{panic_msg});
+    if (builtin.abi.isAndroid()) {
+        std.log.err("{s}", .{panic_msg});
+    } else {
+        std.debug.print("{s}", .{panic_msg});
+    }
 
     _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik Error", panic_msg.ptr, null);
 
