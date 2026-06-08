@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const game_history = @import("../game_history.zig");
 const debug = @import("debug.zig");
@@ -360,11 +361,16 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 .bg_color = Color.black,
                 .apply_runtime_shaders = true,
             });
+
+            if (builtin.abi.isAndroid()) {
+                drawGamepad(ui, canvas.id);
+            }
+
             if (app_state.paused) {
                 const f = ui.float(.{
                     .attach_to = .to_element_with_id,
                     .attach_points = .{ .parent = .center_center, .element = .center_center },
-                    .z_index = 1,
+                    .z_index = 5,
                     .sizing = .grow,
                     .parentId = canvas.id.id,
                 });
@@ -381,6 +387,117 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
         }
     }
     root.end();
+}
+
+fn drawGamepad(ui: *UI, parent_id: clay.ElementId) void {
+    const arrows = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .z_index = 1,
+        .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
+        .offset = .{ .x = 25, .y = -35 },
+    });
+    {
+        const col = ui.column(.{
+            .child_alignment = .center,
+            .sizing = .{ .w = .fixed(100), .h = .fixed(100) },
+        });
+        {
+            const up_button = ui.button(.{
+                .text = "",
+                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
+                .bg_color = .white,
+            });
+            if (up_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.up);
+
+            const row = ui.row(.{ .gap = 50 });
+            {
+                const left_button = ui.button(.{
+                    .text = "",
+                    .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
+                    .bg_color = .blue,
+                });
+                if (left_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.left);
+
+                const right_button = ui.button(.{
+                    .text = "",
+                    .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
+                    .bg_color = .red,
+                });
+                if (right_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.right);
+            }
+            row.end();
+
+            const down_button = ui.button(.{
+                .text = "",
+                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
+                .bg_color = .green,
+            });
+            if (down_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.down);
+        }
+        col.end();
+    }
+    arrows.end();
+
+    const buttons1 = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .z_index = 1,
+        .attach_points = .{ .parent = .center_bottom, .element = .center_bottom },
+        .offset = .{ .x = 0, .y = -15 },
+    });
+    {
+        const row = ui.row(.{ .sizing = .{ .w = .fixed(75), .h = .fit }, .gap = 10 });
+        {
+            const start_button = ui.button(.{
+                .text = "Start",
+                .text_color = .black,
+                .bg_color = .white,
+                .elevation = 0,
+            });
+            if (start_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.start);
+
+            const select_button = ui.button(.{
+                .text = "Select",
+                .text_color = .black,
+                .bg_color = .white,
+                .elevation = 0,
+            });
+            if (select_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.select);
+        }
+        row.end();
+    }
+    buttons1.end();
+
+    const buttons2 = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .z_index = 1,
+        .attach_points = .{ .parent = .right_bottom, .element = .right_bottom },
+        .offset = .{ .x = -15, .y = -15 },
+    });
+    {
+        const row = ui.row(.{ .sizing = .fit, .gap = 50 });
+        {
+            const b_button = ui.button(.{
+                .text = "B",
+                .text_color = .white,
+                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
+                .bg_color = .rgb(255, 102, 1),
+            });
+            if (b_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.b);
+
+            const a_button = ui.button(.{
+                .text = "A",
+                .text_color = .white,
+                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
+                .bg_color = .rgb(1, 255, 218),
+            });
+            if (a_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.a);
+        }
+        row.end();
+    }
+    buttons2.end();
 }
 
 const SaveStateMenuMode = enum { save, load };

@@ -555,6 +555,10 @@ pub const Button = struct {
         const is_hovered = clay.pointerOver(self.id);
         return is_hovered and ctx.frame.mouse_pressed;
     }
+
+    pub fn clickedOrHold(self: *const Self, ctx: *UIContext) bool {
+        return self.clicked(ctx) or (ctx.activeFingerOverElement(self.id) and ctx.frame.mouse_down);
+    }
 };
 
 pub const IconButton = struct {

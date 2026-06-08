@@ -128,11 +128,10 @@ pub fn main() !void {
     ui.setFramerate(.unlimited);
 
     while (!ui.shouldClose()) {
-        ui.beginFrame();
-
         app_state.update(ui);
-        gui.drawGUI(ui, &app_state);
 
+        ui.beginFrame();
+        gui.drawGUI(ui, &app_state);
         ui.endFrame();
     }
 }

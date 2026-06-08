@@ -344,6 +344,7 @@ pub const AppState = struct {
             const main_window_active = ui.current_window == ui.main_window;
             if (main_window_active) {
                 self.syncControllers(ui);
+
                 if (ui.isKeyPressed(self.generalBinding(.quit))) ui.quit = true;
                 if (ui.isKeyPressed(self.generalBinding(.toggle_step_mode))) self.toggleDebug();
                 if (ui.isKeyPressed(self.generalBinding(.restart))) self.resetSystem();
@@ -416,6 +417,11 @@ pub const AppState = struct {
         self.controller2_bits.store(@bitCast(snapshot.player2), .release);
     }
 
+    fn clearControllerState(self: *Self) void {
+        self.controller1_bits.store(0, .release);
+        self.controller2_bits.store(0, .release);
+    }
+
     fn controllerSnapshot(self: *Self) System.ControllerSnapshot {
         return .{
             .player1 = @bitCast(self.controller1_bits.load(.acquire)),
@@ -444,6 +450,8 @@ pub const AppState = struct {
         if (ui.getGamepadCount() > player.value()) {
             self.pollGamepadButtons(ui, player, &status);
         }
+
+        if (builtin.abi.isAndroid()) status.insert(ui.onScreenControllerStatus());
 
         return status;
     }
@@ -553,6 +561,7 @@ pub const AppState = struct {
     }
 
     pub fn unloadCurrentRom(self: *Self) void {
+        self.clearControllerState();
         self.stopEmulationThread();
         self.saveCurrentGame();
 
@@ -680,8 +689,7 @@ pub const AppState = struct {
         if (self.lifecycle_suspended.swap(suspended, .acq_rel) == suspended) return;
 
         if (suspended) {
-            self.controller1_bits.store(0, .release);
-            self.controller2_bits.store(0, .release);
+            self.clearControllerState();
         }
 
         if (self.system) |*system| {

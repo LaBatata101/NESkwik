@@ -12,6 +12,8 @@ const utils = @import("utils.zig");
 const pipeline = @import("../../shaders/pipeline.zig");
 const GamepadButton = @import("../bindings.zig").GamepadButton;
 const ControllerPlayer = @import("../bindings.zig").ControllerPlayer;
+const ControllerAction = @import("../bindings.zig").ControllerAction;
+const ControllerButton = @import("../../controller.zig").ControllerButton;
 
 const PIXELOID_FONT = @embedFile("pixeloid_font");
 const APP_ICON = @embedFile("app_icon");
@@ -1849,6 +1851,7 @@ pub const UI = struct {
     border_shader_rendered_this_frame: bool = false,
 
     gamepads: std.ArrayList(GamepadState) = .empty,
+    on_screen_controller: ControllerButton = .{},
 
     icons: std.EnumArray(Icon, ?*c.SDL_GPUTexture) = .initUndefined(),
 
@@ -2303,6 +2306,7 @@ pub const UI = struct {
 
         self.main_window.update();
         self.updateGamepadStates(self.main_window.ctx.dt);
+        self.on_screen_controller = .{};
 
         clay.beginLayout();
     }
@@ -2368,6 +2372,14 @@ pub const UI = struct {
 
     pub fn getGamepadCount(self: *const Self) usize {
         return self.gamepads.items.len;
+    }
+
+    pub fn pressOnScreenControllerButton(self: *Self, action: ControllerAction) void {
+        self.on_screen_controller.insert(action.button());
+    }
+
+    pub fn onScreenControllerStatus(self: *const Self) ControllerButton {
+        return self.on_screen_controller;
     }
 
     pub fn isGamepadButtonDown(self: *const Self, gamepad_idx: ControllerPlayer, btn: GamepadButton) bool {
