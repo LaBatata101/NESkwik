@@ -77,7 +77,7 @@ pub const Container = struct {
 
     pub fn clicked(self: *const Self, ctx: *UIContext) bool {
         const is_hovered = clay.pointerOver(self.id);
-        return is_hovered and ctx.frame.mouse_released;
+        return is_hovered and ctx.pointerReleased();
     }
 };
 

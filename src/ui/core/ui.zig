@@ -126,6 +126,7 @@ pub const UIContext = struct {
     clay_memory: []u8,
 
     const Self = @This();
+    const TAP_MAX_DURATION_MS = 450;
 
     pub fn init(allocator: std.mem.Allocator, layout_dimensions: clay.Dimensions, error_handler: clay.ErrorHandler) !*Self {
         var ctx = try allocator.create(UIContext);
@@ -333,6 +334,18 @@ pub const UIContext = struct {
         self.frame.mouse_delta.y += dy;
     }
 
+    fn beginPointerDown(self: *Self) void {
+        self.frame.mouse_pressed = true;
+        self.frame.mouse_down = true;
+        self.frame.pointer_down_time_ms = c.SDL_GetTicks();
+    }
+
+    pub fn pointerReleased(self: *const Self) bool {
+        if (!self.frame.mouse_released) return false;
+        if (self.frame.pointer_down_time_ms == 0) return false;
+        return c.SDL_GetTicks() - self.frame.pointer_down_time_ms <= TAP_MAX_DURATION_MS;
+    }
+
     fn setFingerDown(self: *Self, finger_id: c.SDL_FingerID, value: bool) void {
         if (finger_id > MAX_ACTIVE_TOUCHES) {
             std.log.warn("FingerID: {} greater than supported MAX_ACTIVE_TOUCHES", .{finger_id});
@@ -390,6 +403,7 @@ pub const FrameState = struct {
     /// True as long as the button is held
     mouse_down: bool = false,
     mouse_delta: clay.Vector2 = .{ .x = 0, .y = 0 },
+    pointer_down_time_ms: u64 = 0,
 
     scroll: struct {
         delta_x: f32 = 0,
@@ -2544,9 +2558,7 @@ pub const UI = struct {
 
                 self.current_window.ctx.setFingerPos(event.tfinger.fingerID, pos.x, pos.y);
                 self.current_window.ctx.setFingerDown(event.tfinger.fingerID, true);
-
-                self.current_window.ctx.frame.mouse_pressed = true;
-                self.current_window.ctx.frame.mouse_down = true;
+                self.current_window.ctx.beginPointerDown();
             },
             c.SDL_EVENT_FINGER_UP, c.SDL_EVENT_FINGER_CANCELED => {
                 self.current_window.ctx.setFingerDown(event.tfinger.fingerID, false);
@@ -2563,8 +2575,7 @@ pub const UI = struct {
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
-                    self.current_window.ctx.frame.mouse_pressed = true;
-                    self.current_window.ctx.frame.mouse_down = true;
+                    self.current_window.ctx.beginPointerDown();
                 }
             },
             c.SDL_EVENT_MOUSE_BUTTON_UP => {
