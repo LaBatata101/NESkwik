@@ -609,13 +609,13 @@ const CARD_THUMB_H: f32 = 175; // 200 * 224 / 256
 const CARD_CONTENT_W: f32 = CARD_W - 20;
 const CARD_TITLE_FONT_SIZE: u16 = 14;
 const CARD_TITLE_LINE_H: u16 = 16;
-const CARD_TITLE_MAX_LINES: u16 = 3;
+const CARD_TITLE_MAX_LINES: u16 = 4;
 const CARD_PLAY_TIME_LINE_H: u16 = 14;
 const CARD_CORNER_RADIUS: f32 = 6;
 const PLACEHOLDER_THUMBNAIL_PIXEL = [_]u8{ 0, 0, 0, 255 };
 
 fn cardTitleHeight(title_lines: u16) f32 {
-    return @floatFromInt(@as(u32, CARD_TITLE_LINE_H) * @as(u32, title_lines));
+    return @floatFromInt(CARD_TITLE_LINE_H * title_lines);
 }
 
 fn cardInfoHeight(title_lines: u16) f32 {
@@ -648,7 +648,6 @@ fn drawGameCard(ui: *UI, app_state: *AppState, entry: *const game_history.GameEn
                 .w = game_history.THUMBNAIL_WIDTH,
                 .h = game_history.THUMBNAIL_HEIGHT,
                 .sizing = .{ .w = .fixed(CARD_W), .h = .fixed(CARD_THUMB_H) },
-                .aspect_ratio = .none,
                 .corner_radius = .{ .top_left = CARD_CORNER_RADIUS, .top_right = CARD_CORNER_RADIUS },
             });
         } else {
@@ -694,38 +693,27 @@ fn drawGameCard(ui: *UI, app_state: *AppState, entry: *const game_history.GameEn
 }
 
 fn maxGameCardTitleLines(ui: *UI, entries: []const game_history.GameEntry) u16 {
+    const space_w = ui.measureTextWidth(" ", CARD_TITLE_FONT_SIZE);
     var max_lines: u16 = 1;
     for (entries) |entry| {
-        max_lines = @max(max_lines, wrappedGameCardTitleLines(ui, entry.name));
+        max_lines = @max(max_lines, calculateGameCardTitleTotalLines(ui, entry.name, space_w));
     }
     return @min(max_lines, CARD_TITLE_MAX_LINES);
 }
 
-fn wrappedGameCardTitleLines(ui: *UI, title: []const u8) u16 {
-    const space_w = ui.measureTextWidth(" ", CARD_TITLE_FONT_SIZE);
-
+fn calculateGameCardTitleTotalLines(ui: *UI, title: []const u8, space_w: f32) u16 {
     var lines: u16 = 1;
     var line_w: f32 = 0;
-    var pos: usize = 0;
 
-    while (pos < title.len) {
-        while (pos < title.len and std.ascii.isWhitespace(title[pos])) : (pos += 1) {}
-        if (pos >= title.len) break;
+    var it = std.mem.splitScalar(u8, title, ' ');
+    while (it.next()) |word| {
+        const word_w = ui.measureTextWidth(word, CARD_TITLE_FONT_SIZE);
+        line_w += word_w + space_w;
 
-        const word_start = pos;
-        while (pos < title.len and !std.ascii.isWhitespace(title[pos])) : (pos += 1) {}
-
-        const word_w = ui.measureTextWidth(title[word_start..pos], CARD_TITLE_FONT_SIZE);
-        if (line_w == 0) {
-            line_w = word_w;
-        } else if (line_w + space_w + word_w > CARD_CONTENT_W) {
+        if (line_w > CARD_CONTENT_W) {
             lines += 1;
             line_w = word_w;
-        } else {
-            line_w += space_w + word_w;
         }
-
-        if (lines >= CARD_TITLE_MAX_LINES) return CARD_TITLE_MAX_LINES;
     }
 
     return lines;
