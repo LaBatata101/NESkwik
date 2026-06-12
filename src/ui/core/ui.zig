@@ -1858,6 +1858,7 @@ pub const UI = struct {
     pending_close_window: ?*Window = null,
     fps_manager: FPSManager,
     is_suspended: bool = false,
+    android_back_requested: bool = false,
 
     shader_pipeline: ?*pipeline.ShaderPipeline = null,
     border_shader_pipeline: ?*pipeline.ShaderPipeline = null,
@@ -2364,6 +2365,16 @@ pub const UI = struct {
         return self.current_window.ctx.input.isKeyPressed(key, false);
     }
 
+    pub fn androidBackRequested(self: *Self) bool {
+        if (!builtin.abi.isAndroid()) return false;
+        if (self.android_back_requested) {
+            self.android_back_requested = false;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
     pub fn isKeyDown(self: *const Self, key: Key) bool {
         return self.current_window.ctx.input.isKeyDown(key);
     }
@@ -2589,7 +2600,12 @@ pub const UI = struct {
                 self.current_window.ctx.frame.scroll.velocity_x += event.wheel.x * scroll_multiplier;
                 self.current_window.ctx.frame.scroll.velocity_y += event.wheel.y * scroll_multiplier;
             },
-            c.SDL_EVENT_KEY_DOWN => self.current_window.ctx.input.addKeyEvent(.{ .event = .down, .scancode = event.key.scancode }),
+            c.SDL_EVENT_KEY_DOWN => {
+                if (builtin.abi.isAndroid() and event.key.scancode == c.SDL_SCANCODE_AC_BACK) {
+                    self.android_back_requested = true;
+                }
+                self.current_window.ctx.input.addKeyEvent(.{ .event = .down, .scancode = event.key.scancode });
+            },
             c.SDL_EVENT_KEY_UP => self.current_window.ctx.input.addKeyEvent(.{ .event = .released, .scancode = event.key.scancode }),
             c.SDL_EVENT_TEXT_INPUT => {
                 const text: []const u8 = std.mem.span(event.text.text);
