@@ -236,6 +236,7 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     mod.addAnonymousImport("skip_next_icon", .{ .root_source_file = b.path("resources/icons/skip_next_32x32.png") });
     mod.addAnonymousImport("play_icon", .{ .root_source_file = b.path("resources/icons/play_arrow_32x32.png") });
     mod.addAnonymousImport("stop_icon", .{ .root_source_file = b.path("resources/icons/stop_32x32.png") });
+    mod.addAnonymousImport("menu_icon", .{ .root_source_file = b.path("resources/icons/menu_32x32.png") });
 
     return .{
         .mod = mod,

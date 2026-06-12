@@ -6,6 +6,24 @@ const jni = if (builtin.abi.isAndroid()) @cImport({
     @cInclude("jni.h");
 }) else struct {};
 
+pub const ScreenOrientation = enum(i32) {
+    unknown = 0,
+    landscape = 1,
+    landscape_flipped = 2,
+    portrait = 3,
+    portrait_flipped = 4,
+
+    fn fromInt(value: i32) ScreenOrientation {
+        return switch (value) {
+            1 => .landscape,
+            2 => .landscape_flipped,
+            3 => .portrait,
+            4 => .portrait_flipped,
+            else => .unknown,
+        };
+    }
+};
+
 pub fn displayName(alloc: std.mem.Allocator, uri: []const u8) !?[]const u8 {
     if (!builtin.abi.isAndroid()) @compileError("Function only available for Android");
 
@@ -65,6 +83,42 @@ pub fn displayName(alloc: std.mem.Allocator, uri: []const u8) !?[]const u8 {
     if (name.len == 0) return null;
 
     return std.fs.path.stem(name);
+}
+
+pub fn currentScreenOrientation() ?ScreenOrientation {
+    if (!builtin.abi.isAndroid()) @compileError("Function only available for Android");
+
+    const env_raw = c.SDL_GetAndroidJNIEnv() orelse return null;
+    const activity_raw = c.SDL_GetAndroidActivity() orelse return null;
+
+    const env: [*c]jni.JNIEnv = @ptrCast(@alignCast(env_raw));
+    const activity: jni.jobject = @ptrCast(activity_raw);
+    const f = &env.*[0];
+    defer deleteLocalRef(env, f, activity);
+
+    const activity_class = f.GetObjectClass.?(env, activity) orelse {
+        clearException(env, f);
+        return null;
+    };
+    defer deleteLocalRef(env, f, activity_class);
+
+    const method = f.GetMethodID.?(
+        env,
+        activity_class,
+        "getCurrentScreenOrientation",
+        "()I",
+    ) orelse {
+        clearException(env, f);
+        return null;
+    };
+
+    const orientation = f.CallIntMethodA.?(env, activity, method, null);
+    if (hasException(env, f)) {
+        f.ExceptionClear.?(env);
+        return null;
+    }
+
+    return ScreenOrientation.fromInt(orientation);
 }
 
 fn hasException(env: [*c]jni.JNIEnv, f: *allowzero const jni.JNINativeInterface) bool {

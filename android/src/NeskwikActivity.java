@@ -47,6 +47,27 @@ public class NeskwikActivity extends SDLActivity {
         }
     }
 
+    public int getCurrentScreenOrientation() {
+        int rotation = getCurrentRotation();
+
+        if (getNaturalOrientation() == SDL_ORIENTATION_LANDSCAPE) {
+            rotation += 90;
+        }
+
+        switch (rotation % 360) {
+            case 0:
+                return SDL_ORIENTATION_PORTRAIT;
+            case 90:
+                return SDL_ORIENTATION_LANDSCAPE;
+            case 180:
+                return SDL_ORIENTATION_PORTRAIT_FLIPPED;
+            case 270:
+                return SDL_ORIENTATION_LANDSCAPE_FLIPPED;
+            default:
+                return SDL_ORIENTATION_UNKNOWN;
+        }
+    }
+
     private void persistUriPermissions(Intent data) {
         int permissionFlags = data.getFlags() &
             (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);

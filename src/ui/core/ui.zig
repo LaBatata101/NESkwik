@@ -9,6 +9,7 @@ const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
 const shaders = @import("shaders.zig");
 const utils = @import("utils.zig");
+const android = @import("../../utils/android.zig");
 const pipeline = @import("../../shaders/pipeline.zig");
 const GamepadButton = @import("../bindings.zig").GamepadButton;
 const ControllerPlayer = @import("../bindings.zig").ControllerPlayer;
@@ -1710,14 +1711,23 @@ pub const Window = struct {
     }
 
     pub fn safeAreaPadding(self: *const Window) clay.Padding {
-        const right_inset = self.window_width - (self.safe_area.x + self.safe_area.w);
-        const bottom_inset = self.window_height - (self.safe_area.y + self.safe_area.h);
-        return .{
-            .left = @intFromFloat(@round(self.logicalFromWindowX(@floatFromInt(self.safe_area.x)))),
-            .right = @intFromFloat(@round(self.logicalFromWindowX(@floatFromInt(right_inset)))),
-            .top = @intFromFloat(@round(self.logicalFromWindowY(@floatFromInt(self.safe_area.y)))),
-            .bottom = @intFromFloat(@round(self.logicalFromWindowY(@floatFromInt(bottom_inset)))),
-        };
+        if (builtin.abi.isAndroid()) {
+            const orientation = android.currentScreenOrientation() orelse .unknown;
+            const xy_inset: u16 = @intFromFloat(self.logicalFromWindowX(@floatFromInt(self.window_width - (self.safe_area.x + self.safe_area.w))));
+            return .{
+                .left = if (orientation == .landscape) xy_inset else 0,
+                .right = if (orientation == .landscape_flipped) xy_inset else 0,
+                .top = @intFromFloat(self.logicalFromWindowY(@floatFromInt(self.safe_area.y))),
+                .bottom = @intFromFloat(self.logicalFromWindowY(@floatFromInt(self.window_height - (self.safe_area.y + self.safe_area.h)))),
+            };
+        } else {
+            return .{
+                .left = 0,
+                .right = 0,
+                .top = @intFromFloat(self.logicalFromWindowY(@floatFromInt(self.safe_area.y))),
+                .bottom = @intFromFloat(self.logicalFromWindowY(@floatFromInt(self.window_height - (self.safe_area.y + self.safe_area.h)))),
+            };
+        }
     }
 
     fn logicalRectToPixel(self: *const Window, rect: c.SDL_Rect) c.SDL_Rect {
@@ -1875,6 +1885,7 @@ pub const UI = struct {
         stop,
         skip_next,
         fast_forward,
+        menu,
 
         fn data(self: @This()) []const u8 {
             return switch (self) {
@@ -1882,6 +1893,7 @@ pub const UI = struct {
                 .stop => @embedFile("stop_icon"),
                 .skip_next => @embedFile("skip_next_icon"),
                 .fast_forward => @embedFile("fast_forward_icon"),
+                .menu => @embedFile("menu_icon"),
             };
         }
     };
@@ -1997,10 +2009,6 @@ pub const UI = struct {
 
         clay.setMeasureTextFunction(*const FontUserData, &main_window.font_user_data, measureText);
 
-        std.log.debug(
-            "SDL window={}x{} pixels={}x{} scale={} safe_area={any}",
-            .{ main_window.window_width, main_window.window_height, main_window.pixel_width, main_window.pixel_height, main_window.display_scale, main_window.safe_area },
-        );
         if (!builtin.abi.isAndroid()) {
             sdlError(c.SDL_SetWindowMinimumSize(main_window.ptr, 300, 480));
             setWindowIcon(main_window.ptr);
@@ -2469,7 +2477,6 @@ pub const UI = struct {
                 self.is_suspended = true;
                 self.pending_shader_render = null;
                 self.border_shader_rendered_this_frame = false;
-                std.log.debug("GOING TO BACKGROUND", .{});
                 return;
             },
             c.SDL_EVENT_DID_ENTER_BACKGROUND => return,
@@ -2557,7 +2564,10 @@ pub const UI = struct {
                 }
             },
             c.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED => self.current_window.updateWindowSize(),
-            c.SDL_EVENT_WINDOW_SAFE_AREA_CHANGED => sdlError(c.SDL_GetWindowSafeArea(self.current_window.ptr, &self.current_window.safe_area)),
+            c.SDL_EVENT_WINDOW_SAFE_AREA_CHANGED => sdlError(c.SDL_GetWindowSafeArea(
+                self.current_window.ptr,
+                &self.current_window.safe_area,
+            )),
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED, c.SDL_EVENT_WINDOW_RESIZED => self.current_window.updateWindowSize(),
             c.SDL_EVENT_MOUSE_MOTION => self.current_window.ctx.updateMousePos(
                 event.motion,

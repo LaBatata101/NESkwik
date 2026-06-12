@@ -66,6 +66,9 @@ pub const AppState = struct {
     /// Wheter to skip drawing the home screen.
     render_home_ui: bool = true,
     render_debug_ui: bool = false,
+    render_android_settings_ui: bool = false,
+    show_android_sidepanel: bool = false,
+    android_sidepanel_created_at: u64 = 0,
     emulation_running: bool = false,
 
     step_mode: bool = false,
@@ -340,6 +343,11 @@ pub const AppState = struct {
     }
 
     fn handleInput(self: *Self, ui: *UI) void {
+        if (ui.androidBackRequested()) {
+            self.handleAndroidBack(ui);
+            return;
+        }
+
         if (self.emulation_running) {
             const main_window_active = ui.current_window == ui.main_window;
             if (main_window_active) {
@@ -384,6 +392,26 @@ pub const AppState = struct {
                 self.is_cursor_hidden = false;
             }
         }
+    }
+
+    fn handleAndroidBack(self: *Self, ui: *UI) void {
+        if (self.show_android_sidepanel) {
+            self.show_android_sidepanel = false;
+            return;
+        }
+
+        if (self.render_android_settings_ui) {
+            self.render_android_settings_ui = false;
+            self.render_home_ui = !self.emulation_running;
+            return;
+        }
+
+        if (self.emulation_running) {
+            self.show_android_sidepanel = true;
+            return;
+        }
+
+        ui.quit = true;
     }
 
     pub fn update(self: *Self, ui: *UI) void {
@@ -553,6 +581,9 @@ pub const AppState = struct {
         self.publishFrame(self.system.?.frame_buffer());
         self.emulation_running = true;
         self.render_home_ui = false;
+        self.render_debug_ui = false;
+        self.render_android_settings_ui = false;
+        self.show_android_sidepanel = false;
 
         if (self.current_rom_path) |p| self.alloc.free(p);
         self.current_rom_path = self.alloc.dupe(u8, rom_fullpath) catch null;
@@ -576,6 +607,10 @@ pub const AppState = struct {
         self.current_rom_path = null;
         self.emulation_running = false;
         self.render_home_ui = true;
+        self.render_debug_ui = false;
+
+        self.render_android_settings_ui = false;
+        self.show_android_sidepanel = false;
     }
 
     fn saveCurrentGame(self: *Self) void {

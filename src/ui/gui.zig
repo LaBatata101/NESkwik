@@ -4,7 +4,6 @@ const builtin = @import("builtin");
 const game_history = @import("../game_history.zig");
 const debug = @import("debug.zig");
 const c = @import("../root.zig").c;
-const sdlError = @import("../utils/sdl.zig").sdlError;
 const ui_core = @import("core/ui.zig");
 const UI = ui_core.UI;
 const Key = ui_core.Key;
@@ -13,6 +12,7 @@ const utils = @import("core/utils.zig");
 const theme = @import("common.zig").theme;
 const widgets = @import("core/widgets.zig");
 const Color = @import("core/color.zig").Color;
+const android = @import("../utils/android.zig");
 const pipeline = @import("../shaders/pipeline.zig");
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
@@ -155,174 +155,180 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
     }
 
     const root = ui.column(.{
-        .padding = ui.main_window.safeAreaPadding(),
         .bg_color = theme.bg_base,
     });
     {
-        if (!ui.isWindowFullscreen()) {
-            const menubar = ui.menuBar(.{
-                .bg_color = theme.bg_panel,
-                .border_color = theme.border_dim,
-            });
-            {
-                const sys_menu = ui.dropdownMenu(.{
-                    .label = "System",
+        const safe_area_padding = ui.main_window.safeAreaPadding();
+
+        if (builtin.abi.isAndroid()) {
+            if (!ui.isWindowFullscreen()) drawAndroidHeader(ui, app_state);
+        } else {
+            if (!ui.isWindowFullscreen()) {
+                const menubar = ui.menuBar(.{
                     .bg_color = theme.bg_panel,
-                    .hover_color = theme.bg_hover,
-                    .text_color = theme.text_secondary,
-                    .list_bg_color = theme.bg_section,
-                    .list_border_color = theme.border,
-                });
-                if (ui.menuItem(.{
-                    .label = "Open",
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                }).clicked(ui.main_window.ctx)) {
-                    const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
-                        @panic("Failed to allocate");
-                    defer ui.main_window.ctx.frameAlloc().free(default_location);
-
-                    c.SDL_ShowOpenFileDialog(
-                        dialog_callback,
-                        clay.anytypeToAnyopaquePtr(app_state),
-                        ui.main_window.ptr,
-                        &dialog_filter_list,
-                        dialog_filter_list.len,
-                        default_location.ptr,
-                        false,
-                    );
-                }
-                if (ui.menuItem(.{
-                    .label = "Exit",
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .shortcut = app_state.generalBinding(.quit).keyName(),
-                }).clicked(ui.main_window.ctx)) {
-                    ui.quit = true;
-                }
-                sys_menu.end();
-
-                const emulation_menu = ui.dropdownMenu(.{
-                    .label = "Emulation",
-                    .bg_color = theme.bg_panel,
-                    .hover_color = theme.bg_hover,
-                    .text_color = theme.text_secondary,
-                    .list_bg_color = theme.bg_section,
-                    .list_border_color = theme.border,
-                });
-                if (ui.menuItem(.{
-                    .label = if (app_state.paused) "Continue" else "Pause",
-                    .enabled = app_state.emulation_running,
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .shortcut = app_state.generalBinding(.toggle_pause).keyName(),
-                }).clicked(ui.main_window.ctx)) {
-                    app_state.togglePause();
-                }
-                if (ui.menuItem(.{
-                    .label = "Stop",
-                    .enabled = app_state.emulation_running,
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .shortcut = app_state.generalBinding(.stop).keyName(),
-                }).clicked(ui.main_window.ctx)) {
-                    app_state.unloadCurrentRom();
-                }
-                if (ui.menuItem(.{
-                    .label = "Restart",
-                    .enabled = app_state.emulation_running,
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .shortcut = app_state.generalBinding(.restart).keyName(),
-                }).clicked(ui.main_window.ctx)) {
-                    app_state.resetSystem();
-                }
-
-                _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
-                const save_state_item = ui.menuItem(.{
-                    .label = "Save State",
-                    .enabled = app_state.emulation_running,
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .has_submenu = true,
+                    .border_color = theme.border_dim,
                 });
                 {
-                    const save_state_submenu = save_state_item.submenu(.{
-                        .width = 270,
+                    const sys_menu = ui.dropdownMenu(.{
+                        .label = "System",
+                        .bg_color = theme.bg_panel,
+                        .hover_color = theme.bg_hover,
+                        .text_color = theme.text_secondary,
+                        .list_bg_color = theme.bg_section,
+                        .list_border_color = theme.border,
+                    });
+                    if (ui.menuItem(.{
+                        .label = "Open",
                         .bg_color = theme.bg_section,
-                        .border_color = theme.border,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                    }).clicked(ui.main_window.ctx)) {
+                        const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
+                            @panic("Failed to allocate");
+                        defer ui.main_window.ctx.frameAlloc().free(default_location);
+
+                        c.SDL_ShowOpenFileDialog(
+                            dialog_callback,
+                            clay.anytypeToAnyopaquePtr(app_state),
+                            ui.main_window.ptr,
+                            &dialog_filter_list,
+                            dialog_filter_list.len,
+                            default_location.ptr,
+                            false,
+                        );
+                    }
+                    if (ui.menuItem(.{
+                        .label = "Exit",
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .shortcut = app_state.generalBinding(.quit).keyName(),
+                    }).clicked(ui.main_window.ctx)) {
+                        ui.quit = true;
+                    }
+                    sys_menu.end();
+
+                    const emulation_menu = ui.dropdownMenu(.{
+                        .label = "Emulation",
+                        .bg_color = theme.bg_panel,
+                        .hover_color = theme.bg_hover,
+                        .text_color = theme.text_secondary,
+                        .list_bg_color = theme.bg_section,
+                        .list_border_color = theme.border,
+                    });
+                    if (ui.menuItem(.{
+                        .label = if (app_state.paused) "Continue" else "Pause",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .shortcut = app_state.generalBinding(.toggle_pause).keyName(),
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.togglePause();
+                    }
+                    if (ui.menuItem(.{
+                        .label = "Stop",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .shortcut = app_state.generalBinding(.stop).keyName(),
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.unloadCurrentRom();
+                    }
+                    if (ui.menuItem(.{
+                        .label = "Restart",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .shortcut = app_state.generalBinding(.restart).keyName(),
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.resetSystem();
+                    }
+
+                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+                    const save_state_item = ui.menuItem(.{
+                        .label = "Save State",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .has_submenu = true,
                     });
                     {
-                        drawStateSlotItems(ui, app_state, .save);
+                        const save_state_submenu = save_state_item.submenu(.{
+                            .width = 270,
+                            .bg_color = theme.bg_section,
+                            .border_color = theme.border,
+                        });
+                        {
+                            drawStateSlotItems(ui, app_state, .save);
+                        }
+                        save_state_submenu.end();
                     }
-                    save_state_submenu.end();
-                }
-                save_state_item.end();
+                    save_state_item.end();
 
-                const load_state_item = ui.menuItem(.{
-                    .label = "Load State",
-                    .enabled = app_state.emulation_running,
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .has_submenu = true,
-                });
-                {
-                    const load_state_submenu = load_state_item.submenu(.{
-                        .width = 270,
+                    const load_state_item = ui.menuItem(.{
+                        .label = "Load State",
+                        .enabled = app_state.emulation_running,
                         .bg_color = theme.bg_section,
-                        .border_color = theme.border,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .has_submenu = true,
                     });
                     {
-                        drawStateSlotItems(ui, app_state, .load);
+                        const load_state_submenu = load_state_item.submenu(.{
+                            .width = 270,
+                            .bg_color = theme.bg_section,
+                            .border_color = theme.border,
+                        });
+                        {
+                            drawStateSlotItems(ui, app_state, .load);
+                        }
+                        load_state_submenu.end();
                     }
-                    load_state_submenu.end();
-                }
-                load_state_item.end();
+                    load_state_item.end();
 
-                _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
-                if (ui.menuItem(.{
-                    .label = "Debug",
-                    .enabled = app_state.emulation_running,
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                    .shortcut = app_state.generalBinding(.toggle_step_mode).keyName(),
-                }).clicked(ui.main_window.ctx)) {
-                    app_state.toggleDebug();
-                }
-                if (ui.menuItem(.{
-                    .label = if (app_state.show_fps) "Hide FPS" else "Show FPS",
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                }).clicked(ui.main_window.ctx)) {
-                    app_state.show_fps = !app_state.show_fps;
-                }
-                _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+                    if (ui.menuItem(.{
+                        .label = "Debug",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                        .shortcut = app_state.generalBinding(.toggle_step_mode).keyName(),
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.toggleDebug();
+                    }
+                    if (ui.menuItem(.{
+                        .label = if (app_state.show_fps) "Hide FPS" else "Show FPS",
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.show_fps = !app_state.show_fps;
+                    }
+                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
 
-                if (ui.menuItem(.{
-                    .label = "Settings",
-                    .bg_color = theme.bg_section,
-                    .hover_color = theme.accent_blue,
-                    .text_color = theme.text_secondary,
-                }).clicked(ui.main_window.ctx)) {
-                    ui.createWindow(
-                        "Settings",
-                        680,
-                        640,
-                        .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(app_state) },
-                    );
+                    if (ui.menuItem(.{
+                        .label = "Settings",
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                    }).clicked(ui.main_window.ctx)) {
+                        ui.createWindow(
+                            "Settings",
+                            680,
+                            640,
+                            .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(app_state) },
+                        );
+                    }
+                    emulation_menu.end();
                 }
-                emulation_menu.end();
+                menubar.end();
             }
-            menubar.end();
+        }
 
         if (app_state.show_fps) {
             const f = ui.float(.{
@@ -331,8 +337,8 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 .parentId = root.id.id,
                 .attach_points = .{ .parent = .left_top, .element = .left_top },
                 .offset = .{
-                    .x = 5 + @as(f32, @floatFromInt(window_safe_padding.left)),
-                    .y = 30 + @as(f32, @floatFromInt(window_safe_padding.bottom)),
+                    .x = 5 + @as(f32, @floatFromInt(safe_area_padding.left)),
+                    .y = 30 + @as(f32, @floatFromInt(safe_area_padding.bottom)),
                 },
             });
             _ = ui.label(.{
@@ -347,23 +353,33 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             f.end();
         }
 
-        if (app_state.render_home_ui) {
-            drawHomeUI(ui, app_state);
-        } else if (app_state.render_debug_ui) {
+        if (builtin.abi.isAndroid() and app_state.render_android_settings_ui) {
+            drawAndroidSettingsUI(ui, app_state, safe_area_padding);
+        } else if (app_state.render_home_ui) {
+            drawHomeUI(ui, app_state, safe_area_padding);
+        } else if (app_state.render_debug_ui and !builtin.abi.isAndroid()) {
             debug.drawUI(ui, app_state);
         } else {
+            const orientation: android.ScreenOrientation = if (builtin.abi.isAndroid())
+                android.currentScreenOrientation().?
+            else
+                .unknown;
+            const is_portrait = orientation == .portrait or orientation == .portrait_flipped;
+
             const canvas = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
                 .pixels = app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
                 .w = NES_WIDTH,
                 .h = NES_VISIBLE_HEIGHT,
-                .aspect_ratio = app_state.settings.aspect_ratio,
+                .padding = if (builtin.abi.isAndroid()) safe_area_padding else .{},
+                .aspect_ratio = if (is_portrait) .@"4_3" else app_state.settings.aspect_ratio,
+                .viewport_alignment = if (is_portrait) .top else .center,
                 .bg_color = Color.black,
                 .apply_runtime_shaders = true,
             });
 
             if (builtin.abi.isAndroid()) {
-                drawGamepad(ui, canvas.id);
+                drawGamepad(ui, canvas.id, orientation);
             }
 
             if (app_state.paused) {
@@ -385,54 +401,393 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 f.end();
             }
         }
+
+        if (builtin.abi.isAndroid() and app_state.show_android_sidepanel) {
+            drawAndroidSidepanel(ui, app_state, root.id);
+        }
     }
     root.end();
 }
 
-fn drawGamepad(ui: *UI, parent_id: clay.ElementId) void {
+fn drawAndroidHeader(ui: *UI, app_state: *AppState) void {
+    const safe_padding = ui.main_window.safeAreaPadding();
+
+    const header = ui.column(.{
+        .bg_color = theme.bg_panel,
+        .border_width = 1,
+        .border_color = theme.border_dim,
+        .sizing = .{ .h = .fit, .w = .grow },
+    });
+    {
+        _ = ui.spacer(.{ .sizing = .{ .h = .fixed(@floatFromInt(safe_padding.top)) } });
+        const inner = ui.row(.{
+            .bg_color = theme.bg_panel,
+            .padding = .{ .left = 8, .right = 12 },
+            .gap = 8,
+            .child_alignment = .{ .x = .left, .y = .center },
+        });
+        {
+            if (ui.iconButton(.{
+                .icon = ui.icons.get(.menu),
+                .size = 28,
+                .padding = .all(10),
+                .bg_color = Color.transparent,
+                .hover_color = theme.bg_hover,
+                .tint = theme.text_primary,
+                .corner_radius = 8,
+            }).clicked(ui.main_window.ctx)) {
+                app_state.show_android_sidepanel = true;
+                app_state.android_sidepanel_created_at = c.SDL_GetTicks();
+            }
+
+            _ = ui.label(.{
+                .text = "NESkwik",
+                .font_size = 18,
+                .line_height = 20,
+                .color = theme.text_primary,
+            });
+
+            _ = ui.spacer(.{ .sizing = .{ .w = .grow } });
+
+            if (ui.button(.{
+                .text = "Open ROM",
+                .font_size = 14,
+                .text_color = Color.white,
+                .bg_color = theme.accent_blue,
+                .hover_color = theme.accent_blue.lighten(0.12),
+                .padding = .{ .left = 14, .right = 14, .top = 9, .bottom = 9 },
+                .corner_radius = 6,
+                .elevation = 0,
+            }).clicked(ui.main_window.ctx)) {
+                openRomDialog(ui, app_state);
+            }
+        }
+        inner.end();
+    }
+    header.end();
+}
+
+fn androidSidePanelTransitionState(state_: clay.TransitionData, _: clay.TransitionProperty) callconv(.c) clay.TransitionData {
+    var s = state_;
+    s.bounding_box.x -= s.bounding_box.width;
+    return s;
+}
+
+fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) void {
+    const safe_padding = ui.main_window.safeAreaPadding();
+    const dims = clay.getLayoutDimensions();
+    const sidepanel_w = @min(340.0, dims.w * 0.86);
+    const is_open = app_state.show_android_sidepanel;
+    const sidepanel_transition = clay.TransitionElementConfig{
+        .handler = clay.easeOut,
+        .duration = 0.18,
+        .properties = clay.TransitionProperty.position,
+        .enter = .{
+            .set_initial_state = androidSidePanelTransitionState,
+            .trigger = .trigger_on_first_parent_frame,
+        },
+        .exit = .{
+            .set_final_state = androidSidePanelTransitionState,
+            .sibling_ordering = .natural_order,
+        },
+    };
+
+    const sidepanel = ui.float(.{
+        .id = "android_sidepanel",
+        .attach_to = .to_element_with_id,
+        .parentId = root_id.id,
+        .attach_points = .{ .parent = .left_top, .element = .left_top },
+        .z_index = 60,
+        .sizing = .{ .w = .fixed(sidepanel_w), .h = .grow },
+        .transition = sidepanel_transition,
+        .no_render = !is_open,
+    });
+    {
+        const col = ui.column(.{
+            .sizing = .{ .w = .fixed(sidepanel_w), .h = .grow },
+            .bg_color = theme.bg_panel,
+            .border_width = 1,
+            .border_color = theme.border,
+            .child_alignment = .{ .x = .left, .y = .top },
+            .padding = .{
+                .top = safe_padding.top,
+                .left = safe_padding.left,
+                .right = safe_padding.right,
+            },
+        });
+        {
+            const scroll = ui.scrollArea(.{
+                .sizing = .grow,
+                .vertical = true,
+                .padding = .{ .top = 8, .bottom = @intCast(@as(u16, safe_padding.bottom) + 8) },
+            });
+            {
+                drawAndroidDrawerSectionLabel(ui, "Home");
+                if (drawAndroidDrawerAction(ui, "Home", true)) {
+                    app_state.render_android_settings_ui = false;
+                    app_state.render_home_ui = true;
+                    app_state.show_android_sidepanel = false;
+                }
+                if (drawAndroidDrawerAction(ui, "Open ROM", true)) {
+                    app_state.show_android_sidepanel = false;
+                    openRomDialog(ui, app_state);
+                }
+
+                drawAndroidDrawerSectionLabel(ui, "Emulation");
+                if (drawAndroidDrawerAction(
+                    ui,
+                    if (app_state.paused) "Resume" else "Pause",
+                    app_state.emulation_running,
+                )) {
+                    app_state.togglePause();
+                    app_state.show_android_sidepanel = false;
+                }
+                if (drawAndroidDrawerAction(ui, "Restart", app_state.emulation_running)) {
+                    app_state.resetSystem();
+                    app_state.show_android_sidepanel = false;
+                }
+                if (drawAndroidDrawerAction(ui, "Stop", app_state.emulation_running)) {
+                    app_state.unloadCurrentRom();
+                    ui.setWindowFullscreen(false);
+                }
+
+                drawAndroidDrawerSectionLabel(ui, "State");
+                if (drawAndroidDrawerAction(ui, "Save Slot 1", app_state.emulation_running)) {
+                    app_state.saveStateSlot(0);
+                    app_state.show_android_sidepanel = false;
+                }
+                if (drawAndroidDrawerAction(
+                    ui,
+                    "Load Slot 1",
+                    app_state.emulation_running and app_state.saveStateSlotInfo(0).exists,
+                )) {
+                    app_state.loadStateSlot(0);
+                    app_state.show_android_sidepanel = false;
+                }
+
+                drawAndroidDrawerSectionLabel(ui, "Tools");
+                if (drawAndroidDrawerAction(ui, if (app_state.show_fps) "Hide FPS" else "Show FPS", true)) {
+                    app_state.show_fps = !app_state.show_fps;
+                    app_state.show_android_sidepanel = false;
+                }
+
+                if (drawAndroidDrawerAction(
+                    ui,
+                    std.fmt.allocPrint(
+                        ui.main_window.ctx.frameAlloc(),
+                        "Speed: {s}",
+                        .{app_state.settings.emulation_speed.label()},
+                    ) catch @panic("OOM"),
+                    true,
+                )) {
+                    app_state.setEmulationSpeed(nextEmulationSpeed(app_state.settings.emulation_speed));
+                }
+                if (drawAndroidDrawerAction(ui, "Settings", true)) {
+                    app_state.render_android_settings_ui = true;
+                    app_state.render_home_ui = false;
+                    app_state.show_android_sidepanel = false;
+                    if (app_state.settings.selected_category != .shader) {
+                        app_state.settings.selected_category = .video;
+                    }
+                }
+                if (drawAndroidDrawerAction(ui, "Exit", true)) {
+                    ui.quit = true;
+                }
+            }
+            scroll.end();
+        }
+        col.end();
+    }
+    sidepanel.end();
+
+    // Wait for 250ms before doing the check to avoid closing the sidepanel as soon as it's opened
+    if (ui.hasPassedSinceMS(app_state.android_sidepanel_created_at, 250) and
+        // close the sidepanel when a click happens outside of it
+        is_open and !clay.pointerOver(sidepanel.id) and ui.current_window.ctx.frame.mouse_down)
+    {
+        app_state.show_android_sidepanel = false;
+    }
+}
+
+fn drawAndroidDrawerSectionLabel(ui: *UI, text: []const u8) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fixed(34) },
+        .padding = .{ .left = 20, .right = 20, .top = 12, .bottom = 4 },
+        .child_alignment = .{ .x = .left, .y = .center },
+    });
+    {
+        _ = ui.label(.{ .text = text, .font_size = 12, .line_height = 14, .color = theme.text_accent });
+    }
+    row.end();
+}
+
+fn drawAndroidDrawerAction(ui: *UI, text: []const u8, enabled: bool) bool {
+    return ui.button(.{
+        .text = text,
+        .font_size = 16,
+        .text_color = if (enabled) theme.text_primary else theme.text_muted,
+        .bg_color = theme.bg_panel,
+        .hover_color = theme.bg_hover,
+        .padding = .{ .left = 20, .right = 20, .top = 14, .bottom = 14 },
+        .corner_radius = 0,
+        .elevation = 0,
+        .sizing = .{ .w = .grow, .h = .fit },
+        .text_alignment = .left,
+        .enabled = enabled,
+    }).clicked(ui.main_window.ctx);
+}
+
+fn nextEmulationSpeed(speed: EmulationSpeed) EmulationSpeed {
+    return switch (speed) {
+        .half => .normal,
+        .normal => .double,
+        .double => .triple,
+        .triple => .quadruple,
+        .quadruple => .half,
+    };
+}
+
+fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) void {
+    const root = ui.column(.{
+        .sizing = .grow,
+        .bg_color = theme.bg_base,
+        .child_alignment = .{ .x = .left, .y = .top },
+        .padding = .{
+            .bottom = safe_area_padding.bottom,
+            .left = safe_area_padding.left,
+            .right = safe_area_padding.right,
+        },
+    });
+    {
+        const col = ui.column(.{ .bg_color = theme.bg_panel, .sizing = .{ .w = .grow, .h = .fit } });
+        {
+            if (app_state.emulation_running) {
+                _ = ui.spacer(.{ .sizing = .{ .h = .fixed(@floatFromInt(safe_area_padding.top)) } });
+            }
+            const tabs = ui.row(.{
+                .sizing = .{ .w = .grow, .h = .fit },
+                .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
+                .gap = 8,
+                .child_alignment = .{ .x = .left, .y = .center },
+            });
+            {
+                drawAndroidSettingsTab(ui, app_state, .video);
+                drawAndroidSettingsTab(ui, app_state, .shader);
+            }
+            tabs.end();
+        }
+        col.end();
+
+        const scroll = ui.scrollArea(.{
+            .sizing = .grow,
+            .vertical = true,
+            .padding = .{ .left = 10, .right = 10, .top = 10, .bottom = 10 },
+            .gap = 8,
+        });
+        {
+            const body = ui.column(.{
+                .sizing = .{ .w = .grow, .h = .fit },
+                .gap = 8,
+                .child_alignment = .{ .x = .left, .y = .top },
+            });
+            {
+                switch (app_state.settings.selected_category) {
+                    .shader => drawSettingsShaderContent(ui, app_state),
+                    else => drawSettingsVideoContent(ui, app_state),
+                }
+            }
+            body.end();
+        }
+        scroll.end();
+
+        const footer = ui.row(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .bg_color = theme.bg_panel,
+            .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
+            .gap = 8,
+            .child_alignment = .{ .x = .right, .y = .center },
+        });
+        {
+            if (ui.button(.{
+                .text = "Library",
+                .font_size = 15,
+                .text_color = theme.text_primary,
+                .bg_color = theme.bg_hover,
+                .hover_color = theme.border,
+                .padding = .{ .left = 16, .right = 16, .top = 9, .bottom = 9 },
+                .corner_radius = 6,
+                .elevation = 0,
+            }).clicked(ui.main_window.ctx)) {
+                app_state.render_android_settings_ui = false;
+                app_state.render_home_ui = true;
+            }
+
+            _ = ui.spacer(.{ .sizing = .grow });
+
+            if (ui.button(.{
+                .text = "Save",
+                .font_size = 15,
+                .text_color = Color.white,
+                .bg_color = theme.accent_blue,
+                .hover_color = theme.accent_blue.lighten(0.12),
+                .padding = .{ .left = 18, .right = 18, .top = 9, .bottom = 9 },
+                .corner_radius = 6,
+                .elevation = 0,
+            }).clicked(ui.main_window.ctx)) {
+                app_state.saveSettings();
+                ui.setVSync(app_state.settings.vsync);
+            }
+        }
+        footer.end();
+    }
+    root.end();
+}
+
+fn drawAndroidSettingsTab(ui: *UI, app_state: *AppState, category: SettingsCategory) void {
+    const is_active = app_state.settings.selected_category == category;
+    if (ui.button(.{
+        .text = category.displayName(),
+        .font_size = 15,
+        .text_color = if (is_active) Color.white else theme.text_secondary,
+        .bg_color = if (is_active) theme.accent_blue else theme.bg_hover,
+        .hover_color = if (is_active) theme.accent_blue.lighten(0.1) else theme.border,
+        .padding = .{ .left = 16, .right = 16, .top = 9, .bottom = 9 },
+        .corner_radius = 6,
+        .elevation = 0,
+    }).clicked(ui.main_window.ctx)) {
+        app_state.settings.selected_category = category;
+    }
+}
+
+fn drawGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
+    const bottom_offset = -22;
     const arrows = ui.float(.{
         .attach_to = .to_element_with_id,
         .parentId = parent_id.id,
         .z_index = 1,
         .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
-        .offset = .{ .x = 25, .y = -35 },
+        .offset = .{ .x = 18, .y = bottom_offset - 6 },
     });
     {
         const col = ui.column(.{
             .child_alignment = .center,
-            .sizing = .{ .w = .fixed(100), .h = .fixed(100) },
+            .sizing = .{ .w = .fixed(162), .h = .fixed(162) },
         });
         {
-            const up_button = ui.button(.{
-                .text = "",
-                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
-                .bg_color = .white,
-            });
+            const up_button = controllerButton(ui, "U", .{ .w = .fixed(54), .h = .fixed(54) });
             if (up_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.up);
 
-            const row = ui.row(.{ .gap = 50 });
+            const row = ui.row(.{ .gap = 54 });
             {
-                const left_button = ui.button(.{
-                    .text = "",
-                    .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
-                    .bg_color = .blue,
-                });
+                const left_button = controllerButton(ui, "L", .{ .w = .fixed(54), .h = .fixed(54) });
                 if (left_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.left);
 
-                const right_button = ui.button(.{
-                    .text = "",
-                    .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
-                    .bg_color = .red,
-                });
+                const right_button = controllerButton(ui, "R", .{ .w = .fixed(54), .h = .fixed(54) });
                 if (right_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.right);
             }
             row.end();
 
-            const down_button = ui.button(.{
-                .text = "",
-                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
-                .bg_color = .green,
-            });
+            const down_button = controllerButton(ui, "D", .{ .w = .fixed(54), .h = .fixed(54) });
             if (down_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.down);
         }
         col.end();
@@ -444,24 +799,39 @@ fn drawGamepad(ui: *UI, parent_id: clay.ElementId) void {
         .parentId = parent_id.id,
         .z_index = 1,
         .attach_points = .{ .parent = .center_bottom, .element = .center_bottom },
-        .offset = .{ .x = 0, .y = -15 },
+        .offset = .{ .x = 0, .y = if (screen_orientation == .portrait or screen_orientation == .portrait_flipped)
+            bottom_offset - 182
+        else
+            bottom_offset },
     });
     {
-        const row = ui.row(.{ .sizing = .{ .w = .fixed(75), .h = .fit }, .gap = 10 });
+        const row = ui.row(.{ .sizing = .fit, .gap = 10 });
         {
             const start_button = ui.button(.{
-                .text = "Start",
-                .text_color = .black,
-                .bg_color = .white,
+                .text = "START",
+                .font_size = 13,
+                .text_color = theme.text_primary,
+                .bg_color = Color.black.withAlpha(0.58),
+                .hover_color = theme.bg_hover.withAlpha(0.82),
+                .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 },
+                .corner_radius = 7,
                 .elevation = 0,
+                .border_width = 1,
+                .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
             });
             if (start_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.start);
 
             const select_button = ui.button(.{
-                .text = "Select",
-                .text_color = .black,
-                .bg_color = .white,
+                .text = "SELECT",
+                .font_size = 13,
+                .text_color = theme.text_primary,
+                .bg_color = Color.black.withAlpha(0.58),
+                .hover_color = theme.bg_hover.withAlpha(0.82),
+                .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 },
+                .corner_radius = 7,
                 .elevation = 0,
+                .border_width = 1,
+                .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
             });
             if (select_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.select);
         }
@@ -474,30 +844,36 @@ fn drawGamepad(ui: *UI, parent_id: clay.ElementId) void {
         .parentId = parent_id.id,
         .z_index = 1,
         .attach_points = .{ .parent = .right_bottom, .element = .right_bottom },
-        .offset = .{ .x = -15, .y = -15 },
+        .offset = .{ .x = -18, .y = bottom_offset - 4 },
     });
     {
-        const row = ui.row(.{ .sizing = .fit, .gap = 50 });
+        const row = ui.row(.{ .sizing = .fit, .gap = 16 });
         {
-            const b_button = ui.button(.{
-                .text = "B",
-                .text_color = .white,
-                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
-                .bg_color = .rgb(255, 102, 1),
-            });
+            const b_button = controllerButton(ui, "B", .{ .w = .fixed(62), .h = .fixed(62) });
             if (b_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.b);
 
-            const a_button = ui.button(.{
-                .text = "A",
-                .text_color = .white,
-                .sizing = .{ .w = .fixed(50), .h = .fixed(50) },
-                .bg_color = .rgb(1, 255, 218),
-            });
+            const a_button = controllerButton(ui, "A", .{ .w = .fixed(62), .h = .fixed(62) });
             if (a_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.a);
         }
         row.end();
     }
     buttons2.end();
+}
+
+fn controllerButton(ui: *UI, text: []const u8, sizing: clay.Sizing) *widgets.Button {
+    return ui.button(.{
+        .text = text,
+        .font_size = 18,
+        .text_color = theme.text_primary,
+        .sizing = sizing,
+        .bg_color = Color.black.withAlpha(0.52),
+        .hover_color = theme.accent_blue.withAlpha(0.72),
+        .border_width = 1,
+        .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
+        .corner_radius = 10,
+        .padding = .all(0),
+        .elevation = 0,
+    });
 }
 
 const SaveStateMenuMode = enum { save, load };
@@ -549,30 +925,44 @@ fn openRomDialog(ui: *UI, app_state: *AppState) void {
     );
 }
 
-fn drawHomeUI(ui: *UI, app_state: *AppState) void {
+fn drawHomeUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) void {
     const entries = app_state.history.entries.items;
 
     const root = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_base,
         .child_alignment = .{ .x = .center, .y = .top },
+        .padding = if (builtin.abi.isAndroid())
+            .{
+                .bottom = safe_area_padding.bottom,
+                .left = safe_area_padding.left,
+                .right = safe_area_padding.right,
+            }
+        else
+            .{},
     });
     {
+        // Empty state home
         if (entries.len == 0) {
-            // Empty state: open button.
-            _ = ui.spacer(.{ .sizing = .grow });
-            if (ui.button(.{
-                .text = "Open ROM",
-                .font_size = 15,
-                .bg_color = theme.accent_blue,
-                .text_color = Color.white,
-                .padding = .{ .left = 28, .right = 28, .top = 10, .bottom = 10 },
-                .corner_radius = 6,
-                .elevation = 0,
-            }).clicked(ui.main_window.ctx)) openRomDialog(ui, app_state);
-            _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(14) } });
-            _ = ui.label(.{ .text = "or use System > Open", .font_size = 13, .color = theme.text_secondary });
-            _ = ui.spacer(.{ .sizing = .grow });
+            if (builtin.abi.isAndroid()) {
+                _ = ui.spacer(.{ .sizing = .grow });
+                _ = ui.label(.{ .text = "No ROMs added", .font_size = 16, .color = theme.text_secondary });
+                _ = ui.spacer(.{ .sizing = .grow });
+            } else {
+                _ = ui.spacer(.{ .sizing = .grow });
+                if (ui.button(.{
+                    .text = "Open ROM",
+                    .font_size = 15,
+                    .bg_color = theme.accent_blue,
+                    .text_color = Color.white,
+                    .padding = .{ .left = 28, .right = 28, .top = 10, .bottom = 10 },
+                    .corner_radius = 6,
+                    .elevation = 0,
+                }).clicked(ui.main_window.ctx)) openRomDialog(ui, app_state);
+                _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(14) } });
+                _ = ui.label(.{ .text = "or use System > Open", .font_size = 13, .color = theme.text_secondary });
+                _ = ui.spacer(.{ .sizing = .grow });
+            }
         } else {
             const card_title_lines = maxGameCardTitleLines(ui, entries);
             const scroll = ui.scrollArea(.{ .sizing = .grow, .vertical = true });
@@ -604,8 +994,8 @@ fn drawHomeUI(ui: *UI, app_state: *AppState) void {
     root.end();
 }
 
-const CARD_W: f32 = 200;
-const CARD_THUMB_H: f32 = 175; // 200 * 224 / 256
+const CARD_W: f32 = if (builtin.abi.isAndroid()) 150 else 200;
+const CARD_THUMB_H: f32 = CARD_W * 224 / 256;
 const CARD_CONTENT_W: f32 = CARD_W - 20;
 const CARD_TITLE_FONT_SIZE: u16 = 14;
 const CARD_TITLE_LINE_H: u16 = 16;
@@ -689,6 +1079,10 @@ fn drawGameCard(ui: *UI, app_state: *AppState, entry: *const game_history.GameEn
 
     if (card.clicked(ui.main_window.ctx)) {
         app_state.loadRom(entry.rom_path) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
+
+        if (builtin.abi.isAndroid()) {
+            ui.setWindowFullscreen(true);
+        }
     }
 }
 
