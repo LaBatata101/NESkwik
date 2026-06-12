@@ -1,3 +1,5 @@
+const clay = @import("clay.zig");
+
 pub const AspectRatio = enum {
     none,
     @"4_3",
@@ -20,8 +22,20 @@ pub const AspectRatio = enum {
     }
 };
 
+pub const ViewportAlignment = enum {
+    center,
+    top,
+};
+
 const Viewport = struct { x: f32, y: f32, w: f32, h: f32 };
-pub fn calculateViewport(win_x: f32, win_y: f32, win_w: f32, win_h: f32, aspect: AspectRatio) Viewport {
+pub fn calculateViewport(
+    win_x: f32,
+    win_y: f32,
+    win_w: f32,
+    win_h: f32,
+    aspect: AspectRatio,
+    alignment: ViewportAlignment,
+) Viewport {
     const desired_aspect = aspect.value() orelse return .{
         .x = win_x,
         .y = win_y,
@@ -44,9 +58,26 @@ pub fn calculateViewport(win_x: f32, win_y: f32, win_w: f32, win_h: f32, aspect:
         viewport_w = 2.0 * win_w * delta;
     } else {
         delta = (device_aspect / desired_aspect - 1.0) / 2.0 + 0.5;
-        y += win_h * (0.5 - delta);
+        y += switch (alignment) {
+            .center => win_h * (0.5 - delta),
+            .top => 0,
+        };
         viewport_h = 2.0 * win_h * delta;
     }
 
     return .{ .x = x, .y = y, .w = viewport_w, .h = viewport_h };
+}
+
+pub fn canvasContentBounds(bounds: clay.BoundingBox, padding: clay.Padding) clay.BoundingBox {
+    const left: f32 = @floatFromInt(padding.left);
+    const right: f32 = @floatFromInt(padding.right);
+    const top: f32 = @floatFromInt(padding.top);
+    const bottom: f32 = @floatFromInt(padding.bottom);
+
+    return .{
+        .x = bounds.x + left,
+        .y = bounds.y + top,
+        .width = @max(0, bounds.width - left - right),
+        .height = @max(0, bounds.height - top - bottom),
+    };
 }

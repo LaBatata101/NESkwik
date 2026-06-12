@@ -2859,6 +2859,8 @@ pub const UI = struct {
         const data = clay.anyopaquePtrToType(*widgets.CustomData, cmd.render_data.custom.custom_data.?);
         switch (data.*) {
             .canvas => |canvas_| {
+                const canvas_bounds = utils.canvasContentBounds(cmd.bounding_box, canvas_.params.padding);
+
                 // Content-shader preview fast path: use the pipeline output texture
                 // directly, skipping the pixel upload entirely.
                 if (canvas_.params.shader_preview) |which| {
@@ -2873,11 +2875,12 @@ pub const UI = struct {
                                     .h = cmd.bounding_box.height,
                                 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 }, null);
                                 const vp = utils.calculateViewport(
-                                    cmd.bounding_box.x,
-                                    cmd.bounding_box.y,
-                                    cmd.bounding_box.width,
-                                    cmd.bounding_box.height,
+                                    canvas_bounds.x,
+                                    canvas_bounds.y,
+                                    canvas_bounds.width,
+                                    canvas_bounds.height,
                                     canvas_.params.aspect_ratio,
+                                    canvas_.params.viewport_alignment,
                                 );
                                 window.renderer.setTexture(tex);
                                 window.renderer.pushRoundedTexturedRect(
@@ -2976,17 +2979,18 @@ pub const UI = struct {
                             if (pl.getLastOutputTexture()) |border_tex| {
                                 window.renderer.setTexture(border_tex);
                                 window.renderer.pushRoundedTexturedRect(.{
-                                    .x = cmd.bounding_box.x,
-                                    .y = cmd.bounding_box.y,
-                                    .w = cmd.bounding_box.width,
-                                    .h = cmd.bounding_box.height,
+                                    .x = canvas_bounds.x,
+                                    .y = canvas_bounds.y,
+                                    .w = canvas_bounds.width,
+                                    .h = canvas_bounds.height,
                                 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 }, canvas_.params.corner_radius, null);
                                 const content_vp = utils.calculateViewport(
-                                    cmd.bounding_box.x,
-                                    cmd.bounding_box.y,
-                                    cmd.bounding_box.width,
-                                    cmd.bounding_box.height,
+                                    canvas_bounds.x,
+                                    canvas_bounds.y,
+                                    canvas_bounds.width,
+                                    canvas_bounds.height,
                                     canvas_.params.aspect_ratio,
+                                    canvas_.params.viewport_alignment,
                                 );
                                 window.renderer.setTexture(texture);
                                 window.renderer.pushRoundedTexturedRect(
@@ -3012,11 +3016,12 @@ pub const UI = struct {
                 if (should_defer) {
                     // A shader pipeline is active: defer rendering to after the UI pass.
                     const vp = utils.calculateViewport(
-                        cmd.bounding_box.x,
-                        cmd.bounding_box.y,
-                        cmd.bounding_box.width,
-                        cmd.bounding_box.height,
+                        canvas_bounds.x,
+                        canvas_bounds.y,
+                        canvas_bounds.width,
+                        canvas_bounds.height,
                         canvas_.params.aspect_ratio,
+                        canvas_.params.viewport_alignment,
                     );
 
                     // Flush and force a batch boundary so overlay elements rendered after
@@ -3035,21 +3040,22 @@ pub const UI = struct {
                             .h = @intFromFloat(vp.h),
                         },
                         .canvas = .{
-                            .x = @intFromFloat(cmd.bounding_box.x),
-                            .y = @intFromFloat(cmd.bounding_box.y),
-                            .w = @intFromFloat(cmd.bounding_box.width),
-                            .h = @intFromFloat(cmd.bounding_box.height),
+                            .x = @intFromFloat(canvas_bounds.x),
+                            .y = @intFromFloat(canvas_bounds.y),
+                            .w = @intFromFloat(canvas_bounds.width),
+                            .h = @intFromFloat(canvas_bounds.height),
                         },
                         .overlay_draw_call_start = overlay_start,
                     };
                 } else {
                     // No shader pipeline: draw the NES frame directly into the UI batch.
                     const viewport = utils.calculateViewport(
-                        cmd.bounding_box.x,
-                        cmd.bounding_box.y,
-                        cmd.bounding_box.width,
-                        cmd.bounding_box.height,
+                        canvas_bounds.x,
+                        canvas_bounds.y,
+                        canvas_bounds.width,
+                        canvas_bounds.height,
                         canvas_.params.aspect_ratio,
+                        canvas_.params.viewport_alignment,
                     );
                     const dest: c.SDL_FRect = .{
                         .x = viewport.x,

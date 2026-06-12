@@ -958,7 +958,9 @@ pub const Canvas = struct {
         fg_color: ?Color = null,
         bg_color: ?Color = null,
         corner_radius: clay.CornerRadius = .{},
+        padding: clay.Padding = .{},
         aspect_ratio: utils.AspectRatio = .none,
+        viewport_alignment: utils.ViewportAlignment = .center,
         /// When set, the canvas uses the named pipeline's last output texture
         /// instead of uploading `pixels`. Falls back to `pixels` if the
         /// pipeline has no output yet.
