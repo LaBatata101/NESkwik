@@ -553,7 +553,7 @@ pub const Button = struct {
     pub fn clicked(self: *const Self, ctx: *UIContext) bool {
         if (!self.params.enabled) return false;
         const is_hovered = clay.pointerOver(self.id);
-        return is_hovered and ctx.frame.mouse_pressed;
+        return is_hovered and ctx.pointerReleased();
     }
 
     pub fn clickedOrHold(self: *const Self, ctx: *UIContext) bool {
