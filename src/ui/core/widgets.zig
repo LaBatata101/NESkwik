@@ -38,6 +38,7 @@ pub const Container = struct {
         border_width: u16 = 0,
         border_color: ?Color = null,
         child_alignment: clay.ChildAlignment = .{ .x = .left, .y = .center },
+        transition: clay.TransitionElementConfig = .{},
     };
     const Self = @This();
 
@@ -66,6 +67,7 @@ pub const Container = struct {
                 .color = border_color.toClay(),
                 .width = .outside(params.border_width),
             } else .{ .color = .{ 0, 0, 0, 0 } },
+            .transition = params.transition,
         });
 
         return .{ .id = element_id, .params = params };
@@ -197,6 +199,8 @@ pub const Float = struct {
         attach_to: clay.FloatingAttachToElement = .to_none,
         clip_to: clay.FloatingClipToElement = .to_none,
         sizing: clay.Sizing = .fit,
+        transition: clay.TransitionElementConfig = .{},
+        no_render: bool = false,
     };
     const Self = @This();
 
@@ -219,6 +223,8 @@ pub const Float = struct {
                 .clip_to = params.clip_to,
             },
             .layout = .{ .sizing = params.sizing },
+            .transition = params.transition,
+            .no_render = params.no_render,
         });
 
         return .{ .id = element_id };
