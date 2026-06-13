@@ -183,19 +183,7 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                         .hover_color = theme.accent_blue,
                         .text_color = theme.text_secondary,
                     }).clicked(ui.main_window.ctx)) {
-                        const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
-                            @panic("Failed to allocate");
-                        defer ui.main_window.ctx.frameAlloc().free(default_location);
-
-                        c.SDL_ShowOpenFileDialog(
-                            dialog_callback,
-                            clay.anytypeToAnyopaquePtr(app_state),
-                            ui.main_window.ptr,
-                            &dialog_filter_list,
-                            dialog_filter_list.len,
-                            default_location.ptr,
-                            false,
-                        );
+                        openRomDialog(ui, app_state);
                     }
                     if (ui.menuItem(.{
                         .label = "Exit",
@@ -910,13 +898,19 @@ fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) vo
     }
 }
 
+const FilePickerCallbackData = struct { ui: *UI, app_state: *AppState };
 fn openRomDialog(ui: *UI, app_state: *AppState) void {
     const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
         @panic("Failed to allocate");
     defer ui.main_window.ctx.frameAlloc().free(default_location);
+
+    const data = ui.main_window.ctx.persistent_arena.allocator()
+        .create(FilePickerCallbackData) catch @panic("OOM");
+    data.* = .{ .app_state = app_state, .ui = ui };
+
     c.SDL_ShowOpenFileDialog(
-        dialog_callback,
-        clay.anytypeToAnyopaquePtr(app_state),
+        file_picker_callback,
+        clay.anytypeToAnyopaquePtr(data),
         ui.main_window.ptr,
         &dialog_filter_list,
         dialog_filter_list.len,
@@ -2220,7 +2214,7 @@ fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]
     app_state.should_clear_border_shader = false;
 }
 
-fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
+fn file_picker_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
     if (filelist == null) {
         std.log.err("An error ocurred while selecting the file: {s}\n", .{c.SDL_GetError()});
         return;
@@ -2228,9 +2222,14 @@ fn dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c
     if (filelist.* == null) { // A pointer to NULL, the user either didn't choose any file or canceled the dialog.
         return;
     }
-    const app_state = clay.anyopaquePtrToType(*AppState, userdata);
+    const data = clay.anyopaquePtrToType(*FilePickerCallbackData, userdata);
+    const ui = data.ui;
+    const app_state = data.app_state;
+    defer ui.main_window.ctx.persistent_arena.allocator().destroy(data);
 
     const filepath = std.mem.span(filelist.*);
     std.log.debug("User selected file: {s}", .{filepath});
     app_state.loadRom(filepath) catch |err| std.debug.panic("Failed to load selected ROM: {any}\n", .{err});
+
+    if (builtin.abi.isAndroid()) ui.setWindowFullscreen(true);
 }
