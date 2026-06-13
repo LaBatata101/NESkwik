@@ -24,7 +24,7 @@ pub const ScreenOrientation = enum(i32) {
     }
 };
 
-pub fn displayName(alloc: std.mem.Allocator, uri: []const u8) !?[]const u8 {
+pub fn displayName(alloc: std.mem.Allocator, uri: []const u8) !?[]u8 {
     if (!builtin.abi.isAndroid()) @compileError("Function only available for Android");
 
     const uri_z = try alloc.dupeZ(u8, uri);
@@ -82,7 +82,7 @@ pub fn displayName(alloc: std.mem.Allocator, uri: []const u8) !?[]const u8 {
     const name = std.mem.span(utf);
     if (name.len == 0) return null;
 
-    return std.fs.path.stem(name);
+    return try alloc.dupe(u8, std.fs.path.stem(name));
 }
 
 pub fn currentScreenOrientation() ?ScreenOrientation {

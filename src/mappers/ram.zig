@@ -180,6 +180,7 @@ pub const BatteryBackedRam = struct {
             };
 
             const display_name = try android.displayName(alloc, rom_path);
+            defer if (display_name) |name| alloc.free(name);
             const stem = display_name orelse std.fs.path.stem(rom_path);
 
             const dir = try std.fs.path.join(alloc, &.{ data_dir_path, "save-files" });

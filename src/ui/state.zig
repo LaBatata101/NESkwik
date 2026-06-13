@@ -615,13 +615,16 @@ pub const AppState = struct {
 
     fn saveCurrentGame(self: *Self) void {
         const path = self.current_rom_path orelse return;
+        var android_name: ?[]u8 = null;
+        defer if (android_name) |name| self.alloc.free(name);
+
         const name = if (builtin.abi.isAndroid()) blk: {
-            const name = android.displayName(self.alloc, path) catch |err|
+            android_name = android.displayName(self.alloc, path) catch |err|
                 {
                     std.log.err("Failed to get ROM name: {s}", .{@errorName(err)});
-                    break :blk "UNKNOW";
+                    break :blk "UNKNOWN";
                 };
-            break :blk name orelse "UNKNOW";
+            break :blk android_name orelse "UNKNOWN";
         } else std.fs.path.stem(path);
 
         const elapsed_ms = std.time.milliTimestamp() - self.game_start_time_ms;
