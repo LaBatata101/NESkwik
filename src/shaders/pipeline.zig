@@ -1963,8 +1963,8 @@ pub const ShaderPipeline = struct {
         };
 
         var source_tex: *Texture = input;
-        var current_w = viewport.w;
-        var current_h = viewport.h;
+        var current_w = src_w;
+        var current_h = src_h;
 
         try renderPasses(
             self.alloc,
