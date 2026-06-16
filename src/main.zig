@@ -47,6 +47,10 @@ fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     defer buffer.deinit();
     const writer = &buffer.writer;
 
+    var short_msg: std.Io.Writer.Allocating = .init(alloc);
+    defer short_msg.deinit();
+    const short_msg_writer = &short_msg.writer;
+
     if (builtin.abi.isAndroid()) {
         writer.print("{s}\n", .{msg}) catch {};
     } else {
@@ -64,25 +68,26 @@ fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
         };
         const stacktrace = trace.written();
         if (stacktrace.len > 1024) {
-            writer.print("Stacktrace:\n{s}...\n", .{stacktrace[0..1024]}) catch {};
-        } else {
-            writer.print("Stacktrace:\n{s}\n", .{stacktrace}) catch {};
+            short_msg_writer.print("Stacktrace:\n{s}...\n", .{stacktrace[0..1024]}) catch {};
         }
+        writer.print("Stacktrace:\n{s}\n", .{stacktrace}) catch {};
     } else |err| {
         writer.print("Unable to dump stack trace:\n\tUnable to open debug info: {s}\n", .{@errorName(err)}) catch {};
     }
 
-    const panic_msg = alloc.dupeZ(u8, buffer.written()) catch unreachable;
-    defer alloc.free(panic_msg);
+    const short_panic_msg = alloc.dupeZ(u8, short_msg.written()) catch unreachable;
+    defer alloc.free(short_panic_msg);
 
-    logging.writePanic(buffer.written());
+    const full_panic_msg = buffer.written();
+
+    logging.writePanic(full_panic_msg);
     if (builtin.abi.isAndroid()) {
-        std.log.err("{s}", .{panic_msg});
+        std.log.err("{s}", .{full_panic_msg});
     } else {
-        std.debug.print("{s}", .{panic_msg});
+        std.debug.print("{s}", .{full_panic_msg});
     }
 
-    _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik Error", panic_msg.ptr, null);
+    _ = c.SDL_ShowSimpleMessageBox(c.SDL_MESSAGEBOX_ERROR, "NESkwik Error", short_panic_msg.ptr, null);
 
     std.process.exit(1);
 }
