@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const mmap = @import("../root.zig").mmap.mmap;
 const munmap = @import("../root.zig").mmap.munmap;
-const paths = @import("../paths.zig");
+const paths = @import("../utils/paths.zig");
 const android = if (builtin.abi.isAndroid()) @import("../utils/android.zig") else struct {};
 
 pub const Ram = struct {

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @import("root.zig").c;
-const sdlError = @import("utils/sdl.zig").sdlError;
+const c = @import("../root.zig").c;
+const sdlError = @import("sdl.zig").sdlError;
 
 pub const APP_NAME = "neskwik";
 

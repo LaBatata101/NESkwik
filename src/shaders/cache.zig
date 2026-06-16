@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const paths = @import("../paths.zig");
+const paths = @import("../utils/paths.zig");
 
 const MAGIC: [4]u8 = "NSHC".*;
 const VERSION: u32 = 1;

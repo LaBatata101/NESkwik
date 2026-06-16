@@ -1,7 +1,7 @@
 const std = @import("std");
 const sdlError = @import("utils/sdl.zig").sdlError;
 const c = @import("root.zig").c;
-const paths = @import("paths.zig");
+const paths = @import("utils/paths.zig");
 
 pub const THUMBNAIL_WIDTH: u32 = 256;
 pub const THUMBNAIL_HEIGHT: u32 = 224;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const zeit = @import("zeit");
 
-const paths = @import("paths.zig");
+const paths = @import("utils/paths.zig");
 
 const LOG_FILENAME = "NESkwik.log";
 
