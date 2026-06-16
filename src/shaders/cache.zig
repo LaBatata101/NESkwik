@@ -30,14 +30,15 @@ pub const ShaderCache = struct {
             else => return err,
         };
 
-        const cache_dir = try std.fs.openDirAbsolute(cache_path, .{});
+        var cache_dir = try std.fs.openDirAbsolute(cache_path, .{});
+        defer cache_dir.close();
 
         cache_dir.makeDir(SHADERS_SUBDIR) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
 
-        return .{ .alloc = alloc, .dir = cache_dir };
+        return .{ .alloc = alloc, .dir = try cache_dir.openDir(SHADERS_SUBDIR, .{}) };
     }
 
     pub fn deinit(self: *ShaderCache) void {
