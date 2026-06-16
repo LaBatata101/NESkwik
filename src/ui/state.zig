@@ -6,7 +6,7 @@ const c = @import("../root.zig").c;
 const Key = @import("core/ui.zig").Key;
 const UI = @import("core/ui.zig").UI;
 const Rom = @import("../rom.zig").Rom;
-const utils = @import("core/utils.zig");
+const viewport = @import("core/viewport.zig");
 const System = @import("../system.zig").System;
 const Frame = @import("../render.zig").Frame;
 const PatternTableFrame = @import("../render.zig").PatternTableFrame;
@@ -194,7 +194,7 @@ pub const AppState = struct {
     };
 
     pub const EmulatorSettings = struct {
-        aspect_ratio: utils.AspectRatio = .@"4_3",
+        aspect_ratio: viewport.AspectRatio = .@"4_3",
         /// Path to the active shader preset (owned by this struct).
         shader_preset_path: ?[]u8 = null,
         /// Active shader parameter overrides (names are owned by this struct).

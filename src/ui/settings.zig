@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const bindings = @import("bindings.zig");
-const utils = @import("core/utils.zig");
+const viewport = @import("core/viewport.zig");
 const EmulatorSettings = @import("state.zig").AppState.EmulatorSettings;
 
 const SETTINGS_FILENAME = "config.json";
@@ -46,7 +46,7 @@ pub const ShaderParamSetting = struct {
 
 pub const SettingsConfig = struct {
     version: u32 = 1,
-    aspect_ratio: utils.AspectRatio = .@"4_3",
+    aspect_ratio: viewport.AspectRatio = .@"4_3",
     shader_preset_path: ?[]const u8 = null,
     shader_params: []const ShaderParamSetting = &.{},
     border_shader_preset_path: ?[]const u8 = null,

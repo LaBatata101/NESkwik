@@ -8,7 +8,7 @@ const ui_core = @import("core/ui.zig");
 const UI = ui_core.UI;
 const Key = ui_core.Key;
 const clay = @import("core/clay.zig");
-const utils = @import("core/utils.zig");
+const viewport = @import("core/viewport.zig");
 const theme = @import("common.zig").theme;
 const widgets = @import("core/widgets.zig");
 const Color = @import("core/color.zig").Color;
@@ -1701,7 +1701,7 @@ fn drawAspectRatioRow(ui: *UI, app_state: *AppState) void {
 
         _ = ui.spacer(.{ .sizing = .grow });
 
-        const aspect_ratio_opts = ui.combobox(utils.AspectRatio, .{
+        const aspect_ratio_opts = ui.combobox(viewport.AspectRatio, .{
             .id = "aspect_ratio_combo",
             .selected = app_state.settings.aspect_ratio,
             .options = &.{ .none, .@"4_3", .@"16_9" },
@@ -1833,7 +1833,7 @@ fn drawShaderPreview(
     px_w: u32,
     px_h: u32,
     shader: widgets.Canvas.ShaderPreview,
-    aspect_ratio: utils.AspectRatio,
+    aspect_ratio: viewport.AspectRatio,
 ) void {
     const content_aspect = aspect_ratio.value() orelse @as(f32, @floatFromInt(4)) / 3;
     const preview_box_aspect = if (shader == .border)
@@ -2175,7 +2175,7 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
     const show_border_preview = app_state.settings.border_shader_preset_path != null or
         app_state.border_shader_loading;
     if (show_border_preview) {
-        const preview_aspect_ratio: utils.AspectRatio = switch (app_state.settings.aspect_ratio) {
+        const preview_aspect_ratio: viewport.AspectRatio = switch (app_state.settings.aspect_ratio) {
             .none => .@"4_3",
             else => app_state.settings.aspect_ratio,
         };

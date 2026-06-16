@@ -4,7 +4,7 @@ const clay = @import("clay.zig");
 const Color = @import("color.zig").Color;
 pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
-const utils = @import("utils.zig");
+const viewport = @import("viewport.zig");
 
 pub const CustomData = union(enum) {
     canvas: Canvas,
@@ -959,8 +959,8 @@ pub const Canvas = struct {
         bg_color: ?Color = null,
         corner_radius: clay.CornerRadius = .{},
         padding: clay.Padding = .{},
-        aspect_ratio: utils.AspectRatio = .none,
-        viewport_alignment: utils.ViewportAlignment = .center,
+        aspect_ratio: viewport.AspectRatio = .none,
+        viewport_alignment: viewport.ViewportAlignment = .center,
         /// When set, the canvas uses the named pipeline's last output texture
         /// instead of uploading `pixels`. Falls back to `pixels` if the
         /// pipeline has no output yet.
