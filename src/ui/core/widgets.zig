@@ -899,7 +899,7 @@ pub const ScrollContainer = struct {
                             .parentId = element_id.id,
                             .attach_points = .{ .element = .right_top, .parent = .right_top },
                             .offset = .{ .x = -1, .y = scroll_bar_y },
-                            .z_index = 10,
+                            .z_index = std.math.maxInt(i16),
                             .pointer_capture_mode = .passthrough,
                             .clip_to = .to_attached_parent,
                         },
