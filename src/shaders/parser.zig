@@ -331,7 +331,11 @@ const Node = union(enum) {
                 for (node.fields) |field| {
                     try writer.print("   {s} {s};\n", .{ field.type_name, field.name });
                 }
-                try writer.print("}} {s};", .{node.instance});
+                if (node.instance.len == 0) {
+                    try writer.print("}};", .{});
+                } else {
+                    try writer.print("}} {s};", .{node.instance});
+                }
             },
             .LayoutUniform => |node| {
                 try writer.print(
@@ -520,8 +524,11 @@ const Parser = struct {
                 .Id => if (std.mem.eql(u8, token.value, "layout")) {
                     _ = self.eat(); // consume (
 
-                    var layout_type: LayoutType = undefined;
-                    // Parse layout qualifiers: layout(push_constant) or layout(set=0, binding=0)
+                    var layout_type: ?LayoutType = null;
+                    var set: ?u32 = null;
+                    var binding: ?u32 = null;
+                    // Parse layout qualifiers. RetroArch shaders commonly use
+                    // both layout(set = N, binding = M) and layout(binding = M).
                     while (!self.atEnd() and self.peek().type != .Rparen) {
                         const tok = self.eat();
                         if (tok.type == .Id) {
@@ -529,18 +536,20 @@ const Parser = struct {
                                 layout_type = .PushConstant;
                             } else if (std.mem.eql(u8, tok.value, "set")) {
                                 _ = self.eat(); // =
-                                const set = self.eat(); // number
-                                _ = self.eat(); // ,
-                                _ = self.eat(); // binding
+                                const value = self.eat(); // number
+                                set = try std.fmt.parseInt(u32, value.value, 10);
+                            } else if (std.mem.eql(u8, tok.value, "binding")) {
                                 _ = self.eat(); // =
-                                const binding = self.eat(); // number
-
-                                layout_type = .{ .UniformBuffer = .{
-                                    .set = try std.fmt.parseInt(u32, set.value, 10),
-                                    .binding = try std.fmt.parseInt(u32, binding.value, 10),
-                                } };
+                                const value = self.eat(); // number
+                                binding = try std.fmt.parseInt(u32, value.value, 10);
                             }
                         }
+                    }
+                    if (layout_type == null and binding != null) {
+                        layout_type = .{ .UniformBuffer = .{
+                            .set = set orelse 0,
+                            .binding = binding.?,
+                        } };
                     }
                     if (!self.eat_if(.Rparen)) continue;
 
@@ -554,15 +563,16 @@ const Parser = struct {
                         _ = self.eat_if(.Newline);
                         switch (self.peek().type) {
                             .Id => {
+                                const resource_layout = layout_type orelse continue;
                                 const name = self.eat();
                                 const semi = self.eat();
-                                const set, const binding = switch (layout_type) {
+                                const uniform_set, const uniform_binding = switch (resource_layout) {
                                     .UniformBuffer => |u| .{ u.set, u.binding },
-                                    else => unreachable,
+                                    else => continue,
                                 };
                                 try self.nodes.append(self.alloc, .{ .LayoutUniform = .{
-                                    .set = set,
-                                    .binding = binding,
+                                    .set = uniform_set,
+                                    .binding = uniform_binding,
                                     .instance = name.value,
                                     .name = block_name.value,
                                     .pos = .{
@@ -572,6 +582,7 @@ const Parser = struct {
                                 } });
                             },
                             .Lbrace => {
+                                const resource_layout = layout_type orelse continue;
                                 _ = self.eat(); // consume {
                                 const fields = try self.parseBlockFields();
                                 if (!self.eat_if(.Rbrace)) {
@@ -579,18 +590,22 @@ const Parser = struct {
                                     continue;
                                 }
 
-                                const instance_name = self.eat();
-                                const semi = self.eat(); // consume ;
-                                if (instance_name.type != .Id or semi.type != .Semi) {
+                                var instance_name: []const u8 = "";
+                                var semi = self.eat(); // optional instance name or ;
+                                if (semi.type == .Id) {
+                                    instance_name = semi.value;
+                                    semi = self.eat(); // consume ;
+                                }
+                                if (semi.type != .Semi) {
                                     self.alloc.free(fields);
                                     continue;
                                 }
 
                                 try self.nodes.append(self.alloc, .{ .LayoutBlock = .{
                                     .name = block_name.value,
-                                    .instance = instance_name.value,
+                                    .instance = instance_name,
                                     .fields = fields,
-                                    .type = layout_type,
+                                    .type = resource_layout,
                                     .pos = .{
                                         .start = token.pos.start,
                                         .end = semi.pos.end,
@@ -1328,6 +1343,45 @@ test "patch" {
     try std.testing.expect(std.mem.eql(u8, got, expected));
 }
 
+test "patch layout binding without set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\#version 450
+        \\layout(push_constant, std140) uniform UBO
+        \\{
+        \\   vec4 SourceSize;
+        \\   float OUT_GAMMA;
+        \\} global;
+        \\
+        \\layout(binding = 0, std140) uniform UBO1
+        \\{
+        \\   mat4 MVP;
+        \\};
+        \\
+        \\layout(set = 0, binding = 2) uniform sampler2D Source;
+    ;
+    const expected =
+        \\#version 450
+        \\layout(std140, set = 1, binding = 0) uniform UBO {
+        \\   vec4 SourceSize;
+        \\   float OUT_GAMMA;
+        \\} global;
+        \\
+        \\layout(std140, set = 1, binding = 1) uniform UBO1 {
+        \\   mat4 MVP;
+        \\};
+        \\
+        \\layout(set = 0, binding = 0) uniform sampler2D Source;
+    ;
+
+    const got = try patchShaderSource(alloc, source, .Vertex);
+    defer alloc.free(got);
+    try std.testing.expect(std.mem.eql(u8, got, expected));
+}
+
 test "preprocess" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1518,7 +1572,6 @@ test "parse_shader" {
         \\vertex:
         \\#version 450
         \\
-        \\
         \\layout(std140, set = 1, binding = 0) uniform Push {
         \\   vec4 SourceSize;
         \\   uint FrameCount;
@@ -1602,7 +1655,6 @@ test "parse_shader" {
         \\fragment:
         \\#version 450
         \\
-        \\
         \\layout(std140, set = 3, binding = 0) uniform Push {
         \\   vec4 SourceSize;
         \\   uint FrameCount;
@@ -1680,7 +1732,7 @@ test "parse_shader" {
         \\{
         \\   FragColor = vec4(texture(Source, vTexCoord).rgb, 1.0);
         \\}
-        \\config: .{ "ntsc_hue": .{ .option_name: "Hue", .initial: 0, .min: -1, .max: 6.3, step: 0.05 }, "kernel_half": .{ .option_name: "Kernel Half-Size (speed-up)", .initial: 16, .min: 1, .max: 16, step: 1 }, "pi_mod": .{ .option_name: "Phase-Horiz. Angle", .initial: 96, .min: 1, .max: 360, step: 1 }, "vert_scal": .{ .option_name: "Phase-Vertical Scale", .initial: 0.6667, .min: 0, .max: 2, step: 0.05555 }, "ntsc_sat": .{ .option_name: "Saturation", .initial: 2, .min: 0, .max: 6, step: 0.05 }, "afacts": .{ .option_name: "Artifacts", .initial: 0, .min: 0, .max: 1, step: 0.05 }, "fring": .{ .option_name: "Fringing", .initial: 0, .min: 0, .max: 1, step: 0.05 }, "ntsc_bri": .{ .option_name: "Brightness", .initial: 1, .min: 0, .max: 2, step: 0.01 }, "LUMA_CUTOFF": .{ .option_name: "Luma Cutoff", .initial: 0.2, .min: 0, .max: 1, step: 0.005 }, "ntsc_sharp": .{ .option_name: "Sharpness", .initial: 0.1, .min: -1, .max: 1, step: 0.05 }, "ntsc_res": .{ .option_name: "Resolution", .initial: 0, .min: -1, .max: 1, step: 0.05 }, "stat_ph": .{ .option_name: "Dot Crawl On/Off", .initial: 0, .min: 0, .max: 1, step: 1 }, "ntsc_bleed": .{ .option_name: "Chroma Bleed", .initial: 0, .min: -0.75, .max: 2, step: 0.05 }, "dummy": .{ .option_name: " [ System Specific Tweaks] ", .initial: 0, .min: 0, .max: 0, step: 0 }, }
+        \\config: .{ "ntsc_hue": .{ .option_name: "Hue", .initial: 0, .min: -1, .max: 6.3, step: 0.05 }, "kernel_half": .{ .option_name: "Kernel Half-Size (speed-up)", .initial: 16, .min: 1, .max: 16, step: 1 }, "pi_mod": .{ .option_name: "Phase-Horiz. Angle", .initial: 96, .min: 1, .max: 360, step: 1 }, "vert_scal": .{ .option_name: "Phase-Vertical Scale", .initial: 0.6667, .min: 0, .max: 2, step: 0.05555 }, "ntsc_sat": .{ .option_name: "Saturation", .initial: 2, .min: 0, .max: 6, step: 0.05 }, "afacts": .{ .option_name: "Artifacts", .initial: 0, .min: 0, .max: 1, step: 0.05 }, "fring": .{ .option_name: "Fringing", .initial: 0, .min: 0, .max: 1, step: 0.05 }, "ntsc_bri": .{ .option_name: "Brightness", .initial: 1, .min: 0, .max: 2, step: 0.01 }, "LUMA_CUTOFF": .{ .option_name: "Luma Cutoff", .initial: 0.2, .min: 0, .max: 1, step: 0.005 }, "ntsc_sharp": .{ .option_name: "Sharpness", .initial: 0.1, .min: -1, .max: 1, step: 0.05 }, "ntsc_res": .{ .option_name: "Resolution", .initial: 0, .min: -1, .max: 1, step: 0.05 }, "stat_ph": .{ .option_name: "Dot Crawl On/Off", .initial: 0, .min: 0, .max: 1, step: 1 }, "ntsc_bleed": .{ .option_name: "Chroma Bleed", .initial: 0, .min: -0.75, .max: 2, step: 0.05 }, "dummy": .{ .option_name: "[ System Specific Tweaks]", .initial: 0, .min: 0, .max: 0, step: 0 }, }
     ;
 
     const shader = try parseShader(alloc, "shaders/blargg/", source);
@@ -1692,7 +1744,7 @@ test "parse_shader" {
         "",
     );
     defer alloc.free(got);
-    try std.testing.expect(std.mem.eql(u8, expected, got));
+    try std.testing.expectEqualStrings(expected, got);
 }
 
 test "parse_shader trims parameter display names" {
