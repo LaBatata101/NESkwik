@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("../root.zig").c;
+const android = @import("android.zig");
 const sdlError = @import("sdl.zig").sdlError;
 
 pub const APP_NAME = "neskwik";
@@ -97,8 +98,7 @@ pub fn getCacheDir(alloc: std.mem.Allocator) ![]u8 {
         },
         .linux, .serenity => {
             if (builtin.abi.isAndroid()) {
-                const path = sdlError(c.SDL_GetAndroidCachePath());
-                return try alloc.dupe(u8, std.mem.span(path));
+                return (try android.getExternalCacheDir(alloc)).?;
             }
 
             if (std.posix.getenv("XDG_CACHE_HOME")) |xdg| {

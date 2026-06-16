@@ -121,6 +121,84 @@ pub fn currentScreenOrientation() ?ScreenOrientation {
     return ScreenOrientation.fromInt(orientation);
 }
 
+pub fn getExternalCacheDir(alloc: std.mem.Allocator) !?[]u8 {
+    if (!builtin.abi.isAndroid()) @compileError("Function only available for Android");
+
+    const env_raw = c.SDL_GetAndroidJNIEnv() orelse return null;
+    const activity_raw = c.SDL_GetAndroidActivity() orelse return null;
+
+    const env: [*c]jni.JNIEnv = @ptrCast(@alignCast(env_raw));
+    const activity: jni.jobject = @ptrCast(activity_raw);
+    const f = &env.*[0];
+    defer deleteLocalRef(env, f, activity);
+
+    const activity_class = f.GetObjectClass.?(env, activity) orelse {
+        clearException(env, f);
+        return null;
+    };
+    defer deleteLocalRef(env, f, activity_class);
+
+    const get_external_cache_dir = f.GetMethodID.?(
+        env,
+        activity_class,
+        "getExternalCacheDir",
+        "()Ljava/io/File;",
+    ) orelse {
+        clearException(env, f);
+        return null;
+    };
+
+    const file_object = f.CallObjectMethodA.?(env, activity, get_external_cache_dir, null) orelse {
+        clearException(env, f);
+        return null;
+    };
+    defer deleteLocalRef(env, f, file_object);
+
+    if (hasException(env, f)) {
+        f.ExceptionClear.?(env);
+        return null;
+    }
+
+    const file_class = f.GetObjectClass.?(env, file_object) orelse {
+        clearException(env, f);
+        return null;
+    };
+    defer deleteLocalRef(env, f, file_class);
+
+    const get_absolute_path = f.GetMethodID.?(
+        env,
+        file_class,
+        "getAbsolutePath",
+        "()Ljava/lang/String;",
+    ) orelse {
+        clearException(env, f);
+        return null;
+    };
+
+    const path_object = f.CallObjectMethodA.?(env, file_object, get_absolute_path, null) orelse {
+        clearException(env, f);
+        return null;
+    };
+    defer deleteLocalRef(env, f, path_object);
+
+    if (hasException(env, f)) {
+        f.ExceptionClear.?(env);
+        return null;
+    }
+
+    const path_string: jni.jstring = @ptrCast(path_object);
+    const utf = f.GetStringUTFChars.?(env, path_string, null) orelse {
+        clearException(env, f);
+        return null;
+    };
+    defer f.ReleaseStringUTFChars.?(env, path_string, utf);
+
+    const path = std.mem.span(utf);
+    if (path.len == 0) return null;
+
+    return try alloc.dupe(u8, path);
+}
+
 fn hasException(env: [*c]jni.JNIEnv, f: *allowzero const jni.JNINativeInterface) bool {
     return f.ExceptionCheck.?(env) != 0;
 }
