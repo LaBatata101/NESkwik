@@ -9,6 +9,8 @@ pub const ui = @import("ui/core/ui.zig");
 pub const gui = @import("ui/gui.zig");
 pub const logging = @import("logging.zig");
 
+pub const customPanic = @import("utils/panic.zig").customPanic;
+
 pub const PPU = @import("ppu.zig").PPU;
 pub const APU = @import("apu/apu.zig").APU;
 pub const trace = @import("trace.zig");

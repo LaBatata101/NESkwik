@@ -16,6 +16,7 @@ const android = @import("../utils/android.zig");
 const pipeline = @import("../shaders/pipeline.zig");
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
+const utils = @import("../utils/misc.zig");
 const save_state = @import("../save_state.zig");
 const state = @import("state.zig");
 const ness = @import("../root.zig");
@@ -1061,7 +1062,7 @@ fn drawGameCard(ui: *UI, app_state: *AppState, entry: *const game_history.GameEn
             });
             _ = ui.spacer(.{ .sizing = .grow });
             _ = ui.label(.{
-                .text = formatPlayTime(entry.play_time_secs, ctx.frameAlloc()),
+                .text = utils.formatPlayTime(entry.play_time_secs, ctx.frameAlloc()),
                 .font_size = 13,
                 .line_height = CARD_PLAY_TIME_LINE_H,
                 .color = theme.text_secondary,
@@ -1105,16 +1106,6 @@ fn calculateGameCardTitleTotalLines(ui: *UI, title: []const u8, space_w: f32) u1
     }
 
     return lines;
-}
-
-fn formatPlayTime(secs: u64, alloc: std.mem.Allocator) []const u8 {
-    if (secs < 60) return "< 1m";
-    const minutes = secs / 60;
-    const hours = minutes / 60;
-    const mins_rem = minutes % 60;
-    if (hours == 0) return std.fmt.allocPrint(alloc, "{d}m", .{minutes}) catch "?";
-    if (mins_rem == 0) return std.fmt.allocPrint(alloc, "{d}h", .{hours}) catch "?";
-    return std.fmt.allocPrint(alloc, "{d}h {d}m", .{ hours, mins_rem }) catch "?";
 }
 
 const nav_active_bg = Color.rgb(28, 110, 90);
