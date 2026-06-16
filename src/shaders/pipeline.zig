@@ -1015,13 +1015,14 @@ fn compilePreset(
         defer alloc.free(tex_path);
         std.log.info("Loading LUT '{s}': {s}", .{ entry.key_ptr.*, tex_path });
 
-        const tex_file = try std.fs.cwd().openFile(tex_path, .{});
-        defer tex_file.close();
-        const tex_bytes = try tex_file.readToEndAlloc(alloc, 1024 * 1024);
-        defer alloc.free(tex_bytes);
+        const tex_path_z = try alloc.dupeZ(u8, tex_path);
+        defer alloc.free(tex_path_z);
 
-        const io = c.SDL_IOFromConstMem(tex_bytes.ptr, tex_bytes.len);
-        var surface = c.SDL_LoadPNG_IO(io, true);
+        var surface = c.SDL_LoadPNG(tex_path_z.ptr) orelse {
+            std.log.err("Failed to decode LUT PNG '{s}' ({s}): {s}", .{ entry.key_ptr.*, tex_path, c.SDL_GetError() });
+            return error.FailedToLoadLutTexture;
+        };
+
         defer c.SDL_DestroySurface(surface);
 
         var gpu_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);

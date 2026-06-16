@@ -15,6 +15,7 @@ const ControllerButton = @import("../controller.zig").ControllerButton;
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
 const paths = @import("../utils/paths.zig");
+const shader_download = @import("../shader_download.zig");
 const save_state = @import("../save_state.zig");
 const file = @import("../utils/file.zig");
 const android = @import("../utils/android.zig");
@@ -44,6 +45,16 @@ const GamepadKeyBindings = bindings.GamepadKeyBindings;
 const ParamTarget = settings.ParamTarget;
 const ShaderParamSetting = settings.ShaderParamSetting;
 const EmulationSpeed = settings.EmulationSpeed;
+
+pub const ShaderFilePickerEntry = struct {
+    kind: Kind,
+    label: []u8,
+
+    pub const Kind = enum {
+        directory,
+        file,
+    };
+};
 
 pub const SettingsCategory = enum {
     general,
@@ -103,6 +114,21 @@ pub const AppState = struct {
     border_shader_loading: bool = false,
     /// Last border shader load error message (owned).
     border_shader_error: ?[]u8 = null,
+    /// Background Android shader library download, if active.
+    shader_download_thread: ?std.Thread = null,
+    shader_download_root_path: ?[]u8 = null,
+    shader_download_result: ?anyerror = null,
+    shader_download_error: ?[]u8 = null,
+    shader_download_state: std.atomic.Value(u8) = .init(@intFromEnum(shader_download.State.idle)),
+    shader_download_bytes: std.atomic.Value(u64) = .init(0),
+    shader_download_total_bytes: std.atomic.Value(u64) = .init(shader_download.unknown_total),
+
+    // for the custom Android file picker
+    show_custom_file_picker: bool = false,
+    shader_target: settings.ParamTarget = .main,
+    shader_file_picker_current_dir: []u8 = &.{},
+    shader_file_picker_entries: std.ArrayList(ShaderFilePickerEntry) = .{},
+    shader_file_picker_error: ?[]u8 = null,
 
     show_fps: bool = false,
 
@@ -395,6 +421,11 @@ pub const AppState = struct {
     }
 
     fn handleAndroidBack(self: *Self, ui: *UI) void {
+        if (self.show_custom_file_picker) {
+            self.closeShaderFilePicker();
+            return;
+        }
+
         if (self.show_android_sidepanel) {
             self.show_android_sidepanel = false;
             return;
@@ -416,6 +447,9 @@ pub const AppState = struct {
 
     pub fn update(self: *Self, ui: *UI) void {
         self.handleInput(ui);
+        self.updateShaderState(ui);
+
+        if (builtin.abi.isAndroid()) self.pollShaderDownload();
 
         while (true) {
             const idx = self.published_frame_idx.load(.acquire);
@@ -425,6 +459,126 @@ pub const AppState = struct {
                 return;
             }
             std.atomic.spinLoopHint();
+        }
+    }
+
+    fn updateShaderState(self: *Self, ui: *UI) void {
+        // Handle deferred shader preset load/clear requests.
+        if (self.should_load_shader) {
+            self.should_load_shader = false;
+
+            if (self.settings.shader_preset_path) |path| {
+                if (self.shader_error) |old| {
+                    self.alloc.free(old);
+                    self.shader_error = null;
+                }
+
+                ui.startShaderPreset(path) catch |err| {
+                    std.log.err("Failed to start shader load '{s}': {s}", .{ path, @errorName(err) });
+                    self.shader_error = std.fmt.allocPrint(
+                        self.alloc,
+                        "Load failed: {s}",
+                        .{@errorName(err)},
+                    ) catch null;
+                    // Clear the bad path so it doesn't show as "active".
+                    self.alloc.free(path);
+                    self.settings.shader_preset_path = null;
+                    settings.clearShaderParamSettings(self.alloc, &self.settings.shader_params);
+                };
+
+                if (self.shader_error == null) {
+                    self.shader_loading = true;
+                }
+            }
+        } else if (self.should_clear_shader) {
+            self.should_clear_shader = false;
+            ui.clearShaderPreset();
+            self.shader_loading = false;
+
+            if (self.shader_error) |old| {
+                self.alloc.free(old);
+                self.shader_error = null;
+            }
+        }
+
+        // Poll an in-progress async shader compile.
+        if (self.shader_loading) {
+            switch (ui.pollShaderLoad()) {
+                .idle => self.shader_loading = false,
+                .done => {
+                    self.shader_loading = false;
+                    self.applyShaderParamSettings(ui, .main);
+                },
+                .compiling => {},
+                .failed => |msg| {
+                    self.shader_loading = false;
+                    if (self.shader_error) |old| self.alloc.free(old);
+                    self.shader_error = self.alloc.dupe(u8, msg) catch null;
+                    if (self.settings.shader_preset_path) |path| {
+                        self.alloc.free(path);
+                        self.settings.shader_preset_path = null;
+                        settings.clearShaderParamSettings(self.alloc, &self.settings.shader_params);
+                    }
+                },
+            }
+        }
+
+        // Handle deferred border shader preset load/clear requests.
+        if (self.should_load_border_shader) {
+            self.should_load_border_shader = false;
+            if (self.settings.border_shader_preset_path) |path| {
+                if (self.border_shader_error) |old| {
+                    self.alloc.free(old);
+                    self.border_shader_error = null;
+                }
+
+                ui.startBorderShaderPreset(path) catch |err| {
+                    std.log.err("Failed to start border shader load '{s}': {s}", .{ path, @errorName(err) });
+                    self.border_shader_error = std.fmt.allocPrint(
+                        self.alloc,
+                        "Load failed: {s}",
+                        .{@errorName(err)},
+                    ) catch null;
+                    self.alloc.free(path);
+                    self.settings.border_shader_preset_path = null;
+                    settings.clearShaderParamSettings(self.alloc, &self.settings.border_shader_params);
+                };
+
+                if (self.border_shader_error == null) {
+                    self.border_shader_loading = true;
+                }
+            }
+        } else if (self.should_clear_border_shader) {
+            self.should_clear_border_shader = false;
+            ui.clearBorderShaderPreset();
+            self.border_shader_loading = false;
+
+            if (self.border_shader_error) |old| {
+                self.alloc.free(old);
+                self.border_shader_error = null;
+            }
+        }
+
+        // Poll an in-progress async border shader compile.
+        if (self.border_shader_loading) {
+            switch (ui.pollBorderShaderLoad()) {
+                .idle => self.border_shader_loading = false,
+                .done => {
+                    self.border_shader_loading = false;
+                    self.applyShaderParamSettings(ui, .border);
+                },
+                .compiling => {},
+                .failed => |msg| {
+                    self.border_shader_loading = false;
+                    if (self.border_shader_error) |old| self.alloc.free(old);
+                    self.border_shader_error = self.alloc.dupe(u8, msg) catch null;
+                    if (self.settings.border_shader_preset_path) |path| {
+                        self.alloc.free(path);
+                        self.settings.border_shader_preset_path = null;
+                        settings.clearShaderParamSettings(self.alloc, &self.settings.border_shader_params);
+                    }
+                },
+            }
         }
     }
 
@@ -717,6 +871,271 @@ pub const AppState = struct {
         };
     }
 
+    pub fn openShaderFilePicker(self: *Self, target: settings.ParamTarget) void {
+        self.shader_target = target;
+        self.show_custom_file_picker = true;
+
+        self.loadShaderFilePickerEntries() catch |err| {
+            std.log.err("failed to load shader file picker entries: {s}", .{@errorName(err)});
+            self.shader_file_picker_error = std.fmt.allocPrint(
+                self.alloc,
+                "Failed to list shaders: {s}",
+                .{@errorName(err)},
+            ) catch null;
+        };
+    }
+
+    pub fn closeShaderFilePicker(self: *Self) void {
+        self.show_custom_file_picker = false;
+
+        if (self.shader_file_picker_current_dir.len > 0) {
+            self.alloc.free(self.shader_file_picker_current_dir);
+            self.shader_file_picker_current_dir = &.{};
+        }
+        self.clearShaderFilePickerEntries();
+        if (self.shader_file_picker_error) |old| {
+            self.alloc.free(old);
+            self.shader_file_picker_error = null;
+        }
+    }
+
+    pub fn shaderFilePickerEntries(self: *const Self) []const ShaderFilePickerEntry {
+        return self.shader_file_picker_entries.items;
+    }
+
+    pub fn selectShaderFilePickerEntry(self: *Self, index: usize) void {
+        std.debug.assert(index <= self.shader_file_picker_entries.items.len);
+
+        const entry = self.shader_file_picker_entries.items[index];
+        std.debug.assert(entry.kind == .file);
+
+        const root_path = paths.shaderDownloadAndroidPath(self.alloc) catch |err| {
+            std.log.err("failed to resolve shader root path: {s}", .{@errorName(err)});
+            return;
+        };
+        defer self.alloc.free(root_path);
+        const shader_path = if (self.shader_file_picker_current_dir.len == 0)
+            std.fs.path.join(self.alloc, &.{ root_path, entry.label }) catch @panic("Failed to allocate!")
+        else
+            std.fs.path.join(self.alloc, &.{ root_path, self.shader_file_picker_current_dir, entry.label }) catch @panic("Failed to allocate!");
+        defer self.alloc.free(shader_path);
+
+        switch (self.shader_target) {
+            .main => {
+                if (self.settings.shader_preset_path) |old| self.alloc.free(old);
+                self.settings.shader_preset_path = self.alloc.dupe(u8, shader_path) catch @panic("Failed to allocate!");
+                settings.clearShaderParamSettings(self.alloc, &self.settings.shader_params);
+                self.should_load_shader = true;
+                self.should_clear_shader = false;
+            },
+            .border => {
+                if (self.settings.border_shader_preset_path) |old| self.alloc.free(old);
+                self.settings.border_shader_preset_path = self.alloc.dupe(u8, shader_path) catch @panic("Failed to allocate!");
+                settings.clearShaderParamSettings(self.alloc, &self.settings.border_shader_params);
+                self.should_load_border_shader = true;
+                self.should_clear_border_shader = false;
+            },
+        }
+
+        self.closeShaderFilePicker();
+    }
+
+    pub fn openShaderFilePickerEntry(self: *Self, index: usize) void {
+        std.debug.assert(index <= self.shader_file_picker_entries.items.len);
+
+        const entry = self.shader_file_picker_entries.items[index];
+        std.debug.assert(entry.kind == .directory);
+
+        const next_dir = if (self.shader_file_picker_current_dir.len == 0)
+            self.alloc.dupe(u8, entry.label) catch @panic("OOM")
+        else
+            std.fs.path.join(self.alloc, &.{ self.shader_file_picker_current_dir, entry.label }) catch @panic("OOM");
+        defer self.alloc.free(next_dir);
+
+        self.setShaderFilePickerCurrentDir(next_dir);
+    }
+
+    pub fn shaderFilePickerCanGoUp(self: *const Self) bool {
+        return self.shader_file_picker_current_dir.len > 0;
+    }
+
+    pub fn shaderFilePickerGoUp(self: *Self) void {
+        if (self.shader_file_picker_current_dir.len == 0) return;
+
+        const parent = std.fs.path.dirname(self.shader_file_picker_current_dir) orelse "";
+        self.setShaderFilePickerCurrentDir(parent);
+    }
+
+    fn loadShaderFilePickerEntries(self: *Self) !void {
+        self.clearShaderFilePickerEntries();
+
+        const root_path = try paths.shaderDownloadAndroidPath(self.alloc);
+        defer self.alloc.free(root_path);
+        const dir_path = if (self.shader_file_picker_current_dir.len == 0)
+            try self.alloc.dupe(u8, root_path)
+        else
+            try std.fs.path.join(self.alloc, &.{ root_path, self.shader_file_picker_current_dir });
+        defer self.alloc.free(dir_path);
+
+        var dir = try std.fs.openDirAbsolute(dir_path, .{ .iterate = true });
+        defer dir.close();
+
+        try self.collectShaderFilePickerEntries(dir);
+        std.mem.sort(ShaderFilePickerEntry, self.shader_file_picker_entries.items, {}, lessThanShaderFilePickerEntry);
+    }
+
+    fn collectShaderFilePickerEntries(self: *Self, dir: std.fs.Dir) !void {
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            switch (entry.kind) {
+                .file => {
+                    if (!std.mem.endsWith(u8, entry.name, ".slangp")) continue;
+                    const label = try self.alloc.dupe(u8, entry.name);
+                    errdefer self.alloc.free(label);
+
+                    try self.shader_file_picker_entries.append(self.alloc, .{
+                        .kind = .file,
+                        .label = label,
+                    });
+                },
+                .directory => {
+                    const label = try self.alloc.dupe(u8, entry.name);
+                    errdefer self.alloc.free(label);
+
+                    try self.shader_file_picker_entries.append(self.alloc, .{
+                        .kind = .directory,
+                        .label = label,
+                    });
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn setShaderFilePickerCurrentDir(self: *Self, rel_dir: []const u8) void {
+        if (self.shader_file_picker_current_dir.len > 0) {
+            self.alloc.free(self.shader_file_picker_current_dir);
+            self.shader_file_picker_current_dir = &.{};
+        }
+
+        self.clearShaderFilePickerEntries();
+        if (self.shader_file_picker_error) |old| {
+            self.alloc.free(old);
+            self.shader_file_picker_error = null;
+        }
+
+        if (rel_dir.len > 0) {
+            self.shader_file_picker_current_dir = self.alloc.dupe(u8, rel_dir) catch @panic("Failed to allocate!");
+        }
+
+        self.loadShaderFilePickerEntries() catch |err| {
+            std.log.err("failed to load shader file picker entries: {s}", .{@errorName(err)});
+            self.shader_file_picker_error = std.fmt.allocPrint(
+                self.alloc,
+                "Failed to list shaders: {s}",
+                .{@errorName(err)},
+            ) catch null;
+        };
+    }
+
+    pub fn shaderDownloadInstalled(self: *Self) bool {
+        const root_path = paths.shaderDownloadAndroidPath(self.alloc) catch |err| {
+            std.log.warn("failed to resolve shader download path: {s}", .{@errorName(err)});
+            return false;
+        };
+        defer self.alloc.free(root_path);
+
+        var dir = std.fs.openDirAbsolute(root_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => {
+                std.log.warn("failed to inspect shader download path '{s}': {s}", .{ root_path, @errorName(err) });
+                return false;
+            },
+        };
+        dir.close();
+        return true;
+    }
+
+    pub fn shaderDownloadStatus(self: *Self) struct {
+        state: shader_download.State,
+        active: bool,
+        bytes: u64,
+        total_bytes: u64,
+        error_message: ?[]const u8,
+    } {
+        return .{
+            .state = shader_download.stateFromInt(self.shader_download_state.load(.acquire)),
+            .active = self.shader_download_thread != null,
+            .bytes = self.shader_download_bytes.load(.acquire),
+            .total_bytes = self.shader_download_total_bytes.load(.acquire),
+            .error_message = self.shader_download_error,
+        };
+    }
+
+    pub fn startShaderDownload(self: *Self) !void {
+        if (!builtin.abi.isAndroid()) return error.UnsupportedPlatform;
+        if (self.shader_download_thread != null) return error.ShaderDownloadInProgress;
+        if (self.shaderDownloadInstalled()) return error.ShaderDownloadAlreadyInstalled;
+
+        if (self.shader_download_error) |old| {
+            self.alloc.free(old);
+            self.shader_download_error = null;
+        }
+
+        const root_path = try paths.shaderDownloadAndroidPath(self.alloc);
+        errdefer self.alloc.free(root_path);
+
+        self.shader_download_root_path = root_path;
+        self.shader_download_result = null;
+        self.shader_download_bytes.store(0, .release);
+        self.shader_download_total_bytes.store(shader_download.unknown_total, .release);
+        self.shader_download_state.store(@intFromEnum(shader_download.State.idle), .release);
+
+        self.shader_download_thread = std.Thread.spawn(.{}, shaderDownloadThreadMain, .{self}) catch |err| {
+            self.shader_download_root_path = null;
+            return err;
+        };
+    }
+
+    fn pollShaderDownload(self: *Self) void {
+        const state = shader_download.stateFromInt(self.shader_download_state.load(.acquire));
+        if (self.shader_download_thread == null or (state != .done and state != .failed)) return;
+
+        self.joinShaderDownloadThread();
+
+        if (state == .failed) {
+            if (self.shader_download_error) |old| self.alloc.free(old);
+            const result = self.shader_download_result orelse error.ShaderDownloadFailed;
+            self.shader_download_error = std.fmt.allocPrint(
+                self.alloc,
+                "Download failed: {s}",
+                .{@errorName(result)},
+            ) catch null;
+        } else if (self.shader_download_error) |old| {
+            self.alloc.free(old);
+            self.shader_download_error = null;
+        }
+    }
+
+    fn joinShaderDownloadThread(self: *Self) void {
+        if (self.shader_download_thread) |thread| {
+            thread.join();
+            self.shader_download_thread = null;
+        }
+
+        if (self.shader_download_root_path) |path| {
+            self.alloc.free(path);
+            self.shader_download_root_path = null;
+        }
+    }
+
+    fn clearShaderFilePickerEntries(self: *Self) void {
+        for (self.shader_file_picker_entries.items) |entry| {
+            self.alloc.free(entry.label);
+        }
+        self.shader_file_picker_entries.clearRetainingCapacity();
+    }
+
     pub fn togglePause(self: *Self) void {
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
@@ -748,6 +1167,31 @@ pub const AppState = struct {
         self.step_mode = !self.step_mode;
     }
 };
+
+fn shaderDownloadThreadMain(app_state: *AppState) void {
+    const root_path = app_state.shader_download_root_path orelse {
+        app_state.shader_download_result = error.InvalidShaderPath;
+        app_state.shader_download_state.store(@intFromEnum(shader_download.State.failed), .release);
+        return;
+    };
+
+    const progress = shader_download.Progress{
+        .state = &app_state.shader_download_state,
+        .bytes = &app_state.shader_download_bytes,
+        .total_bytes = &app_state.shader_download_total_bytes,
+    };
+
+    shader_download.downloadAndExtract(root_path, progress) catch |err| {
+        app_state.shader_download_result = err;
+        progress.setState(.failed);
+        std.log.err("shader download failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn lessThanShaderFilePickerEntry(_: void, lhs: ShaderFilePickerEntry, rhs: ShaderFilePickerEntry) bool {
+    if (lhs.kind != rhs.kind) return lhs.kind == .directory;
+    return std.mem.lessThan(u8, lhs.label, rhs.label);
+}
 
 fn clonePersistedSettings(
     alloc: std.mem.Allocator,
@@ -835,6 +1279,10 @@ fn resetShaderRuntimeState(app_state: *AppState) void {
 }
 
 fn deinitShaderRuntimeState(alloc: std.mem.Allocator, app_state: *AppState) void {
+    app_state.joinShaderDownloadThread();
+    app_state.clearShaderFilePickerEntries();
+    app_state.shader_file_picker_entries.deinit(alloc);
+
     if (app_state.shader_error) |msg| {
         alloc.free(msg);
         app_state.shader_error = null;
@@ -842,6 +1290,18 @@ fn deinitShaderRuntimeState(alloc: std.mem.Allocator, app_state: *AppState) void
     if (app_state.border_shader_error) |msg| {
         alloc.free(msg);
         app_state.border_shader_error = null;
+    }
+    if (app_state.shader_download_error) |msg| {
+        alloc.free(msg);
+        app_state.shader_download_error = null;
+    }
+    if (app_state.shader_file_picker_error) |msg| {
+        alloc.free(msg);
+        app_state.shader_file_picker_error = null;
+    }
+    if (app_state.shader_file_picker_current_dir.len > 0) {
+        alloc.free(app_state.shader_file_picker_current_dir);
+        app_state.shader_file_picker_current_dir = &.{};
     }
 }
 

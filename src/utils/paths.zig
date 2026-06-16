@@ -111,3 +111,9 @@ pub fn getCacheDir(alloc: std.mem.Allocator) ![]u8 {
         else => @compileError("Unsupported OS"),
     }
 }
+
+pub fn shaderDownloadAndroidPath(alloc: std.mem.Allocator) ![]u8 {
+    const data_dir = try getDataDir(alloc);
+    defer alloc.free(data_dir);
+    return std.fs.path.join(alloc, &.{ data_dir, "shaders", "slang-shaders" });
+}

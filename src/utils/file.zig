@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const sdlError = @import("sdl.zig").sdlError;
 const c = @import("../root.zig").c;
 
 pub fn readFile(alloc: std.mem.Allocator, uri: []const u8) ![]u8 {
@@ -9,16 +8,15 @@ pub fn readFile(alloc: std.mem.Allocator, uri: []const u8) ![]u8 {
         defer alloc.free(uriz);
         var size: usize = 0;
 
-        const data = sdlError(c.SDL_LoadFile(uriz.ptr, &size));
+        const data = c.SDL_LoadFile(uriz.ptr, &size) orelse {
+            std.log.err("Failed to read file '{s}': {s}", .{ uri, c.SDL_GetError() });
+            return error.FileReadFailed;
+        };
         defer c.SDL_free(data);
 
         return try alloc.dupe(u8, @as([*]const u8, @ptrCast(data))[0..size]);
     } else {
-        const file = std.fs.openFileAbsolute(uri, .{}) catch |err| switch (err) {
-            else => {
-                std.debug.panic("Error while opening file: {any}\n", .{err});
-            },
-        };
+        const file = try std.fs.openFileAbsolute(uri, .{});
         defer file.close();
 
         const file_size = try file.getEndPos();

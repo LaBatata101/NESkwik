@@ -14,6 +14,7 @@ const widgets = @import("core/widgets.zig");
 const Color = @import("core/color.zig").Color;
 const android = @import("../utils/android.zig");
 const pipeline = @import("../shaders/pipeline.zig");
+const shader_download = @import("../shader_download.zig");
 const bindings = @import("bindings.zig");
 const settings = @import("settings.zig");
 const utils = @import("../utils/misc.zig");
@@ -44,117 +45,6 @@ const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
 };
 
 pub fn drawGUI(ui: *UI, app_state: *AppState) void {
-    // Handle deferred shader preset load/clear requests.
-    if (app_state.should_load_shader) {
-        app_state.should_load_shader = false;
-        if (app_state.settings.shader_preset_path) |path| {
-            if (app_state.shader_error) |old| {
-                app_state.alloc.free(old);
-                app_state.shader_error = null;
-            }
-            ui.startShaderPreset(path) catch |err| {
-                std.log.err("Failed to start shader load '{s}': {s}", .{ path, @errorName(err) });
-                app_state.shader_error = std.fmt.allocPrint(
-                    app_state.alloc,
-                    "Load failed: {s}",
-                    .{@errorName(err)},
-                ) catch null;
-                // Clear the bad path so it doesn't show as "active".
-                app_state.alloc.free(path);
-                app_state.settings.shader_preset_path = null;
-                settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.shader_params);
-            };
-            if (app_state.shader_error == null) {
-                app_state.shader_loading = true;
-            }
-        }
-    } else if (app_state.should_clear_shader) {
-        app_state.should_clear_shader = false;
-        ui.clearShaderPreset();
-        app_state.shader_loading = false;
-        if (app_state.shader_error) |old| {
-            app_state.alloc.free(old);
-            app_state.shader_error = null;
-        }
-    }
-
-    // Poll an in-progress async shader compile.
-    if (app_state.shader_loading) {
-        switch (ui.pollShaderLoad()) {
-            .idle => app_state.shader_loading = false,
-            .done => {
-                app_state.shader_loading = false;
-                app_state.applyShaderParamSettings(ui, .main);
-            },
-            .compiling => {},
-            .failed => |msg| {
-                app_state.shader_loading = false;
-                if (app_state.shader_error) |old| app_state.alloc.free(old);
-                app_state.shader_error = app_state.alloc.dupe(u8, msg) catch null;
-                if (app_state.settings.shader_preset_path) |path| {
-                    app_state.alloc.free(path);
-                    app_state.settings.shader_preset_path = null;
-                    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.shader_params);
-                }
-            },
-        }
-    }
-
-    // Handle deferred border shader preset load/clear requests.
-    if (app_state.should_load_border_shader) {
-        app_state.should_load_border_shader = false;
-        if (app_state.settings.border_shader_preset_path) |path| {
-            if (app_state.border_shader_error) |old| {
-                app_state.alloc.free(old);
-                app_state.border_shader_error = null;
-            }
-            ui.startBorderShaderPreset(path) catch |err| {
-                std.log.err("Failed to start border shader load '{s}': {s}", .{ path, @errorName(err) });
-                app_state.border_shader_error = std.fmt.allocPrint(
-                    app_state.alloc,
-                    "Load failed: {s}",
-                    .{@errorName(err)},
-                ) catch null;
-                app_state.alloc.free(path);
-                app_state.settings.border_shader_preset_path = null;
-                settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
-            };
-            if (app_state.border_shader_error == null) {
-                app_state.border_shader_loading = true;
-            }
-        }
-    } else if (app_state.should_clear_border_shader) {
-        app_state.should_clear_border_shader = false;
-        ui.clearBorderShaderPreset();
-        app_state.border_shader_loading = false;
-        if (app_state.border_shader_error) |old| {
-            app_state.alloc.free(old);
-            app_state.border_shader_error = null;
-        }
-    }
-
-    // Poll an in-progress async border shader compile.
-    if (app_state.border_shader_loading) {
-        switch (ui.pollBorderShaderLoad()) {
-            .idle => app_state.border_shader_loading = false,
-            .done => {
-                app_state.border_shader_loading = false;
-                app_state.applyShaderParamSettings(ui, .border);
-            },
-            .compiling => {},
-            .failed => |msg| {
-                app_state.border_shader_loading = false;
-                if (app_state.border_shader_error) |old| app_state.alloc.free(old);
-                app_state.border_shader_error = app_state.alloc.dupe(u8, msg) catch null;
-                if (app_state.settings.border_shader_preset_path) |path| {
-                    app_state.alloc.free(path);
-                    app_state.settings.border_shader_preset_path = null;
-                    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
-                }
-            },
-        }
-    }
-
     const root = ui.column(.{
         .bg_color = theme.bg_base,
     });
@@ -728,6 +618,10 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
             }
         }
         footer.end();
+
+        if (app_state.show_custom_file_picker) {
+            drawAndroidShaderFilePicker(ui, app_state, root.id);
+        }
     }
     root.end();
 }
@@ -746,6 +640,158 @@ fn drawAndroidSettingsTab(ui: *UI, app_state: *AppState, category: SettingsCateg
     }).clicked(ui.main_window.ctx)) {
         app_state.settings.selected_category = category;
     }
+}
+
+fn drawAndroidShaderFilePicker(ui: *UI, app_state: *AppState, root_id: clay.ElementId) void {
+    const overlay = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = root_id.id,
+        .attach_points = .{ .parent = .left_top, .element = .left_top },
+        .z_index = 90,
+        .sizing = .grow,
+    });
+    {
+        const scrim = ui.column(.{
+            .sizing = .grow,
+            .bg_color = Color.black.withAlpha(0.72),
+            .padding = .{ .left = 14, .right = 14, .top = 18, .bottom = 18 },
+            .child_alignment = .center,
+        });
+        {
+            const max_panel_w = @min(560.0, ui.main_window.logical_width - 28.0);
+            const max_panel_h = @min(620.0, ui.main_window.logical_height - 36.0);
+            const panel = ui.column(.{
+                .sizing = .{
+                    .w = .growMinMax(.{ .max = max_panel_w }),
+                    .h = .fitMinMax(.{ .max = max_panel_h }),
+                },
+                .bg_color = theme.bg_section,
+                .border_width = 1,
+                .border_color = theme.border,
+                .corner_radius = 4,
+                .padding = .{ .left = 12, .right = 12, .top = 12, .bottom = 12 },
+                .gap = 10,
+                .child_alignment = .{ .x = .left, .y = .top },
+            });
+            {
+                drawAndroidShaderFilePickerHeader(ui, app_state);
+                drawAndroidShaderFilePickerBody(ui, app_state);
+            }
+            panel.end();
+        }
+        scrim.end();
+    }
+    overlay.end();
+}
+
+fn drawAndroidShaderFilePickerHeader(ui: *UI, app_state: *AppState) void {
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .gap = 8,
+        .child_alignment = .{ .y = .center },
+    });
+    {
+        _ = ui.label(.{
+            .text = "Load Shader",
+            .font_size = 18,
+            .color = theme.text_primary,
+        });
+        _ = ui.spacer(.{ .sizing = .grow });
+        if (ui.button(.{
+            .text = "Close",
+            .font_size = 15,
+            .text_color = theme.text_primary,
+            .bg_color = theme.bg_hover,
+            .hover_color = theme.border,
+            .padding = .{ .left = 10, .right = 10, .top = 6, .bottom = 6 },
+            .corner_radius = 3,
+            .elevation = 0,
+        }).clicked(ui.main_window.ctx)) {
+            app_state.closeShaderFilePicker();
+        }
+    }
+    row.end();
+}
+
+fn drawAndroidShaderFilePickerBody(ui: *UI, app_state: *AppState) void {
+    const frame_alloc = ui.current_window.ctx.frameAlloc();
+
+    if (app_state.shader_file_picker_error) |msg| {
+        const text = frame_alloc.dupe(u8, msg) catch @panic("OOM");
+        _ = ui.label(.{
+            .text = text,
+            .font_size = 14,
+            .color = theme.accent_red,
+        });
+        return;
+    }
+
+    const entries = app_state.shaderFilePickerEntries();
+    const current_dir = app_state.shader_file_picker_current_dir;
+    _ = ui.label(.{
+        .text = if (current_dir.len == 0) "/" else frame_alloc.dupe(u8, current_dir) catch
+            @panic("OOM"),
+        .font_size = 13,
+        .color = theme.text_secondary,
+    });
+
+    const scroll = ui.scrollArea(.{
+        .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .max = 520 }) },
+        .gap = 5,
+        .vertical = true,
+        .padding = .{ .right = 4 },
+    });
+    blk: {
+        if (app_state.shaderFilePickerCanGoUp()) {
+            if (ui.button(.{
+                .text = "../",
+                .font_size = 14,
+                .text_color = theme.text_primary,
+                .bg_color = theme.bg_panel,
+                .hover_color = theme.bg_hover,
+                .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 },
+                .corner_radius = 2,
+                .elevation = 0,
+                .sizing = .{ .w = .grow, .h = .fit },
+                .text_alignment = .left,
+            }).clicked(ui.main_window.ctx)) {
+                app_state.shaderFilePickerGoUp();
+                break :blk;
+            }
+        }
+
+        if (entries.len == 0) {
+            _ = ui.label(.{
+                .text = "No folders or .slangp files found",
+                .font_size = 14,
+                .color = theme.text_secondary,
+            });
+        } else {
+            for (entries, 0..) |entry, idx| {
+                const is_dir = entry.kind == .directory;
+                if (ui.button(.{
+                    .text = frame_alloc.dupe(u8, entry.label) catch @panic("OOM"),
+                    .font_size = 14,
+                    .text_color = if (is_dir) theme.text_accent else theme.text_primary,
+                    .bg_color = theme.bg_panel,
+                    .hover_color = theme.bg_hover,
+                    .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 },
+                    .corner_radius = 2,
+                    .elevation = 0,
+                    .sizing = .{ .w = .grow, .h = .fit },
+                    .text_alignment = .left,
+                }).clicked(ui.main_window.ctx)) {
+                    if (is_dir) {
+                        app_state.openShaderFilePickerEntry(idx);
+                    } else {
+                        app_state.selectShaderFilePickerEntry(idx);
+                    }
+                    break :blk;
+                }
+            }
+        }
+    }
+    scroll.end();
 }
 
 fn drawGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
@@ -1723,6 +1769,15 @@ fn drawAspectRatioRow(ui: *UI, app_state: *AppState) void {
 }
 
 fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
+    if (builtin.abi.isAndroid()) {
+        drawContentSectionHeader(ui, "Shader Library");
+        {
+            const section = drawContentSection(ui, .{});
+            drawAndroidShaderDownload(ui, app_state);
+            section.end();
+        }
+    }
+
     drawContentSectionHeader(ui, "Shader");
     {
         const section = drawContentSection(ui, .{});
@@ -1783,6 +1838,92 @@ fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
 
         section.end();
     }
+}
+
+fn drawAndroidShaderDownload(ui: *UI, app_state: *AppState) void {
+    const status = app_state.shaderDownloadStatus();
+    const installed = app_state.shaderDownloadInstalled();
+    const can_download = !status.active and !installed;
+
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .child_alignment = .{ .y = .center },
+        .gap = 8,
+    });
+    {
+        _ = ui.label(.{
+            .text = "slang-shaders",
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_primary,
+        });
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        const button_text: []const u8 = if (installed) "Installed" else if (status.active) "Downloading" else "Download";
+        if (ui.button(.{
+            .text = button_text,
+            .font_size = 15,
+            .enabled = can_download,
+            .text_color = if (can_download) theme.text_primary else theme.text_secondary,
+            .bg_color = if (can_download) theme.bg_hover else theme.bg_panel,
+            .hover_color = if (can_download) theme.border else theme.bg_panel,
+            .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
+            .elevation = 0,
+        }).clicked(ui.current_window.ctx)) {
+            app_state.startShaderDownload() catch |err| {
+                std.log.err("failed to start shader download: {s}", .{@errorName(err)});
+                if (app_state.shader_download_error) |old| app_state.alloc.free(old);
+                app_state.shader_download_error = std.fmt.allocPrint(
+                    app_state.alloc,
+                    "Download failed: {s}",
+                    .{@errorName(err)},
+                ) catch null;
+            };
+        }
+    }
+    row.end();
+
+    switch (status.state) {
+        .downloading => drawShaderDownloadProgress(ui, status.bytes, status.total_bytes),
+        .extracting => {
+            _ = ui.label(.{
+                .text = "Extracting...",
+                .font_size = 13,
+                .color = theme.accent_purple,
+            });
+        },
+        .failed => if (status.error_message) |msg| {
+            _ = ui.label(.{
+                .text = msg,
+                .font_size = 13,
+                .color = theme.accent_red,
+            });
+        },
+        else => {},
+    }
+}
+
+fn drawShaderDownloadProgress(ui: *UI, bytes: u64, total_bytes: u64) void {
+    const alloc = ui.current_window.ctx.frameAlloc();
+    const known_total = total_bytes != shader_download.unknown_total and total_bytes > 0;
+
+    const progress_text = if (known_total)
+        std.fmt.allocPrint(
+            alloc,
+            "Downloading... {s} / {s}",
+            .{ utils.formatByteCount(alloc, bytes), utils.formatByteCount(alloc, total_bytes) },
+        ) catch "Downloading..."
+    else
+        std.fmt.allocPrint(
+            alloc,
+            "Downloading... {s}",
+            .{utils.formatByteCount(alloc, bytes)},
+        ) catch "Downloading...";
+
+    _ = ui.label(.{
+        .text = progress_text,
+        .font_size = 13,
+        .color = theme.accent_purple,
+    });
 }
 
 fn drawShaderParamsSection(
@@ -1891,19 +2032,22 @@ fn drawShaderPresetRow(ui: *UI, app_state: *AppState) void {
             .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
-            const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
-                @panic("Failed to allocate");
-            defer ui.main_window.ctx.frameAlloc().free(default_location);
+            if (builtin.abi.isAndroid()) {
+                app_state.openShaderFilePicker(.main);
+            } else {
+                const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch @panic("OOM");
+                defer ui.main_window.ctx.frameAlloc().free(default_location);
 
-            c.SDL_ShowOpenFileDialog(
-                shader_dialog_callback,
-                clay.anytypeToAnyopaquePtr(app_state),
-                ui.main_window.ptr,
-                &shader_filter_list,
-                shader_filter_list.len,
-                default_location.ptr,
-                false,
-            );
+                c.SDL_ShowOpenFileDialog(
+                    shader_dialog_callback,
+                    clay.anytypeToAnyopaquePtr(app_state),
+                    ui.main_window.ptr,
+                    &shader_filter_list,
+                    shader_filter_list.len,
+                    default_location.ptr,
+                    false,
+                );
+            }
         }
 
         if (ui.button(.{
@@ -2113,19 +2257,23 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
             .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
             .elevation = 0,
         }).clicked(ui.current_window.ctx)) {
-            const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
-                @panic("Failed to allocate");
-            defer ui.main_window.ctx.frameAlloc().free(default_location);
+            if (builtin.abi.isAndroid()) {
+                app_state.openShaderFilePicker(.border);
+            } else {
+                const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
+                    @panic("Failed to allocate");
+                defer ui.main_window.ctx.frameAlloc().free(default_location);
 
-            c.SDL_ShowOpenFileDialog(
-                border_shader_dialog_callback,
-                clay.anytypeToAnyopaquePtr(app_state),
-                ui.main_window.ptr,
-                &shader_filter_list,
-                shader_filter_list.len,
-                default_location.ptr,
-                false,
-            );
+                c.SDL_ShowOpenFileDialog(
+                    border_shader_dialog_callback,
+                    clay.anytypeToAnyopaquePtr(app_state),
+                    ui.main_window.ptr,
+                    &shader_filter_list,
+                    shader_filter_list.len,
+                    default_location.ptr,
+                    false,
+                );
+            }
         }
 
         if (ui.button(.{

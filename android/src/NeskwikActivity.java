@@ -13,8 +13,6 @@ import java.io.IOException;
 import java.io.InputStream;
 
 public class NeskwikActivity extends SDLActivity {
-    private static final String TAG = "NESkwik";
-
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (data != null) {
