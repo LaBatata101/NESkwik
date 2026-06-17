@@ -2122,6 +2122,8 @@ pub const UI = struct {
     pub fn setVSync(self: *const Self, enabled: bool) void {
         const present_mode: c.SDL_GPUPresentMode = if (enabled)
             c.SDL_GPU_PRESENTMODE_VSYNC
+        else if (builtin.abi.isAndroid())
+            c.SDL_GPU_PRESENTMODE_MAILBOX
         else
             c.SDL_GPU_PRESENTMODE_IMMEDIATE;
 
