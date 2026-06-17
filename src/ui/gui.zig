@@ -438,7 +438,7 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                 if (drawAndroidDrawerAction(
                     ui,
                     "Load Slot 1",
-                    app_state.emulation_running and app_state.saveStateSlotInfo(0).exists,
+                    app_state.emulation_running and app_state.saveStateSlotInfo(0) != null,
                 )) {
                     app_state.loadStateSlot(0);
                     app_state.show_android_sidepanel = false;
@@ -915,9 +915,9 @@ const SaveStateMenuMode = enum { save, load };
 
 fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) void {
     for (0..save_state.SLOT_COUNT) |slot| {
-        const info = app_state.saveStateSlotInfo(slot);
-        const enabled = mode == .save or info.exists;
-        const label = if (info.exists)
+        const slot_info = app_state.saveStateSlotInfo(slot);
+        const enabled = mode == .save or slot_info != null;
+        const label = if (slot_info) |info|
             std.fmt.allocPrint(
                 ui.main_window.ctx.frameAlloc(),
                 "Slot {d} - {s}",

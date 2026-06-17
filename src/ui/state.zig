@@ -90,6 +90,7 @@ pub const AppState = struct {
 
     history: game_history.GameHistory = undefined,
     current_rom_path: ?[]u8 = null,
+    save_state_info: [save_state.SLOT_COUNT]?save_state.SlotInfo = .{null} ** save_state.SLOT_COUNT,
     game_start_time_ms: i64 = 0,
 
     paused: bool = false,
@@ -136,6 +137,7 @@ pub const AppState = struct {
     saved_settings: EmulatorSettings = .{},
     config_dir: ?[]u8 = null,
     controller_img: LoadedImage,
+
     emulation_thread: ?std.Thread = null,
     emulation_stop: std.atomic.Value(bool) = .init(false),
     emulation_lock: std.Thread.RwLock = .{},
@@ -685,6 +687,7 @@ pub const AppState = struct {
 
     pub fn saveStateSlot(self: *Self, slot: usize) void {
         std.debug.assert(self.current_rom_path != null);
+        std.debug.assert(slot < save_state.SLOT_COUNT);
 
         const name = if (builtin.abi.isAndroid())
             (android.displayName(self.alloc, self.current_rom_path.?) catch @panic("JNI error")).?
@@ -697,8 +700,12 @@ pub const AppState = struct {
 
         std.log.info("Saving state to slot {} for \"{s}\"", .{ slot + 1, name });
 
-        save_state.saveSlot(self.alloc, name, &self.system.?, slot) catch |err|
+        const info = save_state.saveSlot(self.alloc, name, &self.system.?, slot) catch |err| {
             std.log.err("save state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
+            return;
+        };
+
+        self.save_state_info[slot] = info;
     }
 
     pub fn loadStateSlot(self: *Self, slot: usize) void {
@@ -720,15 +727,9 @@ pub const AppState = struct {
         };
     }
 
-    pub fn saveStateSlotInfo(self: *Self, slot: usize) save_state.SlotInfo {
-        const rom_path = self.current_rom_path orelse return .{};
-        const name = if (builtin.abi.isAndroid())
-            (android.displayName(self.alloc, rom_path) catch @panic("error")).?
-        else
-            std.fs.path.stem(rom_path);
-        defer if (builtin.abi.isAndroid()) self.alloc.free(name);
-
-        return save_state.slotInfo(self.alloc, name, slot) catch .{};
+    pub fn saveStateSlotInfo(self: *const Self, slot: usize) ?save_state.SlotInfo {
+        std.debug.assert(slot < save_state.SLOT_COUNT);
+        return self.save_state_info[slot];
     }
 
     pub fn loadRom(self: *Self, path: []const u8) !void {
@@ -768,6 +769,7 @@ pub const AppState = struct {
         if (self.current_rom_path) |p| self.alloc.free(p);
         self.current_rom_path = self.alloc.dupe(u8, rom_fullpath) catch null;
         self.game_start_time_ms = std.time.milliTimestamp();
+        self.refreshSaveStateInfo();
         try self.startEmulationThread();
     }
 
@@ -791,6 +793,7 @@ pub const AppState = struct {
 
         self.render_android_settings_ui = false;
         self.show_android_sidepanel = false;
+        self.clearSaveStateInfo();
     }
 
     fn saveCurrentGame(self: *Self) void {
@@ -823,6 +826,29 @@ pub const AppState = struct {
 
         // Reset so back-to-back saves (loadRom then deinit) don't double-count.
         self.game_start_time_ms = std.time.milliTimestamp();
+    }
+
+    fn refreshSaveStateInfo(self: *Self) void {
+        const rom_path = self.current_rom_path orelse {
+            self.clearSaveStateInfo();
+            return;
+        };
+
+        const name = if (builtin.abi.isAndroid())
+            (android.displayName(self.alloc, rom_path) catch @panic("JNI error")).?
+        else
+            std.fs.path.stem(rom_path);
+        defer if (builtin.abi.isAndroid()) self.alloc.free(name);
+
+        for (&self.save_state_info, 0..) |*info, slot| {
+            if (save_state.slotInfo(self.alloc, name, slot)) |slot_info| {
+                info.* = slot_info;
+            } else |_| {}
+        }
+    }
+
+    fn clearSaveStateInfo(self: *Self) void {
+        @memset(self.save_state_info[0..], null);
     }
 
     pub fn generalBinding(self: *const Self, action: GeneralAction) Key {

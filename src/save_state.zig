@@ -1,6 +1,7 @@
 const std = @import("std");
 const zeit = @import("zeit");
 
+const utils = @import("utils/misc.zig");
 const APU = @import("apu/apu.zig").APU;
 const Bus = @import("bus.zig").Bus;
 const CPU = @import("cpu.zig").CPU;
@@ -20,8 +21,6 @@ const STATE_DIR_NAME = "save-states";
 const EXT = "nsst";
 
 pub const SlotInfo = struct {
-    exists: bool = false,
-    saved_at: i64 = 0,
     display_time: [19]u8 = [_]u8{' '} ** 19,
 };
 
@@ -37,8 +36,8 @@ const Snapshot = struct {
     }
 };
 
-pub fn saveSlot(alloc: std.mem.Allocator, rom_name: []const u8, system: *System, slot: usize) !void {
-    if (slot >= SLOT_COUNT) return error.InvalidSaveStateSlot;
+pub fn saveSlot(alloc: std.mem.Allocator, rom_name: []const u8, system: *System, slot: usize) !SlotInfo {
+    std.debug.assert(slot <= SLOT_COUNT);
 
     var state_dir = try openStateDir(alloc, rom_name);
     defer state_dir.close();
@@ -65,10 +64,11 @@ pub fn saveSlot(alloc: std.mem.Allocator, rom_name: []const u8, system: *System,
     }
 
     try writeSnapshot(alloc, file, snapshot);
+    return .{ .display_time = utils.formatTimestamp(alloc, snapshot.saved_at) };
 }
 
 pub fn loadSlot(alloc: std.mem.Allocator, rom_name: []const u8, system: *System, slot: usize) !void {
-    if (slot >= SLOT_COUNT) return error.InvalidSaveStateSlot;
+    std.debug.assert(slot < SLOT_COUNT);
 
     const file = try openStateFile(alloc, rom_name, slot);
     defer file.close();
@@ -86,52 +86,59 @@ pub fn loadSlot(alloc: std.mem.Allocator, rom_name: []const u8, system: *System,
 }
 
 pub fn slotInfo(alloc: std.mem.Allocator, rom_name: []const u8, slot: usize) !SlotInfo {
-    if (slot >= SLOT_COUNT) return .{};
+    std.debug.assert(slot < SLOT_COUNT);
 
     const file = try openStateFile(alloc, rom_name, slot);
     defer file.close();
 
-    var info: SlotInfo = .{ .exists = true };
-    info.saved_at = readHeaderTimestamp(file) catch return .{};
-    info.display_time = formatTimestamp(alloc, info.saved_at);
-    return info;
+    return .{ .display_time = utils.formatTimestamp(alloc, try readHeaderTimestamp(file)) };
 }
 
 fn writeSnapshot(alloc: std.mem.Allocator, file: std.fs.File, snapshot: *const Snapshot) !void {
-    try file.writeAll(&MAGIC);
-    try writeInt(file, u32, VERSION);
-    try writeInt(file, i64, snapshot.saved_at);
+    var file_buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(&file_buffer);
+    const writer = &file_writer.interface;
 
-    var body = ByteWriter.init(alloc);
+    try writer.writeAll(&MAGIC);
+    try writeInt(writer, u32, VERSION);
+    try writeInt(writer, i64, snapshot.saved_at);
+
+    var body: std.Io.Writer.Allocating = .init(alloc);
     defer body.deinit();
 
-    try writeStruct(&body, snapshot.cpu);
-    try writeBusSnapshot(&body, snapshot.bus);
-    try writeStruct(&body, snapshot.ppu);
-    try writeStruct(&body, snapshot.apu);
+    try writeValue(&body.writer, CPU.Snapshot, snapshot.cpu);
+    try writeBusSnapshot(&body.writer, snapshot.bus);
+    try writeValue(&body.writer, PPU.Snapshot, snapshot.ppu);
+    try writeValue(&body.writer, APU.Snapshot, snapshot.apu);
 
-    const compressed = try compressBytes(alloc, body.bytes());
+    const compressed = try compressBytes(alloc, body.written());
     defer alloc.free(compressed);
 
-    try writeInt(file, u32, @intCast(body.bytes().len));
-    try writeInt(file, u32, @intCast(compressed.len));
-    try file.writeAll(compressed);
+    try writeInt(writer, u32, @intCast(body.written().len));
+    try writeInt(writer, u32, @intCast(compressed.len));
+    try writer.writeAll(compressed);
+    try writer.flush();
 }
 
 fn readSnapshot(alloc: std.mem.Allocator, file: std.fs.File) !*Snapshot {
-    const header = try readHeader(file);
-    const body = try readSnapshotBody(alloc, file, header.version);
+    var file_buffer: [4096]u8 = undefined;
+    var file_reader = file.reader(&file_buffer);
+    const reader = &file_reader.interface;
+
+    const header = try readHeader(reader);
+    const body = try readSnapshotBody(alloc, reader, header.version);
     defer alloc.free(body);
 
-    var reader = ByteReader.init(body);
+    var body_reader: std.Io.Reader = .fixed(body);
 
     const snapshot = try alloc.create(Snapshot);
+    errdefer alloc.destroy(snapshot);
 
     snapshot.saved_at = header.saved_at;
-    snapshot.cpu = try readStruct(CPU.Snapshot, &reader);
-    snapshot.bus = try readBusSnapshot(alloc, &reader);
-    snapshot.ppu = try readStruct(PPU.Snapshot, &reader);
-    snapshot.apu = try readStruct(APU.Snapshot, &reader);
+    snapshot.cpu = try readValue(CPU.Snapshot, &body_reader);
+    snapshot.bus = try readBusSnapshot(alloc, &body_reader);
+    snapshot.ppu = try readValue(PPU.Snapshot, &body_reader);
+    snapshot.apu = try readValue(APU.Snapshot, &body_reader);
 
     return snapshot;
 }
@@ -141,258 +148,197 @@ const Header = struct {
     saved_at: i64,
 };
 
-fn readHeader(file: std.fs.File) !Header {
+fn readHeader(reader: *std.Io.Reader) !Header {
     var magic: [4]u8 = undefined;
-    try readNoEof(file, &magic);
+    try reader.readSliceAll(&magic);
     if (!std.mem.eql(u8, &magic, &MAGIC)) return error.InvalidSaveState;
 
-    const version = try readInt(file, u32);
+    const version = try readInt(reader, u32);
     if (version != VERSION) return error.UnsupportedSaveStateVersion;
 
     return .{
         .version = version,
-        .saved_at = try readInt(file, i64),
+        .saved_at = try readInt(reader, i64),
     };
 }
 
 fn readHeaderTimestamp(file: std.fs.File) !i64 {
-    return (try readHeader(file)).saved_at;
+    var file_buffer: [32]u8 = undefined;
+    var file_reader = file.reader(&file_buffer);
+    return (try readHeader(&file_reader.interface)).saved_at;
 }
 
-fn readSnapshotBody(alloc: std.mem.Allocator, file: std.fs.File, version: u32) ![]u8 {
+fn readSnapshotBody(alloc: std.mem.Allocator, reader: *std.Io.Reader, version: u32) ![]u8 {
     if (version != VERSION) return error.UnsupportedSaveStateVersion;
 
-    const uncompressed_len = try readInt(file, u32);
-    const compressed_len = try readInt(file, u32);
+    const uncompressed_len = try readInt(reader, u32);
+    const compressed_len = try readInt(reader, u32);
     const compressed = try alloc.alloc(u8, compressed_len);
     defer alloc.free(compressed);
-    try readNoEof(file, compressed);
+    try reader.readSliceAll(compressed);
 
     return try decompressBytes(alloc, compressed, uncompressed_len);
 }
 
-fn writeBusSnapshot(writer: anytype, snapshot: Bus.Snapshot) !void {
+fn writeBusSnapshot(writer: *std.Io.Writer, snapshot: Bus.Snapshot) !void {
     try writer.writeAll(&snapshot.ram);
     try writeInt(writer, u64, snapshot.cycles);
     try writeInt(writer, u8, snapshot.open_bus);
     try writeInt(writer, u8, snapshot.dma_start_delay);
     try writeInt(writer, u16, snapshot.dma_cycles);
-    try writeStruct(writer, snapshot.controllers);
+    try writeValue(writer, Controllers, snapshot.controllers);
     try writeMapperSnapshot(writer, snapshot.rom.mapper);
 }
 
-fn readBusSnapshot(alloc: std.mem.Allocator, reader: anytype) !Bus.Snapshot {
+fn readBusSnapshot(alloc: std.mem.Allocator, reader: *std.Io.Reader) !Bus.Snapshot {
     var ram: [2048]u8 = undefined;
-    try readNoEof(reader, &ram);
+    try reader.readSliceAll(&ram);
     return .{
         .ram = ram,
         .cycles = try readInt(reader, u64),
         .open_bus = try readInt(reader, u8),
         .dma_start_delay = try readInt(reader, u8),
         .dma_cycles = try readInt(reader, u16),
-        .controllers = try readStruct(Controllers, reader),
+        .controllers = try readValue(Controllers, reader),
         .rom = .{ .mapper = try readMapperSnapshot(alloc, reader) },
     };
 }
 
-fn writeMapperSnapshot(writer: anytype, snapshot: Mapper.Snapshot) !void {
+fn writeMapperSnapshot(writer: *std.Io.Writer, snapshot: Mapper.Snapshot) !void {
     switch (snapshot) {
         .mapper0 => |value| {
             try writeInt(writer, u8, 0);
-            try writeBytes(writer, value.prg_ram);
-            try writeBytes(writer, value.chr_ram);
+            try writeSlice(writer, value.prg_ram);
+            try writeSlice(writer, value.chr_ram);
         },
         .mapper1 => |value| {
             try writeInt(writer, u8, 1);
-            try writeStruct(writer, value.load_register);
-            try writeStruct(writer, value.write_index);
-            try writeStruct(writer, value.control);
-            try writeStruct(writer, value.prg_bank);
-            try writeStruct(writer, value.chr_bank_1);
-            try writeStruct(writer, value.chr_bank_2);
-            try writeBytes(writer, value.prg_ram);
-            try writeBytes(writer, value.chr_ram);
+            try writeValue(writer, u8, value.load_register);
+            try writeValue(writer, u8, value.write_index);
+            try writeValue(writer, u8, value.control);
+            try writeValue(writer, u8, value.prg_bank);
+            try writeValue(writer, u8, value.chr_bank_1);
+            try writeValue(writer, u8, value.chr_bank_2);
+            try writeSlice(writer, value.prg_ram);
+            try writeSlice(writer, value.chr_ram);
         },
         .mapper2 => |value| {
             try writeInt(writer, u8, 2);
-            try writeStruct(writer, value.selected_bank);
-            try writeBytes(writer, value.chr_ram);
+            try writeValue(writer, u8, value.selected_bank);
+            try writeSlice(writer, value.chr_ram);
         },
         .mapper3 => |value| {
             try writeInt(writer, u8, 3);
-            try writeStruct(writer, value.selected_chr_bank);
-            try writeBytes(writer, value.prg_ram);
+            try writeValue(writer, u8, value.selected_chr_bank);
+            try writeSlice(writer, value.prg_ram);
         },
         .mapper4 => |value| {
             try writeInt(writer, u8, 4);
-            try writeStruct(writer, value.bank_registers);
-            try writeStruct(writer, value.bank_select);
-            try writeStruct(writer, value.prg_inversion);
-            try writeStruct(writer, value.chr_inversion);
-            try writeStruct(writer, value.irq_flag);
-            try writeStruct(writer, value.irq_counter);
-            try writeStruct(writer, value.irq_reload_flag);
-            try writeStruct(writer, value.irq_counter_reload);
-            try writeStruct(writer, value.irq_enabled);
-            try writeStruct(writer, value.ppu_a12);
-            try writeStruct(writer, value.ppu_a12_low_cycle);
-            try writeStruct(writer, value.mirroring_mode);
-            try writeBytes(writer, value.prg_ram);
-            try writeBytes(writer, value.chr_ram);
+            try writeValue(writer, [10]usize, value.bank_registers);
+            try writeValue(writer, u8, value.bank_select);
+            try writeValue(writer, bool, value.prg_inversion);
+            try writeValue(writer, bool, value.chr_inversion);
+            try writeValue(writer, bool, value.irq_flag);
+            try writeValue(writer, u8, value.irq_counter);
+            try writeValue(writer, bool, value.irq_reload_flag);
+            try writeValue(writer, u8, value.irq_counter_reload);
+            try writeValue(writer, bool, value.irq_enabled);
+            try writeValue(writer, bool, value.ppu_a12);
+            try writeValue(writer, u64, value.ppu_a12_low_cycle);
+            try writeValue(writer, Mirroring, value.mirroring_mode);
+            try writeSlice(writer, value.prg_ram);
+            try writeSlice(writer, value.chr_ram);
         },
     }
 }
 
-fn readMapperSnapshot(alloc: std.mem.Allocator, reader: anytype) !Mapper.Snapshot {
+fn readMapperSnapshot(alloc: std.mem.Allocator, reader: *std.Io.Reader) !Mapper.Snapshot {
     return switch (try readInt(reader, u8)) {
-        0 => blk: {
-            const prg_ram = try readBytes(alloc, reader);
-            errdefer alloc.free(prg_ram);
-            break :blk .{ .mapper0 = .{
-                .prg_ram = prg_ram,
-                .chr_ram = try readBytes(alloc, reader),
-            } };
+        0 => .{
+            .mapper0 = .{
+                .prg_ram = try readSlice(alloc, reader),
+                .chr_ram = try readSlice(alloc, reader),
+            },
         },
-        1 => blk: {
-            const load_register = try readStruct(u8, reader);
-            const write_index = try readStruct(u8, reader);
-            const control = try readStruct(u8, reader);
-            const prg_bank = try readStruct(u8, reader);
-            const chr_bank_1 = try readStruct(u8, reader);
-            const chr_bank_2 = try readStruct(u8, reader);
-            const prg_ram = try readBytes(alloc, reader);
-            errdefer alloc.free(prg_ram);
-            break :blk .{ .mapper1 = .{
-                .load_register = load_register,
-                .write_index = write_index,
-                .control = control,
-                .prg_bank = prg_bank,
-                .chr_bank_1 = chr_bank_1,
-                .chr_bank_2 = chr_bank_2,
-                .prg_ram = prg_ram,
-                .chr_ram = try readBytes(alloc, reader),
-            } };
+        1 => .{
+            .mapper1 = .{
+                .load_register = try readValue(u8, reader),
+                .write_index = try readValue(u8, reader),
+                .control = try readValue(u8, reader),
+                .prg_bank = try readValue(u8, reader),
+                .chr_bank_1 = try readValue(u8, reader),
+                .chr_bank_2 = try readValue(u8, reader),
+                .prg_ram = try readSlice(alloc, reader),
+                .chr_ram = try readSlice(alloc, reader),
+            },
         },
-        2 => .{ .mapper2 = .{
-            .selected_bank = try readStruct(u8, reader),
-            .chr_ram = try readBytes(alloc, reader),
-        } },
-        3 => .{ .mapper3 = .{
-            .selected_chr_bank = try readStruct(u8, reader),
-            .prg_ram = try readBytes(alloc, reader),
-        } },
-        4 => blk: {
-            const bank_registers = try readStruct([10]usize, reader);
-            const bank_select = try readStruct(u8, reader);
-            const prg_inversion = try readStruct(bool, reader);
-            const chr_inversion = try readStruct(bool, reader);
-            const irq_flag = try readStruct(bool, reader);
-            const irq_counter = try readStruct(u8, reader);
-            const irq_reload_flag = try readStruct(bool, reader);
-            const irq_counter_reload = try readStruct(u8, reader);
-            const irq_enabled = try readStruct(bool, reader);
-            const ppu_a12 = try readStruct(bool, reader);
-            const ppu_a12_low_cycle = try readStruct(u64, reader);
-            const mirroring_mode = try readStruct(Mirroring, reader);
-            const prg_ram = try readBytes(alloc, reader);
-            errdefer alloc.free(prg_ram);
-            break :blk .{ .mapper4 = .{
-                .bank_registers = bank_registers,
-                .bank_select = bank_select,
-                .prg_inversion = prg_inversion,
-                .chr_inversion = chr_inversion,
-                .irq_flag = irq_flag,
-                .irq_counter = irq_counter,
-                .irq_reload_flag = irq_reload_flag,
-                .irq_counter_reload = irq_counter_reload,
-                .irq_enabled = irq_enabled,
-                .ppu_a12 = ppu_a12,
-                .ppu_a12_low_cycle = ppu_a12_low_cycle,
-                .mirroring_mode = mirroring_mode,
-                .prg_ram = prg_ram,
-                .chr_ram = try readBytes(alloc, reader),
-            } };
+        2 => .{
+            .mapper2 = .{
+                .selected_bank = try readValue(u8, reader),
+                .chr_ram = try readSlice(alloc, reader),
+            },
+        },
+        3 => .{
+            .mapper3 = .{
+                .selected_chr_bank = try readValue(u8, reader),
+                .prg_ram = try readSlice(alloc, reader),
+            },
+        },
+        4 => .{
+            .mapper4 = .{
+                .bank_registers = try readValue([10]usize, reader),
+                .bank_select = try readValue(u8, reader),
+                .prg_inversion = try readValue(bool, reader),
+                .chr_inversion = try readValue(bool, reader),
+                .irq_flag = try readValue(bool, reader),
+                .irq_counter = try readValue(u8, reader),
+                .irq_reload_flag = try readValue(bool, reader),
+                .irq_counter_reload = try readValue(u8, reader),
+                .irq_enabled = try readValue(bool, reader),
+                .ppu_a12 = try readValue(bool, reader),
+                .ppu_a12_low_cycle = try readValue(u64, reader),
+                .mirroring_mode = try readValue(Mirroring, reader),
+                .prg_ram = try readSlice(alloc, reader),
+                .chr_ram = try readSlice(alloc, reader),
+            },
         },
         else => error.UnsupportedMapperSnapshot,
     };
 }
 
-fn writeStruct(writer: anytype, value: anytype) !void {
+fn writeValue(writer: *std.Io.Writer, comptime T: type, value: T) !void {
     try writer.writeAll(std.mem.asBytes(&value));
 }
 
-fn readStruct(comptime T: type, reader: anytype) !T {
+fn readValue(comptime T: type, reader: *std.Io.Reader) !T {
     var value: T = undefined;
-    try readNoEof(reader, std.mem.asBytes(&value));
+    try reader.readSliceAll(std.mem.asBytes(&value));
     return value;
 }
 
-fn writeBytes(writer: anytype, bytes: []const u8) !void {
+fn writeSlice(writer: *std.Io.Writer, bytes: []const u8) !void {
     try writeInt(writer, u32, @intCast(bytes.len));
     try writer.writeAll(bytes);
 }
 
-fn readBytes(alloc: std.mem.Allocator, reader: anytype) ![]u8 {
+fn readSlice(alloc: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
     const len = try readInt(reader, u32);
     const bytes = try alloc.alloc(u8, len);
-    errdefer alloc.free(bytes);
-    try readNoEof(reader, bytes);
+    try reader.readSliceAll(bytes);
     return bytes;
 }
 
-fn writeInt(writer: anytype, comptime T: type, value: T) !void {
+fn writeInt(writer: *std.Io.Writer, comptime T: type, value: T) !void {
     var buf: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buf, value, .little);
     try writer.writeAll(&buf);
 }
 
-fn readInt(reader: anytype, comptime T: type) !T {
+fn readInt(reader: *std.Io.Reader, comptime T: type) !T {
     var buf: [@sizeOf(T)]u8 = undefined;
-    try readNoEof(reader, &buf);
+    try reader.readSliceAll(&buf);
     return std.mem.readInt(T, &buf, .little);
 }
-
-fn readNoEof(reader: anytype, buffer: []u8) !void {
-    if (try reader.readAll(buffer) != buffer.len) return error.UnexpectedEof;
-}
-
-const ByteWriter = struct {
-    alloc: std.mem.Allocator,
-    list: std.ArrayList(u8) = .empty,
-
-    fn init(alloc: std.mem.Allocator) @This() {
-        return .{ .alloc = alloc };
-    }
-
-    fn deinit(self: *@This()) void {
-        self.list.deinit(self.alloc);
-    }
-
-    fn writeAll(self: *@This(), data: []const u8) !void {
-        try self.list.appendSlice(self.alloc, data);
-    }
-
-    fn bytes(self: *const @This()) []const u8 {
-        return self.list.items;
-    }
-};
-
-const ByteReader = struct {
-    bytes: []const u8,
-    pos: usize = 0,
-
-    fn init(bytes: []const u8) @This() {
-        return .{ .bytes = bytes };
-    }
-
-    fn readAll(self: *@This(), out: []u8) !usize {
-        const remaining = self.bytes.len - self.pos;
-        const n = @min(out.len, remaining);
-        @memcpy(out[0..n], self.bytes[self.pos..][0..n]);
-        self.pos += n;
-        return n;
-    }
-};
 
 fn compressBytes(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     var reader: std.Io.Reader = .fixed(bytes);
@@ -453,25 +399,4 @@ fn openStateFile(alloc: std.mem.Allocator, rom_name: []const u8, slot: usize) !s
     defer alloc.free(slot_filename);
 
     return try state_dir.openFile(slot_filename, .{});
-}
-
-fn formatTimestamp(alloc: std.mem.Allocator, timestamp: i64) [19]u8 {
-    if (timestamp <= 0) return [_]u8{' '} ** 19;
-
-    var timezone = zeit.local(alloc, null) catch zeit.utc;
-    defer timezone.deinit();
-
-    const instant = zeit.instant(.{
-        .source = .{ .unix_timestamp = timestamp },
-        .timezone = &timezone,
-    }) catch return [_]u8{' '} ** 19;
-
-    return formatDateTime(instant.time());
-}
-
-fn formatDateTime(time: zeit.Time) [19]u8 {
-    var buf: [19]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buf);
-    time.strftime(&writer, "%Y/%m/%d %H:%M:%S") catch unreachable;
-    return buf;
 }
