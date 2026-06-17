@@ -148,7 +148,7 @@ pub const APU = struct {
         };
     }
 
-    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+    pub fn loadState(self: *Self, snapshot: *const Snapshot) void {
         self.pulse_buffer.reset();
         self.tnd_buffer.reset();
         self.pulse1.loadState(snapshot.pulse1);

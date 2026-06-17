@@ -684,25 +684,51 @@ pub const AppState = struct {
     }
 
     pub fn saveStateSlot(self: *Self, slot: usize) void {
-        const path = self.current_rom_path orelse return;
+        std.debug.assert(self.current_rom_path != null);
+
+        const name = if (builtin.abi.isAndroid())
+            (android.displayName(self.alloc, self.current_rom_path.?) catch @panic("JNI error")).?
+        else
+            std.fs.path.stem(self.current_rom_path.?);
+        defer if (builtin.abi.isAndroid()) self.alloc.free(name);
+
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
-        save_state.saveSlot(self.alloc, path, &self.system.?, slot) catch |err|
+
+        std.log.info("Saving state to slot {} for \"{s}\"", .{ slot + 1, name });
+
+        save_state.saveSlot(self.alloc, name, &self.system.?, slot) catch |err|
             std.log.err("save state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
     }
 
     pub fn loadStateSlot(self: *Self, slot: usize) void {
-        const path = self.current_rom_path orelse return;
+        std.debug.assert(self.current_rom_path != null);
+
+        const name = if (builtin.abi.isAndroid())
+            (android.displayName(self.alloc, self.current_rom_path.?) catch @panic("JNI error")).?
+        else
+            std.fs.path.stem(self.current_rom_path.?);
+        defer if (builtin.abi.isAndroid()) self.alloc.free(name);
+
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
-        save_state.loadSlot(self.alloc, path, &self.system.?, slot) catch |err| {
+
+        std.log.info("Loading state from slot {} for \"{s}\"", .{ slot + 1, name });
+
+        save_state.loadSlot(self.alloc, name, &self.system.?, slot) catch |err| {
             std.log.err("load state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
         };
     }
 
     pub fn saveStateSlotInfo(self: *Self, slot: usize) save_state.SlotInfo {
-        const path = self.current_rom_path orelse return .{};
-        return save_state.slotInfo(self.alloc, path, slot);
+        const rom_path = self.current_rom_path orelse return .{};
+        const name = if (builtin.abi.isAndroid())
+            (android.displayName(self.alloc, rom_path) catch @panic("error")).?
+        else
+            std.fs.path.stem(rom_path);
+        defer if (builtin.abi.isAndroid()) self.alloc.free(name);
+
+        return save_state.slotInfo(self.alloc, name, slot) catch .{};
     }
 
     pub fn loadRom(self: *Self, path: []const u8) !void {

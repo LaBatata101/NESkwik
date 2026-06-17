@@ -1358,6 +1358,15 @@ pub fn deflateCompress(comptime container: Container, reader: *std.Io.Reader, wr
     try c.finish();
 }
 
+pub fn deflateCompressAlloc(alloc: std.mem.Allocator, comptime container: Container, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) !void {
+    const c = try alloc.create(Deflate(container));
+    defer alloc.destroy(c);
+
+    try c.initInPlace(writer, options);
+    try c.compress(reader);
+    try c.finish();
+}
+
 pub fn deflateCompressor(comptime container: Container, writer: *std.Io.Writer, options: Options) !Deflate(container) {
     return try Deflate(container).init(writer, options);
 }
@@ -1378,13 +1387,22 @@ pub fn Deflate(comptime container: Container) type {
         const Self = @This();
 
         pub fn init(wrt: *std.Io.Writer, options: Options) !Self {
-            const self = Self{
-                .wrt = wrt,
-                .block_writer = BlockWriter.init(wrt),
-                .level = LevelArgs.get(options.level),
-            };
-            try Container.writeHeader(container, self.wrt);
+            var self: Self = undefined;
+            try self.initInPlace(wrt, options);
             return self;
+        }
+
+        pub fn initInPlace(self: *Self, wrt: *std.Io.Writer, options: Options) !void {
+            self.lookup = .{};
+            self.win = .{};
+            self.tokens = .{};
+            self.wrt = wrt;
+            self.block_writer = BlockWriter.init(wrt);
+            self.level = LevelArgs.get(options.level);
+            self.hasher = .{};
+            self.prev_match = null;
+            self.prev_literal = null;
+            try Container.writeHeader(container, self.wrt);
         }
 
         const FlushOption = enum { none, flush, final };
@@ -1554,6 +1572,10 @@ const Tokens = struct {
 
 pub fn compress(reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) !void {
     try deflateCompress(.gzip, reader, writer, options);
+}
+
+pub fn compressAlloc(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) !void {
+    try deflateCompressAlloc(alloc, .gzip, reader, writer, options);
 }
 
 pub const Compressor = Deflate(.gzip);

@@ -74,7 +74,7 @@ pub const Bus = struct {
         };
     }
 
-    pub fn loadState(self: *Self, snapshot: Snapshot) !void {
+    pub fn loadState(self: *Self, snapshot: *const Snapshot) !void {
         self.ram = snapshot.ram;
         self.cycles = snapshot.cycles;
         self.open_bus = snapshot.open_bus;

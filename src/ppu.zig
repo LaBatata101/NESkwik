@@ -483,7 +483,7 @@ pub const PPU = struct {
         };
     }
 
-    pub fn loadState(self: *Self, snapshot: Snapshot) void {
+    pub fn loadState(self: *Self, snapshot: *const Snapshot) void {
         self.palette_table = snapshot.palette_table;
         self.vram = snapshot.vram;
         self.ctrl_register = snapshot.ctrl_register;
