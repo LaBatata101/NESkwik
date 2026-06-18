@@ -434,12 +434,13 @@ pub const Button = struct {
         border: ?clay.BorderElementConfig = null,
         sizing: clay.Sizing = .fit,
         text_alignment: clay.TextAlignment = .center,
-        tooltip: ?struct {
-            text: []const u8,
-            text_size: u16 = 14,
-            color: Color = Color.white,
-            wrap_mode: clay.TextElementConfigWrapMode = .words,
-        } = null,
+        tooltip: ?Tooltip = null,
+    };
+    const Tooltip = struct {
+        text: []const u8,
+        text_size: u16 = 14,
+        color: Color = Color.white,
+        wrap_mode: clay.TextElementConfigWrapMode = .words,
     };
     const Self = @This();
 
@@ -487,71 +488,7 @@ pub const Button = struct {
                     state.tooltip.visible = true;
                 }
 
-                if (state.tooltip.visible) {
-                    const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
-
-                    const button_data = clay.getElementData(element_id);
-                    const layout_dims = ctx.clay_ctx.layoutDimensions;
-
-                    var attach_parent: clay.FloatingAttachPointType = .left_bottom;
-                    var attach_element: clay.FloatingAttachPointType = .left_top;
-                    var offset_y: f32 = 4;
-
-                    if (button_data.found) {
-                        const is_right_half = button_data.bounding_box.x > (layout_dims.w / 2.0);
-                        const is_bottom_half = button_data.bounding_box.y > (layout_dims.h / 2.0);
-
-                        if (is_right_half and is_bottom_half) {
-                            attach_parent = .right_top;
-                            attach_element = .right_bottom;
-                            offset_y = -4; // Reverses the offset to avoid overlapping the button.
-                        } else if (is_right_half) {
-                            attach_parent = .right_bottom;
-                            attach_element = .right_top;
-                        } else if (is_bottom_half) {
-                            attach_parent = .left_top;
-                            attach_element = .left_bottom;
-                            offset_y = -4;
-                        }
-                    }
-
-                    const max_tooltip_width = @min(250.0, layout_dims.w - 32.0);
-
-                    clay.openElementWithId(tooltip_id);
-                    clay.configureOpenElement(.{
-                        .layout = .{
-                            .sizing = .{
-                                .w = clay.SizingAxis.fitMinMax(.{ .max = max_tooltip_width }),
-                                .h = .fit,
-                            },
-                            .padding = .{ .left = 8, .right = 8, .top = 5, .bottom = 5 },
-                            .child_alignment = .center,
-                        },
-                        .background_color = Color.rgb(30, 30, 30).toClay(),
-                        .corner_radius = .all(8),
-                        .border = .{
-                            .color = Color.rgb(80, 80, 80).toClay(),
-                            .width = .outside(1),
-                        },
-                        .floating = .{
-                            .attach_to = .to_element_with_id,
-                            .parentId = element_id.id,
-                            .attach_points = .{ .element = attach_element, .parent = attach_parent },
-                            .offset = .{ .x = 0, .y = 4 },
-                            .z_index = 200,
-                            .pointer_capture_mode = .passthrough,
-                        },
-                    });
-
-                    _ = Label.start(.{
-                        .text = tooltip.text,
-                        .font_size = tooltip.text_size,
-                        .color = tooltip.color,
-                        .wrap_mode = tooltip.wrap_mode,
-                    });
-
-                    clay.closeElement();
-                }
+                if (state.tooltip.visible) Button.drawTooltip(ctx, element_id, tooltip);
             } else {
                 ctx.removeTimerId(element_id.id);
                 state.tooltip.visible = false;
@@ -570,6 +507,72 @@ pub const Button = struct {
     pub fn clickedOrHold(self: *const Self, ctx: *UIContext) bool {
         return self.clicked(ctx) or (ctx.activeFingerOverElement(self.id) and ctx.frame.mouse_down);
     }
+
+    fn drawTooltip(ctx: *UIContext, element_id: clay.ElementId, params: Self.Tooltip) void {
+        const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
+
+        const button_data = clay.getElementData(element_id);
+        const layout_dims = ctx.clay_ctx.layoutDimensions;
+
+        var attach_parent: clay.FloatingAttachPointType = .left_bottom;
+        var attach_element: clay.FloatingAttachPointType = .left_top;
+        var offset_y: f32 = 4;
+
+        if (button_data.found) {
+            const is_right_half = button_data.bounding_box.x > (layout_dims.w / 2.0);
+            const is_bottom_half = button_data.bounding_box.y > (layout_dims.h / 2.0);
+
+            if (is_right_half and is_bottom_half) {
+                attach_parent = .right_top;
+                attach_element = .right_bottom;
+                offset_y = -4; // Reverses the offset to avoid overlapping the button.
+            } else if (is_right_half) {
+                attach_parent = .right_bottom;
+                attach_element = .right_top;
+            } else if (is_bottom_half) {
+                attach_parent = .left_top;
+                attach_element = .left_bottom;
+                offset_y = -4;
+            }
+        }
+
+        const max_tooltip_width = @min(250.0, layout_dims.w - 32.0);
+
+        clay.openElementWithId(tooltip_id);
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = .{
+                    .w = clay.SizingAxis.fitMinMax(.{ .max = max_tooltip_width }),
+                    .h = .fit,
+                },
+                .padding = .{ .left = 8, .right = 8, .top = 5, .bottom = 5 },
+                .child_alignment = .center,
+            },
+            .background_color = Color.rgb(30, 30, 30).toClay(),
+            .corner_radius = .all(8),
+            .border = .{
+                .color = Color.rgb(80, 80, 80).toClay(),
+                .width = .outside(1),
+            },
+            .floating = .{
+                .attach_to = .to_element_with_id,
+                .parentId = element_id.id,
+                .attach_points = .{ .element = attach_element, .parent = attach_parent },
+                .offset = .{ .x = 0, .y = 4 },
+                .z_index = 200,
+                .pointer_capture_mode = .passthrough,
+            },
+        });
+
+        _ = Label.start(.{
+            .text = params.text,
+            .font_size = params.text_size,
+            .color = params.color,
+            .wrap_mode = params.wrap_mode,
+        });
+
+        clay.closeElement();
+    }
 };
 
 pub const IconButton = struct {
@@ -586,12 +589,7 @@ pub const IconButton = struct {
         tint: Color = Color.white,
         corner_radius: f32 = 4,
         padding: clay.Padding = .all(4),
-        tooltip: ?struct {
-            text: []const u8,
-            text_size: u16 = 14,
-            color: Color = Color.white,
-            wrap_mode: clay.TextElementConfigWrapMode = .none,
-        } = null,
+        tooltip: ?Button.Tooltip = null,
     };
     const Self = @This();
 
@@ -636,64 +634,7 @@ pub const IconButton = struct {
                     state.tooltip.visible = true;
                 }
 
-                if (state.tooltip.visible) {
-                    const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
-                    const button_data = clay.getElementData(element_id);
-                    const layout_dims = ctx.clay_ctx.layoutDimensions;
-
-                    var attach_parent: clay.FloatingAttachPointType = .left_bottom;
-                    var attach_element: clay.FloatingAttachPointType = .left_top;
-
-                    if (button_data.found) {
-                        const is_right_half = button_data.bounding_box.x > (layout_dims.w / 2.0);
-                        const is_bottom_half = button_data.bounding_box.y > (layout_dims.h / 2.0);
-
-                        if (is_right_half and is_bottom_half) {
-                            attach_parent = .right_top;
-                            attach_element = .right_bottom;
-                        } else if (is_right_half) {
-                            attach_parent = .right_bottom;
-                            attach_element = .right_top;
-                        } else if (is_bottom_half) {
-                            attach_parent = .left_top;
-                            attach_element = .left_bottom;
-                        }
-                    }
-
-                    const max_tooltip_width = @min(250.0, layout_dims.w - 32.0);
-                    clay.openElementWithId(tooltip_id);
-                    clay.configureOpenElement(.{
-                        .layout = .{
-                            .sizing = .{
-                                .w = clay.SizingAxis.fitMinMax(.{ .max = max_tooltip_width }),
-                                .h = .fit,
-                            },
-                            .padding = .{ .left = 8, .right = 8, .top = 5, .bottom = 5 },
-                            .child_alignment = .center,
-                        },
-                        .background_color = Color.rgb(30, 30, 30).toClay(),
-                        .corner_radius = .all(8),
-                        .border = .{
-                            .color = Color.rgb(80, 80, 80).toClay(),
-                            .width = .outside(1),
-                        },
-                        .floating = .{
-                            .attach_to = .to_element_with_id,
-                            .parentId = element_id.id,
-                            .attach_points = .{ .element = attach_element, .parent = attach_parent },
-                            .offset = .{ .x = 0, .y = 4 },
-                            .z_index = 200,
-                            .pointer_capture_mode = .passthrough,
-                        },
-                    });
-                    _ = Label.start(.{
-                        .text = tooltip.text,
-                        .font_size = tooltip.text_size,
-                        .color = tooltip.color,
-                        .wrap_mode = tooltip.wrap_mode,
-                    });
-                    clay.closeElement();
-                }
+                if (state.tooltip.visible) Button.drawTooltip(ctx, element_id, tooltip);
             } else {
                 ctx.removeTimerId(element_id.id);
                 state.tooltip.visible = false;
