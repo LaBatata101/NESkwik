@@ -316,7 +316,8 @@ fn drawAndroidHeader(ui: *UI, app_state: *AppState) void {
                 .corner_radius = 8,
             }).clicked(ui.main_window.ctx)) {
                 app_state.show_android_sidepanel = true;
-                app_state.android_sidepanel_created_at = c.SDL_GetTicks();
+                // Set a timer of 250ms to avoid closing the sidepanel as soon as it's opened
+                ui.setTimer("android_sidepanel", 250);
             }
 
             _ = ui.label(.{
@@ -479,12 +480,9 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
     }
     sidepanel.end();
 
-    // Wait for 250ms before doing the check to avoid closing the sidepanel as soon as it's opened
-    if (ui.hasPassedSinceMS(app_state.android_sidepanel_created_at, 250) and
-        // close the sidepanel when a click happens outside of it
-        is_open and !clay.pointerOver(sidepanel.id) and ui.current_window.ctx.frame.mouse_down)
-    {
-        app_state.show_android_sidepanel = false;
+    // close the sidepanel when a click happens outside of it
+    if (is_open and !clay.pointerOver(sidepanel.id) and ui.current_window.ctx.frame.mouse_down) {
+        if (ui.hasTimerExpired("android_sidepanel")) app_state.show_android_sidepanel = false;
     }
 }
 

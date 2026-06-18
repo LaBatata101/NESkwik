@@ -116,6 +116,8 @@ pub const UIContext = struct {
     text_cache: std.AutoArrayHashMap(u32, TextCacheItem),
     canvas_cache: std.AutoArrayHashMap(u32, CanvasCacheItem),
 
+    timers: std.AutoHashMap(u64, struct { start: u64, ms: u64 }),
+
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
     prev_mouse_x: f32 = 0,
@@ -143,6 +145,7 @@ pub const UIContext = struct {
 
         const persistent_arena_alloc = ctx.persistent_arena.allocator();
 
+        ctx.timers = .init(persistent_arena_alloc);
         ctx.parent_stack = .empty;
         ctx.frame = .{
             .text_input = .empty,
@@ -304,9 +307,46 @@ pub const UIContext = struct {
         }.callback);
     }
 
-    /// Check if the time in milliseconds (`ms`) has passed since the `start`.
-    pub fn hasPassedSinceMS(_: *const Self, start: u64, ms: u64) bool {
-        return c.SDL_GetTicks() - start >= ms;
+    fn timerKey(name: []const u8) u64 {
+        return std.hash.Wyhash.hash(0, name);
+    }
+
+    pub fn tickTimerId(self: *Self, id: u64, ms: u64) bool {
+        const now = c.SDL_GetTicks();
+        const result = self.timers.getOrPut(id) catch @panic("OOM");
+
+        if (!result.found_existing) {
+            result.value_ptr.* = .{ .start = now, .ms = ms };
+            return false;
+        }
+
+        result.value_ptr.ms = ms;
+        if (now - result.value_ptr.start < ms) return false;
+
+        result.value_ptr.start = now;
+        return true;
+    }
+
+    pub fn tickTimer(self: *Self, name: []const u8, ms: u64) bool {
+        return self.tickTimerId(timerKey(name), ms);
+    }
+
+    pub fn setTimer(self: *Self, name: []const u8, ms: u64) void {
+        self.timers.put(timerKey(name), .{ .start = c.SDL_GetTicks(), .ms = ms }) catch @panic("OOM");
+    }
+
+    pub fn removeTimerId(self: *Self, id: u64) void {
+        _ = self.timers.remove(id);
+    }
+
+    pub fn hasTimerExpired(self: *Self, name: []const u8) bool {
+        const key = timerKey(name);
+        const value = self.timers.get(key) orelse return false;
+
+        const has_expired = c.SDL_GetTicks() - value.start >= value.ms;
+        if (has_expired) _ = self.timers.remove(key);
+
+        return has_expired;
     }
 
     fn allocWidget(self: *Self, T: type, value: T) *T {
@@ -453,7 +493,7 @@ pub const WidgetState = union(enum) {
         selected_key: u32,
     };
     pub const TooltipState = struct {
-        hover_start_ms: u64,
+        visible: bool = false,
     };
     pub const GridState = struct {
         items_per_row: usize,
@@ -1862,8 +1902,6 @@ pub const UI = struct {
     gpu_device: ?*c.SDL_GPUDevice,
     font: *c.TTF_Font,
 
-    last_title_update: u64 = 0,
-
     quit: bool = false,
     pending_close_window: ?*Window = null,
     fps_manager: FPSManager,
@@ -2103,8 +2141,16 @@ pub const UI = struct {
         return self.quit;
     }
 
-    pub fn hasPassedSinceMS(self: *const Self, start: u64, ms: u64) bool {
-        return self.current_window.ctx.hasPassedSinceMS(start, ms);
+    pub fn setTimer(self: *Self, name: []const u8, ms: u64) void {
+        self.current_window.ctx.setTimer(name, ms);
+    }
+
+    pub fn tickTimer(self: *Self, name: []const u8, ms: u64) bool {
+        return self.current_window.ctx.tickTimer(name, ms);
+    }
+
+    pub fn hasTimerExpired(self: *Self, name: []const u8) bool {
+        return self.current_window.ctx.hasTimerExpired(name);
     }
 
     pub fn isHovering(_: *const Self, id: []const u8) bool {
@@ -2311,8 +2357,7 @@ pub const UI = struct {
             window.inner.ctx.reset();
         }
 
-        if (self.main_window.ctx.hasPassedSinceMS(self.last_title_update, 1000)) {
-            self.last_title_update = c.SDL_GetTicks();
+        if (self.main_window.ctx.tickTimer("title_update", 1000)) {
             const title = std.fmt.allocPrintSentinel(
                 self.main_window.ctx.frameAlloc(),
                 "{s} - FPS: {}",

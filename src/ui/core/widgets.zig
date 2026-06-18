@@ -480,12 +480,14 @@ pub const Button = struct {
         clay.closeElement();
 
         if (params.tooltip) |tooltip| {
+            const state = ctx.getOrCreateWidgetState(element_id, .{ .tooltip = .{} });
             if (is_hovered) {
-                const state = ctx.getOrCreateWidgetState(element_id, .{ .tooltip = .{
-                    .hover_start_ms = c.SDL_GetTicks(),
-                } });
                 // Draw tooltip if 500ms has passed
-                if (ctx.hasPassedSinceMS(state.tooltip.hover_start_ms, 500)) {
+                if (!state.tooltip.visible and ctx.tickTimerId(element_id.id, 500)) {
+                    state.tooltip.visible = true;
+                }
+
+                if (state.tooltip.visible) {
                     const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
 
                     const button_data = clay.getElementData(element_id);
@@ -550,6 +552,9 @@ pub const Button = struct {
 
                     clay.closeElement();
                 }
+            } else {
+                ctx.removeTimerId(element_id.id);
+                state.tooltip.visible = false;
             }
         }
 
@@ -625,11 +630,13 @@ pub const IconButton = struct {
         }
 
         if (params.tooltip) |tooltip| {
+            const state = ctx.getOrCreateWidgetState(element_id, .{ .tooltip = .{} });
             if (is_hovered) {
-                const state = ctx.getOrCreateWidgetState(element_id, .{ .tooltip = .{
-                    .hover_start_ms = c.SDL_GetTicks(),
-                } });
-                if (ctx.hasPassedSinceMS(state.tooltip.hover_start_ms, 500)) {
+                if (!state.tooltip.visible and ctx.tickTimerId(element_id.id, 500)) {
+                    state.tooltip.visible = true;
+                }
+
+                if (state.tooltip.visible) {
                     const tooltip_id = clay.ElementId.localIDI("tooltip", element_id.id);
                     const button_data = clay.getElementData(element_id);
                     const layout_dims = ctx.clay_ctx.layoutDimensions;
@@ -687,6 +694,9 @@ pub const IconButton = struct {
                     });
                     clay.closeElement();
                 }
+            } else {
+                ctx.removeTimerId(element_id.id);
+                state.tooltip.visible = false;
             }
         }
 

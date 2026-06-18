@@ -79,7 +79,6 @@ pub const AppState = struct {
     render_debug_ui: bool = false,
     render_android_settings_ui: bool = false,
     show_android_sidepanel: bool = false,
-    android_sidepanel_created_at: u64 = 0,
     emulation_running: bool = false,
 
     step_mode: bool = false,
@@ -96,7 +95,6 @@ pub const AppState = struct {
     paused: bool = false,
     lifecycle_suspended: std.atomic.Value(bool) = .init(false),
 
-    last_mouse_activity_time: u64,
     is_cursor_hidden: bool = false,
 
     /// Set to true to trigger loading the shader preset on the next frame.
@@ -263,7 +261,6 @@ pub const AppState = struct {
             .history = hist,
             .config_dir = config_dir,
             .controller_img = .{ .raw = surface },
-            .last_mouse_activity_time = c.SDL_GetTicks(),
         };
         state.loadSettings();
         state.snapshotSettings() catch @panic("Failed to snapshot loaded settings");
@@ -403,7 +400,7 @@ pub const AppState = struct {
             }
 
             if (ui.mouseMotion()) {
-                self.last_mouse_activity_time = c.SDL_GetTicks();
+                ui.setTimer("hide_cursor", CURSOR_HIDE_DELAY_MS);
                 if (self.is_cursor_hidden) {
                     sdlError(c.SDL_ShowCursor());
                     self.is_cursor_hidden = false;
@@ -411,7 +408,7 @@ pub const AppState = struct {
             }
 
             if (self.settings.hide_mouse_on_inactivity and !self.render_debug_ui) {
-                if (!self.is_cursor_hidden and ui.hasPassedSinceMS(self.last_mouse_activity_time, CURSOR_HIDE_DELAY_MS)) {
+                if (!self.is_cursor_hidden and ui.hasTimerExpired("hide_cursor")) {
                     sdlError(c.SDL_HideCursor());
                     self.is_cursor_hidden = true;
                 }
