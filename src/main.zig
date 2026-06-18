@@ -14,10 +14,20 @@ const sdlError = ness.sdlError;
 const customPanic = ness.customPanic;
 
 pub const std_options: std.Options = .{
-    .logFn = if (builtin.abi.isAndroid()) android.logFn else logging.logFn,
+    .logFn = if (builtin.abi.isAndroid()) androidAndFileLogFn else logging.logFn,
 };
 
 pub const panic = std.debug.FullPanic(customPanic);
+
+fn androidAndFileLogFn(
+    comptime message_level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    logging.logFn(message_level, scope, format, args);
+    android.logFn(message_level, scope, format, args);
+}
 
 comptime {
     if (builtin.abi.isAndroid()) {

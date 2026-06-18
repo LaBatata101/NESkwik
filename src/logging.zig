@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zeit = @import("zeit");
 
 const paths = @import("utils/paths.zig");
@@ -82,13 +83,15 @@ pub fn logFn(
         writer.flush() catch {};
     }
 
-    std.debug.lockStdErr();
-    defer std.debug.unlockStdErr();
-    var stderr_buffer: [FILE_WRITER_BUFFER_SIZE]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    const writer = &stderr_writer.interface;
-    writeLog(writer, message_level, format, args) catch {};
-    writer.flush() catch {};
+    if (!builtin.abi.isAndroid()) {
+        std.debug.lockStdErr();
+        defer std.debug.unlockStdErr();
+        var stderr_buffer: [FILE_WRITER_BUFFER_SIZE]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+        const writer = &stderr_writer.interface;
+        writeLog(writer, message_level, format, args) catch {};
+        writer.flush() catch {};
+    }
 }
 
 pub fn writePanic(message: []const u8) void {
