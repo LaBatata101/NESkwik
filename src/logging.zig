@@ -4,6 +4,7 @@ const zeit = @import("zeit");
 const paths = @import("utils/paths.zig");
 
 const LOG_FILENAME = "NESkwik.log";
+const MAX_LOG_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
 var mutex: std.Thread.Mutex = .{};
 var log_file: ?std.fs.File = null;
@@ -26,8 +27,16 @@ pub fn init(alloc: std.mem.Allocator) !void {
     const resolved_log_path = try std.fs.path.join(alloc, &.{ log_dir, LOG_FILENAME });
     errdefer alloc.free(resolved_log_path);
 
-    const file = try std.fs.createFileAbsolute(resolved_log_path, .{ .truncate = true });
+    const file = try std.fs.createFileAbsolute(resolved_log_path, .{ .truncate = false });
     errdefer file.close();
+
+    const file_size = try file.getEndPos();
+    if (file_size > MAX_LOG_FILE_SIZE_BYTES) {
+        try file.setEndPos(0);
+        try file.seekTo(0);
+    } else {
+        try file.seekFromEnd(0);
+    }
 
     log_file = file;
     log_path = resolved_log_path;
