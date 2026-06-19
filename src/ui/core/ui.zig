@@ -1008,13 +1008,55 @@ pub const InputContext = struct {
     }
 };
 
+const UIVertex = extern struct {
+    position: c.SDL_FPoint,
+    color: c.SDL_FColor,
+    tex_coord: c.SDL_FPoint,
+    rect: c.SDL_FRect,
+    corner_radius: c.SDL_FColor,
+
+    const empty_rect = c.SDL_FRect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const no_radius = c.SDL_FColor{ .r = 0, .g = 0, .b = 0, .a = 0 };
+
+    fn init(position: c.SDL_FPoint, color: c.SDL_FColor, tex_coord: c.SDL_FPoint) UIVertex {
+        return .{
+            .position = position,
+            .color = color,
+            .tex_coord = tex_coord,
+            .rect = empty_rect,
+            .corner_radius = no_radius,
+        };
+    }
+
+    fn rounded(
+        position: c.SDL_FPoint,
+        color: c.SDL_FColor,
+        tex_coord: c.SDL_FPoint,
+        rect: c.SDL_FRect,
+        corner_radius: clay.CornerRadius,
+    ) UIVertex {
+        return .{
+            .position = position,
+            .color = color,
+            .tex_coord = tex_coord,
+            .rect = rect,
+            .corner_radius = .{
+                .r = corner_radius.top_left,
+                .g = corner_radius.top_right,
+                .b = corner_radius.bottom_right,
+                .a = corner_radius.bottom_left,
+            },
+        };
+    }
+};
+
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     device: ?*c.SDL_GPUDevice,
     pipeline: ?*c.SDL_GPUGraphicsPipeline,
     sampler: ?*c.SDL_GPUSampler,
 
-    vertices: std.ArrayList(c.SDL_Vertex),
+    vertices: std.ArrayList(UIVertex),
     indices: std.ArrayList(u32),
     draw_calls: std.ArrayList(DrawCall),
     clip_stack: std.ArrayList(?c.SDL_Rect),
@@ -1034,7 +1076,7 @@ pub const Renderer = struct {
     white_texture: ?*c.SDL_GPUTexture,
 
     const Self = @This();
-    const ROUNDED_RECT_SEGMENTS: usize = 12;
+    const ROUNDED_RECT_AA_PAD: f32 = 1.0;
 
     fn createSDLShaderFromSpirv(
         device: ?*c.SDL_GPUDevice,
@@ -1116,13 +1158,15 @@ pub const Renderer = struct {
         c.SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
 
         var vertex_attrs = [_]c.SDL_GPUVertexAttribute{
-            .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = 0 }, // Pos
-            .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = 8 }, // Color
-            .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = 24 }, // UV
+            .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(UIVertex, "position") },
+            .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(UIVertex, "color") },
+            .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(UIVertex, "tex_coord") },
+            .{ .location = 3, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(UIVertex, "rect") },
+            .{ .location = 4, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(UIVertex, "corner_radius") },
         };
         const vertex_bindings = [_]c.SDL_GPUVertexBufferDescription{.{
             .slot = 0,
-            .pitch = @sizeOf(c.SDL_Vertex),
+            .pitch = @sizeOf(UIVertex),
             .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX,
             .instance_step_rate = 0,
         }};
@@ -1338,27 +1382,11 @@ pub const Renderer = struct {
         self.ensureGeometryCapacity(4, 6);
 
         // 4 vertices (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
-        self.vertices.appendSliceAssumeCapacity(&[_]c.SDL_Vertex{
-            .{
-                .position = .{ .x = x, .y = y },
-                .color = color,
-                .tex_coord = .{ .x = uvs.x, .y = uvs.y },
-            },
-            .{
-                .position = .{ .x = x + w, .y = y },
-                .color = color,
-                .tex_coord = .{ .x = uvs.x + uvs.w, .y = uvs.y },
-            },
-            .{
-                .position = .{ .x = x + w, .y = y + h },
-                .color = color,
-                .tex_coord = .{ .x = uvs.x + uvs.w, .y = uvs.y + uvs.h },
-            },
-            .{
-                .position = .{ .x = x, .y = y + h },
-                .color = color,
-                .tex_coord = .{ .x = uvs.x, .y = uvs.y + uvs.h },
-            },
+        self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
+            UIVertex.init(.{ .x = x, .y = y }, color, .{ .x = uvs.x, .y = uvs.y }),
+            UIVertex.init(.{ .x = x + w, .y = y }, color, .{ .x = uvs.x + uvs.w, .y = uvs.y }),
+            UIVertex.init(.{ .x = x + w, .y = y + h }, color, .{ .x = uvs.x + uvs.w, .y = uvs.y + uvs.h }),
+            UIVertex.init(.{ .x = x, .y = y + h }, color, .{ .x = uvs.x, .y = uvs.y + uvs.h }),
         });
 
         // 6 indices (2 triangles)
@@ -1377,21 +1405,10 @@ pub const Renderer = struct {
             corner_radius.bottom_right > 0.0;
     }
 
-    fn appendTexturedVertex(
-        self: *Self,
-        rect: c.SDL_FRect,
-        color: c.SDL_FColor,
-        uv: c.SDL_FRect,
-        px: f32,
-        py: f32,
-    ) void {
+    fn texCoordForPoint(rect: c.SDL_FRect, uv: c.SDL_FRect, px: f32, py: f32) c.SDL_FPoint {
         const u = uv.x + uv.w * ((px - rect.x) / rect.w);
         const v = uv.y + uv.h * ((py - rect.y) / rect.h);
-        self.vertices.appendAssumeCapacity(.{
-            .position = .{ .x = px, .y = py },
-            .color = color,
-            .tex_coord = .{ .x = u, .y = v },
-        });
+        return .{ .x = u, .y = v };
     }
 
     fn pushRoundedTexturedRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, corner_radius: clay.CornerRadius, uv_: ?c.SDL_FRect) void {
@@ -1399,8 +1416,6 @@ pub const Renderer = struct {
             self.pushRect(rect, color, uv_);
             return;
         }
-
-        self.ensureGeometryCapacity(1 + (ROUNDED_RECT_SEGMENTS + 2) * 4, (ROUNDED_RECT_SEGMENTS + 2) * 4 * 3);
 
         const uv = uv_ orelse c.SDL_FRect{ .x = 0, .y = 0, .w = 1, .h = 1 };
         var radius = corner_radius;
@@ -1425,105 +1440,27 @@ pub const Renderer = struct {
         ScalePair.apply(&radius.top_left, &radius.bottom_left, rect.h);
         ScalePair.apply(&radius.top_right, &radius.bottom_right, rect.h);
 
-        const center_idx: u32 = @intCast(self.vertices.items.len);
-        self.appendTexturedVertex(rect, color, uv, rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        const pad = @min(ROUNDED_RECT_AA_PAD, @min(rect.w, rect.h) * 0.5);
+        const x = rect.x - pad;
+        const y = rect.y - pad;
+        const w = rect.w + pad * 2.0;
+        const h = rect.h + pad * 2.0;
+        const base_idx: u32 = @intCast(self.vertices.items.len);
+        self.ensureGeometryCapacity(4, 6);
 
-        const Boundary = struct {
-            fn add(
-                renderer: *Self,
-                center: u32,
-                source_rect: c.SDL_FRect,
-                vertex_color: c.SDL_FColor,
-                source_uv: c.SDL_FRect,
-                px: f32,
-                py: f32,
-                first: *u32,
-                previous: *?u32,
-                previous_pos: *?clay.Vector2,
-                count: *usize,
-            ) void {
-                if (previous_pos.*) |pos| {
-                    if (@abs(pos.x - px) < 0.001 and @abs(pos.y - py) < 0.001) return;
-                }
+        self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
+            UIVertex.rounded(.{ .x = x, .y = y }, color, texCoordForPoint(rect, uv, x, y), rect, radius),
+            UIVertex.rounded(.{ .x = x + w, .y = y }, color, texCoordForPoint(rect, uv, x + w, y), rect, radius),
+            UIVertex.rounded(.{ .x = x + w, .y = y + h }, color, texCoordForPoint(rect, uv, x + w, y + h), rect, radius),
+            UIVertex.rounded(.{ .x = x, .y = y + h }, color, texCoordForPoint(rect, uv, x, y + h), rect, radius),
+        });
 
-                const idx: u32 = @intCast(renderer.vertices.items.len);
-                renderer.appendTexturedVertex(source_rect, vertex_color, source_uv, px, py);
-                if (count.* == 0) first.* = idx;
-                if (previous.*) |prev| {
-                    renderer.indices.appendSliceAssumeCapacity(&[_]u32{ center, prev, idx });
-                    renderer.draw_calls.items[renderer.draw_calls.items.len - 1].index_count += 3;
-                }
-                previous.* = idx;
-                previous_pos.* = .{ .x = px, .y = py };
-                count.* += 1;
-            }
+        self.indices.appendSliceAssumeCapacity(&[_]u32{
+            base_idx, base_idx + 1, base_idx + 2,
+            base_idx, base_idx + 2, base_idx + 3,
+        });
 
-            fn arc(
-                renderer: *Self,
-                center: u32,
-                source_rect: c.SDL_FRect,
-                vertex_color: c.SDL_FColor,
-                source_uv: c.SDL_FRect,
-                cx: f32,
-                cy: f32,
-                r: f32,
-                start_angle: f32,
-                first_step: usize,
-                last_step: usize,
-                first: *u32,
-                previous: *?u32,
-                previous_pos: *?clay.Vector2,
-                count: *usize,
-            ) void {
-                if (r <= 0.0 or first_step > last_step) return;
-                const segments: usize = ROUNDED_RECT_SEGMENTS;
-                const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(segments));
-                var i = first_step;
-                while (i <= last_step) : (i += 1) {
-                    const angle = start_angle + @as(f32, @floatFromInt(i)) * step;
-                    add(
-                        renderer,
-                        center,
-                        source_rect,
-                        vertex_color,
-                        source_uv,
-                        cx + @cos(angle) * r,
-                        cy + @sin(angle) * r,
-                        first,
-                        previous,
-                        previous_pos,
-                        count,
-                    );
-                }
-            }
-        };
-
-        var first_idx: u32 = 0;
-        var prev_idx: ?u32 = null;
-        var prev_pos: ?clay.Vector2 = null;
-        var boundary_count: usize = 0;
-
-        const x = rect.x;
-        const y = rect.y;
-        const w = rect.w;
-        const h = rect.h;
-
-        Boundary.add(self, center_idx, rect, color, uv, x + radius.top_left, y, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.add(self, center_idx, rect, color, uv, x + w - radius.top_right, y, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.top_right, y + radius.top_right, radius.top_right, -std.math.pi / 2.0, 1, ROUNDED_RECT_SEGMENTS, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.add(self, center_idx, rect, color, uv, x + w, y + h - radius.bottom_right, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.bottom_right, y + h - radius.bottom_right, radius.bottom_right, 0.0, 1, ROUNDED_RECT_SEGMENTS, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.add(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h - radius.bottom_left, radius.bottom_left, std.math.pi / 2.0, 1, ROUNDED_RECT_SEGMENTS, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.add(self, center_idx, rect, color, uv, x, y + radius.top_left, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + radius.top_left, y + radius.top_left, radius.top_left, std.math.pi, 1, ROUNDED_RECT_SEGMENTS - 1, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-
-        if (boundary_count >= 3) {
-            if (prev_idx) |prev| {
-                self.indices.appendSliceAssumeCapacity(&[_]u32{ center_idx, prev, first_idx });
-                self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 3;
-            }
-        }
+        self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 6;
     }
 
     fn pushRoundedBorder(self: *Self, box: clay.BoundingBox, border: clay.BorderRenderData) void {
@@ -1589,18 +1526,18 @@ pub const Renderer = struct {
                 const sin_a = @sin(rad);
 
                 // Push Outer Vertex
-                self.vertices.appendAssumeCapacity(.{
-                    .position = .{ .x = c_out.x + cos_a * radius_outer, .y = c_out.y + sin_a * radius_outer },
-                    .color = col,
-                    .tex_coord = .{ .x = 0, .y = 0 },
-                });
+                self.vertices.appendAssumeCapacity(UIVertex.init(
+                    .{ .x = c_out.x + cos_a * radius_outer, .y = c_out.y + sin_a * radius_outer },
+                    col,
+                    .{ .x = 0, .y = 0 },
+                ));
 
                 // Push Inner Vertex
-                self.vertices.appendAssumeCapacity(.{
-                    .position = .{ .x = c_in.x + cos_a * radius_inner, .y = c_in.y + sin_a * radius_inner },
-                    .color = col,
-                    .tex_coord = .{ .x = 0, .y = 0 },
-                });
+                self.vertices.appendAssumeCapacity(UIVertex.init(
+                    .{ .x = c_in.x + cos_a * radius_inner, .y = c_in.y + sin_a * radius_inner },
+                    col,
+                    .{ .x = 0, .y = 0 },
+                ));
 
                 const idx_out = current_v_count;
                 const idx_in = current_v_count + 1;
@@ -1637,10 +1574,10 @@ pub const Renderer = struct {
     fn pushTriangle(self: *Self, p1: clay.Vector2, p2: clay.Vector2, p3: clay.Vector2, color: c.SDL_FColor) void {
         const base_idx: u32 = @intCast(self.vertices.items.len);
         self.ensureGeometryCapacity(3, 3);
-        self.vertices.appendSliceAssumeCapacity(&[_]c.SDL_Vertex{
-            .{ .position = .{ .x = p1.x, .y = p1.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
-            .{ .position = .{ .x = p2.x, .y = p2.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
-            .{ .position = .{ .x = p3.x, .y = p3.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
+        self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
+            UIVertex.init(.{ .x = p1.x, .y = p1.y }, color, .{ .x = 0, .y = 0 }),
+            UIVertex.init(.{ .x = p2.x, .y = p2.y }, color, .{ .x = 0, .y = 0 }),
+            UIVertex.init(.{ .x = p3.x, .y = p3.y }, color, .{ .x = 0, .y = 0 }),
         });
         self.indices.appendSliceAssumeCapacity(&[_]u32{
             base_idx, base_idx + 1, base_idx + 2,
@@ -1649,7 +1586,7 @@ pub const Renderer = struct {
     }
 
     fn resizeGPUBuffers(self: *Self, vertex_count: u32, index_count: u32) void {
-        const vertex_size_needed = vertex_count * @sizeOf(c.SDL_Vertex);
+        const vertex_size_needed = vertex_count * @sizeOf(UIVertex);
         const index_size_needed = index_count * @sizeOf(u32);
 
         if (vertex_size_needed > self.vertex_buffer_capacity) {
@@ -2724,7 +2661,7 @@ pub const UI = struct {
 
         const vertices_len: u32 = @intCast(window.renderer.vertices.items.len);
         const indices_len: u32 = @intCast(window.renderer.indices.items.len);
-        const vertices_size = vertices_len * @sizeOf(c.SDL_Vertex);
+        const vertices_size = vertices_len * @sizeOf(UIVertex);
         const indices_size = indices_len * @sizeOf(u32);
         window.renderer.resizeGPUBuffers(vertices_len, indices_len);
 

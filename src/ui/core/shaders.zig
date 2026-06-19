@@ -9,13 +9,33 @@ pub const FRAG =
     \\#version 450
     \\layout(location = 0) in vec4 v_Color;
     \\layout(location = 1) in vec2 v_UV;
+    \\layout(location = 2) in vec2 v_Position;
+    \\layout(location = 3) in vec4 v_Rect;
+    \\layout(location = 4) in vec4 v_CornerRadius;
     \\
     \\layout(location = 0) out vec4 Target0;
     \\
     \\layout(set = 2, binding = 0) uniform sampler2D u_Texture;
     \\
+    \\float roundedRectDistance(vec2 p, vec2 half_size, vec4 radii) {
+    \\    bool right = p.x > 0.0;
+    \\    bool bottom = p.y > 0.0;
+    \\    float radius = bottom ? (right ? radii.z : radii.w) : (right ? radii.y : radii.x);
+    \\    radius = min(radius, min(half_size.x, half_size.y));
+    \\    vec2 q = abs(p) - (half_size - vec2(radius));
+    \\    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    \\}
+    \\
     \\void main() {
-    \\    Target0 = texture(u_Texture, v_UV) * v_Color;
+    \\    vec4 color = texture(u_Texture, v_UV) * v_Color;
+    \\    if (dot(v_CornerRadius, vec4(1.0)) > 0.0 && v_Rect.z > 0.0 && v_Rect.w > 0.0) {
+    \\        vec2 half_size = v_Rect.zw * 0.5;
+    \\        vec2 center = v_Rect.xy + half_size;
+    \\        float dist = roundedRectDistance(v_Position - center, half_size, v_CornerRadius);
+    \\        float aa = max(fwidth(dist), 0.0001);
+    \\        color.a *= clamp(0.5 - dist / aa, 0.0, 1.0);
+    \\    }
+    \\    Target0 = color;
     \\}
 ;
 pub const VERT =
@@ -23,9 +43,14 @@ pub const VERT =
     \\layout(location = 0) in vec2 a_Position;
     \\layout(location = 1) in vec4 a_Color;
     \\layout(location = 2) in vec2 a_UV;
+    \\layout(location = 3) in vec4 a_Rect;
+    \\layout(location = 4) in vec4 a_CornerRadius;
     \\
     \\layout(location = 0) out vec4 v_Color;
     \\layout(location = 1) out vec2 v_UV;
+    \\layout(location = 2) out vec2 v_Position;
+    \\layout(location = 3) out vec4 v_Rect;
+    \\layout(location = 4) out vec4 v_CornerRadius;
     \\
     \\layout(set = 1, binding = 0) uniform UniformBlock {
     \\    mat4 u_Projection;
@@ -34,6 +59,9 @@ pub const VERT =
     \\void main() {
     \\    v_Color = a_Color;
     \\    v_UV = a_UV;
+    \\    v_Position = a_Position;
+    \\    v_Rect = a_Rect;
+    \\    v_CornerRadius = a_CornerRadius;
     \\    gl_Position = u_Projection * vec4(a_Position, 0.0, 1.0);
     \\}
 ;
