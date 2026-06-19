@@ -54,159 +54,7 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
         if (builtin.abi.isAndroid()) {
             if (!ui.isWindowFullscreen()) drawAndroidHeader(ui, app_state);
         } else {
-            if (!ui.isWindowFullscreen()) {
-                const menubar = ui.menuBar(.{
-                    .bg_color = theme.bg_panel,
-                    .border_color = theme.border_dim,
-                });
-                {
-                    const sys_menu = ui.dropdownMenu(.{
-                        .label = "System",
-                        .bg_color = theme.bg_panel,
-                        .hover_color = theme.bg_hover,
-                        .text_color = theme.text_secondary,
-                        .list_bg_color = theme.bg_section,
-                        .list_border_color = theme.border,
-                    });
-                    if (ui.menuItem(.{
-                        .label = "Open",
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                    }).clicked(ui.main_window.ctx)) {
-                        openRomDialog(ui, app_state);
-                    }
-                    if (ui.menuItem(.{
-                        .label = "Exit",
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .shortcut = app_state.generalBinding(.quit).keyName(),
-                    }).clicked(ui.main_window.ctx)) {
-                        ui.quit = true;
-                    }
-                    sys_menu.end();
-
-                    const emulation_menu = ui.dropdownMenu(.{
-                        .label = "Emulation",
-                        .bg_color = theme.bg_panel,
-                        .hover_color = theme.bg_hover,
-                        .text_color = theme.text_secondary,
-                        .list_bg_color = theme.bg_section,
-                        .list_border_color = theme.border,
-                    });
-                    if (ui.menuItem(.{
-                        .label = if (app_state.paused) "Continue" else "Pause",
-                        .enabled = app_state.emulation_running,
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .shortcut = app_state.generalBinding(.toggle_pause).keyName(),
-                    }).clicked(ui.main_window.ctx)) {
-                        app_state.togglePause();
-                    }
-                    if (ui.menuItem(.{
-                        .label = "Stop",
-                        .enabled = app_state.emulation_running,
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .shortcut = app_state.generalBinding(.stop).keyName(),
-                    }).clicked(ui.main_window.ctx)) {
-                        app_state.unloadCurrentRom();
-                    }
-                    if (ui.menuItem(.{
-                        .label = "Restart",
-                        .enabled = app_state.emulation_running,
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .shortcut = app_state.generalBinding(.restart).keyName(),
-                    }).clicked(ui.main_window.ctx)) {
-                        app_state.resetSystem();
-                    }
-
-                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
-                    const save_state_item = ui.menuItem(.{
-                        .label = "Save State",
-                        .enabled = app_state.emulation_running,
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .has_submenu = true,
-                    });
-                    {
-                        const save_state_submenu = save_state_item.submenu(.{
-                            .width = 270,
-                            .bg_color = theme.bg_section,
-                            .border_color = theme.border,
-                        });
-                        {
-                            drawStateSlotItems(ui, app_state, .save);
-                        }
-                        save_state_submenu.end();
-                    }
-                    save_state_item.end();
-
-                    const load_state_item = ui.menuItem(.{
-                        .label = "Load State",
-                        .enabled = app_state.emulation_running,
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .has_submenu = true,
-                    });
-                    {
-                        const load_state_submenu = load_state_item.submenu(.{
-                            .width = 270,
-                            .bg_color = theme.bg_section,
-                            .border_color = theme.border,
-                        });
-                        {
-                            drawStateSlotItems(ui, app_state, .load);
-                        }
-                        load_state_submenu.end();
-                    }
-                    load_state_item.end();
-
-                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
-                    if (ui.menuItem(.{
-                        .label = "Debug",
-                        .enabled = app_state.emulation_running,
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                        .shortcut = app_state.generalBinding(.toggle_step_mode).keyName(),
-                    }).clicked(ui.main_window.ctx)) {
-                        app_state.toggleDebug();
-                    }
-                    if (ui.menuItem(.{
-                        .label = if (app_state.show_fps) "Hide FPS" else "Show FPS",
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                    }).clicked(ui.main_window.ctx)) {
-                        app_state.show_fps = !app_state.show_fps;
-                    }
-                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
-
-                    if (ui.menuItem(.{
-                        .label = "Settings",
-                        .bg_color = theme.bg_section,
-                        .hover_color = theme.accent_blue,
-                        .text_color = theme.text_secondary,
-                    }).clicked(ui.main_window.ctx)) {
-                        ui.createWindow(
-                            "Settings",
-                            680,
-                            640,
-                            .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(app_state) },
-                        );
-                    }
-                    emulation_menu.end();
-                }
-                menubar.end();
-            }
+            if (!ui.isWindowFullscreen()) drawDesktopMenu(ui, app_state);
         }
 
         if (app_state.show_fps) {
@@ -281,11 +129,206 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             }
         }
 
+        if (app_state.show_save_state_toast) toast(ui, "State saved");
+        if (app_state.show_load_state_toast) toast(ui, "State loaded");
+
         if (builtin.abi.isAndroid() and app_state.show_android_sidepanel) {
             drawAndroidSidepanel(ui, app_state, root.id);
         }
     }
     root.end();
+}
+
+fn toastTransition(state_: clay.TransitionData, _: clay.TransitionProperty) callconv(.c) clay.TransitionData {
+    var s = state_;
+    s.bounding_box.y += s.bounding_box.height;
+    return s;
+}
+
+fn toast(ui: *UI, text: []const u8) void {
+    const f = ui.float(.{
+        .attach_to = .to_root,
+        .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
+        .z_index = 100,
+        .sizing = .fit,
+        .offset = .{ .x = 15, .y = -15 },
+        .transition = .{
+            .handler = clay.easeOut,
+            .duration = 0.25,
+            .properties = clay.TransitionProperty.position,
+            .enter = .{
+                .set_initial_state = toastTransition,
+                .trigger = .trigger_on_first_parent_frame,
+            },
+            .exit = .{
+                .set_final_state = toastTransition,
+                .sibling_ordering = .natural_order,
+            },
+        },
+    });
+    {
+        const col = ui.column(.{
+            .bg_color = Color.black.withAlpha(0.8),
+            .child_alignment = .center,
+        });
+        _ = ui.label(.{ .text = text, .font_size = 25, .color = .white });
+        col.end();
+    }
+    f.end();
+}
+
+fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
+    const menubar = ui.menuBar(.{
+        .bg_color = theme.bg_panel,
+        .border_color = theme.border_dim,
+    });
+    {
+        const sys_menu = ui.dropdownMenu(.{
+            .label = "System",
+            .bg_color = theme.bg_panel,
+            .hover_color = theme.bg_hover,
+            .text_color = theme.text_secondary,
+            .list_bg_color = theme.bg_section,
+            .list_border_color = theme.border,
+        });
+        if (ui.menuItem(.{
+            .label = "Open",
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+        }).clicked(ui.main_window.ctx)) {
+            openRomDialog(ui, app_state);
+        }
+        if (ui.menuItem(.{
+            .label = "Exit",
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .shortcut = app_state.generalBinding(.quit).keyName(),
+        }).clicked(ui.main_window.ctx)) {
+            ui.quit = true;
+        }
+        sys_menu.end();
+
+        const emulation_menu = ui.dropdownMenu(.{
+            .label = "Emulation",
+            .bg_color = theme.bg_panel,
+            .hover_color = theme.bg_hover,
+            .text_color = theme.text_secondary,
+            .list_bg_color = theme.bg_section,
+            .list_border_color = theme.border,
+        });
+        if (ui.menuItem(.{
+            .label = if (app_state.paused) "Continue" else "Pause",
+            .enabled = app_state.emulation_running,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .shortcut = app_state.generalBinding(.toggle_pause).keyName(),
+        }).clicked(ui.main_window.ctx)) {
+            app_state.togglePause();
+        }
+        if (ui.menuItem(.{
+            .label = "Stop",
+            .enabled = app_state.emulation_running,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .shortcut = app_state.generalBinding(.stop).keyName(),
+        }).clicked(ui.main_window.ctx)) {
+            app_state.unloadCurrentRom();
+        }
+        if (ui.menuItem(.{
+            .label = "Restart",
+            .enabled = app_state.emulation_running,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .shortcut = app_state.generalBinding(.restart).keyName(),
+        }).clicked(ui.main_window.ctx)) {
+            app_state.resetSystem();
+        }
+
+        _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+        const save_state_item = ui.menuItem(.{
+            .label = "Save State",
+            .enabled = app_state.emulation_running,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .has_submenu = true,
+        });
+        {
+            const save_state_submenu = save_state_item.submenu(.{
+                .width = 270,
+                .bg_color = theme.bg_section,
+                .border_color = theme.border,
+            });
+            {
+                drawStateSlotItems(ui, app_state, .save);
+            }
+            save_state_submenu.end();
+        }
+        save_state_item.end();
+
+        const load_state_item = ui.menuItem(.{
+            .label = "Load State",
+            .enabled = app_state.emulation_running,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .has_submenu = true,
+        });
+        {
+            const load_state_submenu = load_state_item.submenu(.{
+                .width = 270,
+                .bg_color = theme.bg_section,
+                .border_color = theme.border,
+            });
+            {
+                drawStateSlotItems(ui, app_state, .load);
+            }
+            load_state_submenu.end();
+        }
+        load_state_item.end();
+
+        _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+        if (ui.menuItem(.{
+            .label = "Debug",
+            .enabled = app_state.emulation_running,
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+            .shortcut = app_state.generalBinding(.toggle_step_mode).keyName(),
+        }).clicked(ui.main_window.ctx)) {
+            app_state.toggleDebug();
+        }
+        if (ui.menuItem(.{
+            .label = if (app_state.show_fps) "Hide FPS" else "Show FPS",
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+        }).clicked(ui.main_window.ctx)) {
+            app_state.show_fps = !app_state.show_fps;
+        }
+        _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+
+        if (ui.menuItem(.{
+            .label = "Settings",
+            .bg_color = theme.bg_section,
+            .hover_color = theme.accent_blue,
+            .text_color = theme.text_secondary,
+        }).clicked(ui.main_window.ctx)) {
+            ui.createWindow(
+                "Settings",
+                680,
+                640,
+                .{ .draw_fn = drawSettingsWindowUI, .draw_fn_data = @ptrCast(app_state) },
+            );
+        }
+        emulation_menu.end();
+    }
+    menubar.end();
 }
 
 fn drawAndroidHeader(ui: *UI, app_state: *AppState) void {
@@ -435,6 +478,8 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                 if (drawAndroidDrawerAction(ui, "Save Slot 1", app_state.emulation_running)) {
                     app_state.saveStateSlot(0);
                     app_state.show_android_sidepanel = false;
+                    app_state.show_save_state_toast = true;
+                    ui.setTimer("save_state_toast", 1000);
                 }
                 if (drawAndroidDrawerAction(
                     ui,
@@ -443,6 +488,8 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                 )) {
                     app_state.loadStateSlot(0);
                     app_state.show_android_sidepanel = false;
+                    app_state.show_load_state_toast = true;
+                    ui.setTimer("load_state_toast", 1000);
                 }
 
                 drawAndroidDrawerSectionLabel(ui, "Tools");
@@ -936,8 +983,16 @@ fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) vo
             .text_color = theme.text_secondary,
         }).clicked(ui.main_window.ctx)) {
             switch (mode) {
-                .save => app_state.saveStateSlot(slot),
-                .load => app_state.loadStateSlot(slot),
+                .save => {
+                    app_state.show_save_state_toast = true;
+                    ui.setTimer("save_state_toast", 1000);
+                    app_state.saveStateSlot(slot);
+                },
+                .load => {
+                    app_state.show_load_state_toast = true;
+                    ui.setTimer("load_state_toast", 1000);
+                    app_state.loadStateSlot(slot);
+                },
             }
         }
     }

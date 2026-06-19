@@ -129,6 +129,9 @@ pub const AppState = struct {
     shader_file_picker_entries: std.ArrayList(ShaderFilePickerEntry) = .{},
     shader_file_picker_error: ?[]u8 = null,
 
+    show_save_state_toast: bool = false,
+    show_load_state_toast: bool = false,
+
     show_fps: bool = false,
 
     settings: EmulatorSettings = .{},
@@ -445,6 +448,7 @@ pub const AppState = struct {
     }
 
     pub fn update(self: *Self, ui: *UI) void {
+        self.tickTimers(ui);
         self.handleInput(ui);
         self.updateShaderState(ui);
 
@@ -459,6 +463,11 @@ pub const AppState = struct {
             }
             std.atomic.spinLoopHint();
         }
+    }
+
+    fn tickTimers(self: *Self, ui: *UI) void {
+        if (ui.hasTimerExpired("save_state_toast")) self.show_save_state_toast = false;
+        if (ui.hasTimerExpired("load_state_toast")) self.show_load_state_toast = false;
     }
 
     fn updateShaderState(self: *Self, ui: *UI) void {
