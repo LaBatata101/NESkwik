@@ -1034,6 +1034,7 @@ pub const Renderer = struct {
     white_texture: ?*c.SDL_GPUTexture,
 
     const Self = @This();
+    const ROUNDED_RECT_SEGMENTS: usize = 12;
 
     fn createSDLShaderFromSpirv(
         device: ?*c.SDL_GPUDevice,
@@ -1295,6 +1296,11 @@ pub const Renderer = struct {
         self.flush();
     }
 
+    fn ensureGeometryCapacity(self: *Self, vertex_count: usize, index_count: usize) void {
+        self.vertices.ensureUnusedCapacity(self.allocator, vertex_count) catch @panic("Failed to allocate");
+        self.indices.ensureUnusedCapacity(self.allocator, index_count) catch @panic("Failed to allocate");
+    }
+
     fn pushClipRect(self: *Self, rect: c.SDL_Rect) void {
         self.clip_stack.append(self.allocator, self.current_clip) catch @panic("Failed to allocate");
         self.setClipRect(if (self.current_clip) |current| intersectClipRects(current, rect) else rect);
@@ -1329,9 +1335,10 @@ pub const Renderer = struct {
         const h = rect.h;
         const base_idx: u32 = @intCast(self.vertices.items.len);
         const uvs = uv orelse c.SDL_FRect{ .x = 0, .y = 0, .w = 1, .h = 1 };
+        self.ensureGeometryCapacity(4, 6);
 
         // 4 vertices (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
-        self.vertices.appendSlice(self.allocator, &[_]c.SDL_Vertex{
+        self.vertices.appendSliceAssumeCapacity(&[_]c.SDL_Vertex{
             .{
                 .position = .{ .x = x, .y = y },
                 .color = color,
@@ -1352,13 +1359,13 @@ pub const Renderer = struct {
                 .color = color,
                 .tex_coord = .{ .x = uvs.x, .y = uvs.y + uvs.h },
             },
-        }) catch @panic("Failed to allocate");
+        });
 
         // 6 indices (2 triangles)
-        self.indices.appendSlice(self.allocator, &[_]u32{
+        self.indices.appendSliceAssumeCapacity(&[_]u32{
             base_idx, base_idx + 1, base_idx + 2, // Triangle 1
             base_idx, base_idx + 2, base_idx + 3, // Triangle 2
-        }) catch @panic("Failed to allocate");
+        });
 
         self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 6;
     }
@@ -1377,16 +1384,14 @@ pub const Renderer = struct {
         uv: c.SDL_FRect,
         px: f32,
         py: f32,
-    ) u32 {
-        const idx: u32 = @intCast(self.vertices.items.len);
+    ) void {
         const u = uv.x + uv.w * ((px - rect.x) / rect.w);
         const v = uv.y + uv.h * ((py - rect.y) / rect.h);
-        self.vertices.append(self.allocator, .{
+        self.vertices.appendAssumeCapacity(.{
             .position = .{ .x = px, .y = py },
             .color = color,
             .tex_coord = .{ .x = u, .y = v },
-        }) catch @panic("Failed to allocate");
-        return idx;
+        });
     }
 
     fn pushRoundedTexturedRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, corner_radius: clay.CornerRadius, uv_: ?c.SDL_FRect) void {
@@ -1394,6 +1399,8 @@ pub const Renderer = struct {
             self.pushRect(rect, color, uv_);
             return;
         }
+
+        self.ensureGeometryCapacity(1 + (ROUNDED_RECT_SEGMENTS + 2) * 4, (ROUNDED_RECT_SEGMENTS + 2) * 4 * 3);
 
         const uv = uv_ orelse c.SDL_FRect{ .x = 0, .y = 0, .w = 1, .h = 1 };
         var radius = corner_radius;
@@ -1418,13 +1425,8 @@ pub const Renderer = struct {
         ScalePair.apply(&radius.top_left, &radius.bottom_left, rect.h);
         ScalePair.apply(&radius.top_right, &radius.bottom_right, rect.h);
 
-        const center_idx = self.appendTexturedVertex(
-            rect,
-            color,
-            uv,
-            rect.x + rect.w / 2.0,
-            rect.y + rect.h / 2.0,
-        );
+        const center_idx: u32 = @intCast(self.vertices.items.len);
+        self.appendTexturedVertex(rect, color, uv, rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
 
         const Boundary = struct {
             fn add(
@@ -1444,10 +1446,11 @@ pub const Renderer = struct {
                     if (@abs(pos.x - px) < 0.001 and @abs(pos.y - py) < 0.001) return;
                 }
 
-                const idx = renderer.appendTexturedVertex(source_rect, vertex_color, source_uv, px, py);
+                const idx: u32 = @intCast(renderer.vertices.items.len);
+                renderer.appendTexturedVertex(source_rect, vertex_color, source_uv, px, py);
                 if (count.* == 0) first.* = idx;
                 if (previous.*) |prev| {
-                    renderer.indices.appendSlice(renderer.allocator, &[_]u32{ center, prev, idx }) catch @panic("Failed to allocate");
+                    renderer.indices.appendSliceAssumeCapacity(&[_]u32{ center, prev, idx });
                     renderer.draw_calls.items[renderer.draw_calls.items.len - 1].index_count += 3;
                 }
                 previous.* = idx;
@@ -1473,7 +1476,7 @@ pub const Renderer = struct {
                 count: *usize,
             ) void {
                 if (r <= 0.0 or first_step > last_step) return;
-                const segments: usize = 12;
+                const segments: usize = ROUNDED_RECT_SEGMENTS;
                 const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(segments));
                 var i = first_step;
                 while (i <= last_step) : (i += 1) {
@@ -1507,17 +1510,17 @@ pub const Renderer = struct {
 
         Boundary.add(self, center_idx, rect, color, uv, x + radius.top_left, y, &first_idx, &prev_idx, &prev_pos, &boundary_count);
         Boundary.add(self, center_idx, rect, color, uv, x + w - radius.top_right, y, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.top_right, y + radius.top_right, radius.top_right, -std.math.pi / 2.0, 1, 12, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.top_right, y + radius.top_right, radius.top_right, -std.math.pi / 2.0, 1, ROUNDED_RECT_SEGMENTS, &first_idx, &prev_idx, &prev_pos, &boundary_count);
         Boundary.add(self, center_idx, rect, color, uv, x + w, y + h - radius.bottom_right, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.bottom_right, y + h - radius.bottom_right, radius.bottom_right, 0.0, 1, 12, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + w - radius.bottom_right, y + h - radius.bottom_right, radius.bottom_right, 0.0, 1, ROUNDED_RECT_SEGMENTS, &first_idx, &prev_idx, &prev_pos, &boundary_count);
         Boundary.add(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h - radius.bottom_left, radius.bottom_left, std.math.pi / 2.0, 1, 12, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + radius.bottom_left, y + h - radius.bottom_left, radius.bottom_left, std.math.pi / 2.0, 1, ROUNDED_RECT_SEGMENTS, &first_idx, &prev_idx, &prev_pos, &boundary_count);
         Boundary.add(self, center_idx, rect, color, uv, x, y + radius.top_left, &first_idx, &prev_idx, &prev_pos, &boundary_count);
-        Boundary.arc(self, center_idx, rect, color, uv, x + radius.top_left, y + radius.top_left, radius.top_left, std.math.pi, 1, 11, &first_idx, &prev_idx, &prev_pos, &boundary_count);
+        Boundary.arc(self, center_idx, rect, color, uv, x + radius.top_left, y + radius.top_left, radius.top_left, std.math.pi, 1, ROUNDED_RECT_SEGMENTS - 1, &first_idx, &prev_idx, &prev_pos, &boundary_count);
 
         if (boundary_count >= 3) {
             if (prev_idx) |prev| {
-                self.indices.appendSlice(self.allocator, &[_]u32{ center_idx, prev, first_idx }) catch @panic("Failed to allocate");
+                self.indices.appendSliceAssumeCapacity(&[_]u32{ center_idx, prev, first_idx });
                 self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 3;
             }
         }
@@ -1568,6 +1571,7 @@ pub const Renderer = struct {
         const step_length: f32 = 90.0 / @as(f32, @floatFromInt(segments));
         const deg2rad = std.math.pi / 180.0;
         const angles = [_]f32{ 180.0, 270.0, 0.0, 90.0 };
+        self.ensureGeometryCapacity(4 * (segments + 1) * 2, ((4 * (segments + 1)) - 1) * 6 + 6);
 
         // Save initial vertex index to close the loop later
         const start_v_count: u32 = @intCast(self.vertices.items.len);
@@ -1585,18 +1589,18 @@ pub const Renderer = struct {
                 const sin_a = @sin(rad);
 
                 // Push Outer Vertex
-                self.vertices.append(self.allocator, .{
+                self.vertices.appendAssumeCapacity(.{
                     .position = .{ .x = c_out.x + cos_a * radius_outer, .y = c_out.y + sin_a * radius_outer },
                     .color = col,
                     .tex_coord = .{ .x = 0, .y = 0 },
-                }) catch @panic("Failed to allocate");
+                });
 
                 // Push Inner Vertex
-                self.vertices.append(self.allocator, .{
+                self.vertices.appendAssumeCapacity(.{
                     .position = .{ .x = c_in.x + cos_a * radius_inner, .y = c_in.y + sin_a * radius_inner },
                     .color = col,
                     .tex_coord = .{ .x = 0, .y = 0 },
-                }) catch @panic("Failed to allocate");
+                });
 
                 const idx_out = current_v_count;
                 const idx_in = current_v_count + 1;
@@ -1604,10 +1608,10 @@ pub const Renderer = struct {
                 // Add indices to connect to previous pair (triangle strip logic)
                 // We skip the very first pair of the first corner because there is no previous pair yet
                 if (current_v_count > start_v_count) {
-                    self.indices.appendSlice(self.allocator, &[_]u32{
+                    self.indices.appendSliceAssumeCapacity(&[_]u32{
                         idx_out - 2, idx_out, idx_out - 1, // Tri 1
                         idx_out - 1, idx_out, idx_in, // Tri 2
-                    }) catch @panic("Failed to allocate");
+                    });
                     self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 6;
                 }
 
@@ -1622,114 +1626,25 @@ pub const Renderer = struct {
         const first_out = start_v_count;
         const first_in = start_v_count + 1;
 
-        self.indices.appendSlice(
-            self.allocator,
-            &[_]u32{ last_out, first_out, last_in, last_in, first_out, first_in },
-        ) catch @panic("Failed to allocate");
+        self.indices.appendSliceAssumeCapacity(&[_]u32{ last_out, first_out, last_in, last_in, first_out, first_in });
         self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 6;
     }
 
     fn pushRoundedRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, corner_radius: clay.CornerRadius) void {
-        const x = rect.x;
-        const y = rect.y;
-        const w = rect.w;
-        const h = rect.h;
-        // Calculate effective radius (clamped to half the shortest side)
-        var radius: f32 = @max(
-            corner_radius.top_left,
-            @max(corner_radius.top_right, @max(corner_radius.bottom_left, corner_radius.bottom_right)),
-        );
-        const min_side = @min(w, h);
-        if (radius * 2.0 > min_side) {
-            radius = min_side / 2.0;
-        }
-
-        // If no radius, draw a standard rect
-        if (radius <= 0.0) {
-            self.pushRect(rect, color, null);
-            return;
-        }
-
-        // Draw 5 Rectangles to fill the body (Center, Top, Bottom, Left, Right)
-        // This strategy ensures no geometry overlap which is important for transparency.
-
-        // Center (Inner)
-        self.pushRect(.{ .x = x + radius, .y = y + radius, .w = w - 2 * radius, .h = h - 2 * radius }, color, null);
-        // Top Strip (between top-left and top-right arcs)
-        self.pushRect(.{ .x = x + radius, .y = y, .w = w - 2 * radius, .h = radius }, color, null);
-        // Bottom Strip
-        self.pushRect(.{ .x = x + radius, .y = y + h - radius, .w = w - 2 * radius, .h = radius }, color, null);
-        // Left Strip
-        self.pushRect(.{ .x = x, .y = y + radius, .w = radius, .h = h - 2 * radius }, color, null);
-        // Right Strip
-        self.pushRect(.{ .x = x + w - radius, .y = y + radius, .w = radius, .h = h - 2 * radius }, color, null);
-
-        // Draw 4 Corner Fans
-        // Top-Left: PI to 1.5PI
-        // Top-Right: 1.5PI to 2PI (0)
-        // Bottom-Right: 0 to 0.5PI
-        // Bottom-Left: 0.5PI to PI
-        const segments: usize = 12;
-        const corners = [_]struct { cx: f32, cy: f32, start_angle: f32 }{
-            .{ .cx = x + radius, .cy = y + radius, .start_angle = std.math.pi }, // TL
-            .{ .cx = x + w - radius, .cy = y + radius, .start_angle = 1.5 * std.math.pi }, // TR
-            .{ .cx = x + w - radius, .cy = y + h - radius, .start_angle = 0.0 }, // BR
-            .{ .cx = x + radius, .cy = y + h - radius, .start_angle = 0.5 * std.math.pi }, // BL
-        };
-
-        for (corners) |c_info| {
-            self.pushCornerFan(c_info.cx, c_info.cy, radius, c_info.start_angle, segments, color);
-        }
-    }
-
-    fn pushCornerFan(self: *Self, cx: f32, cy: f32, radius: f32, start_angle: f32, segments: usize, color: c.SDL_FColor) void {
-        const center_idx: u32 = @intCast(self.vertices.items.len);
-
-        // Center pivot vertex of the fan
-        self.vertices.append(self.allocator, .{
-            .position = .{ .x = cx, .y = cy },
-            .color = color,
-            .tex_coord = .{ .x = 0, .y = 0 },
-        }) catch @panic("Failed to allocate");
-
-        const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(segments));
-
-        // Generate arc vertices
-        for (0..segments + 1) |i| {
-            const angle = start_angle + @as(f32, @floatFromInt(i)) * step;
-
-            self.vertices.append(self.allocator, .{
-                .position = .{
-                    .x = cx + @cos(angle) * radius,
-                    .y = cy + @sin(angle) * radius,
-                },
-                .color = color,
-                .tex_coord = .{ .x = 0, .y = 0 },
-            }) catch @panic("Failed to allocate");
-
-            // Generate Indices for the fan slice
-            if (i > 0) {
-                const current_v_idx = center_idx + @as(u32, @intCast(i));
-                // Triangle: Center(0), Previous(i), Current(i+1)
-                self.indices.appendSlice(
-                    self.allocator,
-                    &[_]u32{ center_idx, current_v_idx, current_v_idx + 1 },
-                ) catch @panic("Failed to allocate");
-            }
-        }
-        self.draw_calls.items[self.draw_calls.items.len - 1].index_count += @as(u32, @intCast(segments * 3));
+        self.pushRoundedTexturedRect(rect, color, corner_radius, null);
     }
 
     fn pushTriangle(self: *Self, p1: clay.Vector2, p2: clay.Vector2, p3: clay.Vector2, color: c.SDL_FColor) void {
         const base_idx: u32 = @intCast(self.vertices.items.len);
-        self.vertices.appendSlice(self.allocator, &[_]c.SDL_Vertex{
+        self.ensureGeometryCapacity(3, 3);
+        self.vertices.appendSliceAssumeCapacity(&[_]c.SDL_Vertex{
             .{ .position = .{ .x = p1.x, .y = p1.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
             .{ .position = .{ .x = p2.x, .y = p2.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
             .{ .position = .{ .x = p3.x, .y = p3.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } },
-        }) catch @panic("Failed to allocate!");
-        self.indices.appendSlice(self.allocator, &[_]u32{
+        });
+        self.indices.appendSliceAssumeCapacity(&[_]u32{
             base_idx, base_idx + 1, base_idx + 2,
-        }) catch @panic("Failed to allocate!");
+        });
         self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 3;
     }
 
