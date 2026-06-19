@@ -26,9 +26,20 @@ fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
 const FontUserData = struct {
     font: *c.TTF_Font,
     scale: *const f32,
+    measure_cache: *std.AutoArrayHashMap(u64, clay.Dimensions),
+
+    const MEASURE_CACHE_MAX_ENTRIES = 4096;
 
     fn effectiveScale(self: *const @This()) f32 {
         return self.scale.*;
+    }
+
+    fn measureCacheKey(self: *const @This(), text: []const u8, font_size: u16) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(text);
+        std.hash.autoHash(&hasher, font_size);
+        std.hash.autoHash(&hasher, @as(u32, @bitCast(self.effectiveScale())));
+        return hasher.final();
     }
 
     fn setLogicalSize(self: *const @This(), font_size: u16) void {
@@ -36,6 +47,9 @@ const FontUserData = struct {
     }
 
     fn measure(self: *const @This(), text: []const u8, font_size: u16) clay.Dimensions {
+        const key = self.measureCacheKey(text, font_size);
+        if (self.measure_cache.get(key)) |dims| return dims;
+
         self.setLogicalSize(font_size);
 
         var w: c_int = 0;
@@ -43,10 +57,17 @@ const FontUserData = struct {
         sdlError(c.TTF_GetStringSize(self.font, text.ptr, text.len, &w, &h));
 
         const scale = self.effectiveScale();
-        return .{
+        const dims: clay.Dimensions = .{
             .w = @as(f32, @floatFromInt(w)) / scale,
             .h = @as(f32, @floatFromInt(h)) / scale,
         };
+
+        if (self.measure_cache.count() >= MEASURE_CACHE_MAX_ENTRIES) {
+            self.measure_cache.clearRetainingCapacity();
+        }
+
+        self.measure_cache.put(key, dims) catch @panic("OOM");
+        return dims;
     }
 };
 
@@ -114,6 +135,7 @@ pub const UIContext = struct {
     widgets: WidgetStateMap,
 
     text_cache: std.AutoArrayHashMap(u32, TextCacheItem),
+    text_measure_cache: std.AutoArrayHashMap(u64, clay.Dimensions),
     canvas_cache: std.AutoArrayHashMap(u32, CanvasCacheItem),
 
     timers: std.AutoHashMap(u64, struct { start: u64, ms: u64 }),
@@ -155,6 +177,7 @@ pub const UIContext = struct {
         ctx.dt = 0;
         ctx.widgets = WidgetStateMap.init(persistent_arena_alloc);
         ctx.text_cache = std.AutoArrayHashMap(u32, TextCacheItem).init(persistent_arena_alloc);
+        ctx.text_measure_cache = std.AutoArrayHashMap(u64, clay.Dimensions).init(persistent_arena_alloc);
         ctx.canvas_cache = std.AutoArrayHashMap(u32, CanvasCacheItem).init(persistent_arena_alloc);
 
         ctx.input = InputContext.init();
@@ -169,6 +192,7 @@ pub const UIContext = struct {
             c.SDL_ReleaseGPUTexture(device, cached_text.value_ptr.texture);
         }
         self.text_cache.deinit();
+        self.text_measure_cache.deinit();
 
         var canvas_iter = self.canvas_cache.iterator();
         while (canvas_iter.next()) |item| {
@@ -188,6 +212,7 @@ pub const UIContext = struct {
             c.SDL_ReleaseGPUTexture(device, cached_text.value_ptr.texture);
         }
         self.text_cache.clearRetainingCapacity();
+        self.text_measure_cache.clearRetainingCapacity();
 
         var canvas_iter = self.canvas_cache.iterator();
         while (canvas_iter.next()) |item| {
@@ -2042,7 +2067,11 @@ pub const UI = struct {
             .title = title,
             .ctx = ui_ctx,
             .renderer = try Renderer.init(allocator, gpu_device, win_ptr, vk_version),
-            .font_user_data = .{ .font = font, .scale = &main_window.display_scale },
+            .font_user_data = .{
+                .font = font,
+                .scale = &main_window.display_scale,
+                .measure_cache = &ui_ctx.text_measure_cache,
+            },
         };
 
         clay.setMeasureTextFunction(*const FontUserData, &main_window.font_user_data, measureText);
@@ -2323,7 +2352,11 @@ pub const UI = struct {
                 win_ptr,
                 vulkan.detect_vulkan_version(),
             ) catch @panic("OOM"),
-            .font_user_data = .{ .font = self.font, .scale = &window.display_scale },
+            .font_user_data = .{
+                .font = self.font,
+                .scale = &window.display_scale,
+                .measure_cache = &window.ctx.text_measure_cache,
+            },
         };
 
         setWindowIcon(window.ptr);
