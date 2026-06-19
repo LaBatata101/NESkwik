@@ -539,6 +539,19 @@ const DrawCall = struct {
     clip_rect: ?c.SDL_Rect,
 };
 
+const TextureUpload = struct {
+    texture: ?*c.SDL_GPUTexture,
+    pixels: []const u8,
+    width: u32,
+    height: u32,
+    pixel_format: c.SDL_PixelFormat,
+
+    fn byteSize(self: TextureUpload) u32 {
+        const bytes_per_pixel: u32 = @intCast(c.SDL_GetPixelFormatDetails(self.pixel_format).*.bytes_per_pixel);
+        return self.width * self.height * bytes_per_pixel;
+    }
+};
+
 pub const Key = enum(u16) {
     UNKNOWN = 0,
 
@@ -1005,11 +1018,14 @@ pub const Renderer = struct {
     indices: std.ArrayList(u32),
     draw_calls: std.ArrayList(DrawCall),
     clip_stack: std.ArrayList(?c.SDL_Rect),
+    textures: std.ArrayList(TextureUpload),
 
     vertex_buffer: ?*c.SDL_GPUBuffer = null,
     index_buffer: ?*c.SDL_GPUBuffer = null,
     vertex_buffer_capacity: u32 = 0,
     index_buffer_capacity: u32 = 0,
+    frame_transfer_buffer: ?*c.SDL_GPUTransferBuffer = null,
+    frame_transfer_buffer_capacity: u32 = 0,
 
     current_texture: ?*c.SDL_GPUTexture = null,
     current_clip: ?c.SDL_Rect = null,
@@ -1126,6 +1142,7 @@ pub const Renderer = struct {
             .indices = .empty,
             .draw_calls = .empty,
             .clip_stack = .empty,
+            .textures = .empty,
             .current_texture = white_texture,
             .pipeline = sdlError(c.SDL_CreateGPUGraphicsPipeline(device, &.{
                 .vertex_shader = vert,
@@ -1172,6 +1189,7 @@ pub const Renderer = struct {
     fn deinit(self: *Self) void {
         c.SDL_ReleaseGPUBuffer(self.device, self.vertex_buffer);
         c.SDL_ReleaseGPUBuffer(self.device, self.index_buffer);
+        c.SDL_ReleaseGPUTransferBuffer(self.device, self.frame_transfer_buffer);
         c.SDL_ReleaseGPUTexture(self.device, self.white_texture);
         c.SDL_ReleaseGPUSampler(self.device, self.sampler);
         c.SDL_ReleaseGPUGraphicsPipeline(self.device, self.pipeline);
@@ -1179,6 +1197,7 @@ pub const Renderer = struct {
         self.indices.deinit(self.allocator);
         self.draw_calls.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
+        self.textures.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -1187,6 +1206,7 @@ pub const Renderer = struct {
         self.indices.clearRetainingCapacity();
         self.draw_calls.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
+        self.textures.clearRetainingCapacity();
         self.current_texture = self.white_texture;
         self.current_clip = null;
 
@@ -1203,7 +1223,27 @@ pub const Renderer = struct {
         self.indices.clearAndFree(self.allocator);
         self.draw_calls.clearAndFree(self.allocator);
         self.clip_stack.clearAndFree(self.allocator);
+        self.textures.clearAndFree(self.allocator);
+        c.SDL_ReleaseGPUTransferBuffer(self.device, self.frame_transfer_buffer);
+        self.frame_transfer_buffer = null;
+        self.frame_transfer_buffer_capacity = 0;
         // TODO: free `current_texture`??
+    }
+
+    fn pushTexture(self: *Self, upload: TextureUpload) void {
+        self.textures.append(self.allocator, upload) catch @panic("Failed to allocate");
+    }
+
+    fn createFrameTransferBuffer(self: *Self, size: u32) ?*c.SDL_GPUTransferBuffer {
+        if (size > self.frame_transfer_buffer_capacity) {
+            if (self.frame_transfer_buffer) |buffer| c.SDL_ReleaseGPUTransferBuffer(self.device, buffer);
+            self.frame_transfer_buffer = sdlError(c.SDL_CreateGPUTransferBuffer(
+                self.device,
+                &.{ .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = size },
+            ));
+            self.frame_transfer_buffer_capacity = size;
+        }
+        return self.frame_transfer_buffer;
     }
 
     fn flush(self: *Self) void {
@@ -2773,39 +2813,63 @@ pub const UI = struct {
         const indices_size = indices_len * @sizeOf(u32);
         window.renderer.resizeGPUBuffers(vertices_len, indices_len);
 
-        if (vertices_size > 0) {
-            const total_size = vertices_size + indices_size;
-            const transfer_buffer = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &.{
-                .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                .size = total_size,
-            });
-
-            const ptr: [*]u8 = @ptrCast(@alignCast(c.SDL_MapGPUTransferBuffer(
+        var texture_uploads_size: u32 = 0;
+        for (window.renderer.textures.items) |upload| {
+            texture_uploads_size += upload.byteSize();
+        }
+        const total_upload_size = texture_uploads_size + vertices_size + indices_size;
+        if (total_upload_size > 0) {
+            const transfer_buffer = window.renderer.createFrameTransferBuffer(total_upload_size).?;
+            const ptr: [*]u8 = @ptrCast(@alignCast(sdlError(c.SDL_MapGPUTransferBuffer(
                 self.gpu_device,
                 transfer_buffer,
-                false,
-            )));
-            @memcpy(ptr[0..vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
-            @memcpy(ptr[vertices_size..total_size], std.mem.sliceAsBytes(window.renderer.indices.items));
+                true,
+            ))));
+
+            var copy_offset: u32 = 0;
+            for (window.renderer.textures.items) |upload| {
+                const upload_size = upload.byteSize();
+                @memcpy(ptr[copy_offset .. copy_offset + upload_size], upload.pixels[0..upload_size]);
+                copy_offset += upload_size;
+            }
+            if (vertices_size > 0) {
+                @memcpy(ptr[copy_offset .. copy_offset + vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
+                copy_offset += vertices_size;
+                @memcpy(ptr[copy_offset .. copy_offset + indices_size], std.mem.sliceAsBytes(window.renderer.indices.items));
+            }
             c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buffer);
 
             const copy_pass = c.SDL_BeginGPUCopyPass(cmd);
 
-            c.SDL_UploadToGPUBuffer(
-                copy_pass,
-                &.{ .transfer_buffer = transfer_buffer, .offset = 0 },
-                &.{ .buffer = window.renderer.vertex_buffer.?, .offset = 0, .size = vertices_size },
-                false,
-            );
+            copy_offset = 0;
+            for (window.renderer.textures.items) |upload| {
+                const upload_size = upload.byteSize();
+                c.SDL_UploadToGPUTexture(
+                    copy_pass,
+                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                    &.{ .texture = upload.texture, .w = upload.width, .h = upload.height, .d = 1 },
+                    false,
+                );
+                copy_offset += upload_size;
+            }
 
-            c.SDL_UploadToGPUBuffer(
-                copy_pass,
-                &.{ .transfer_buffer = transfer_buffer, .offset = vertices_size },
-                &.{ .buffer = window.renderer.index_buffer.?, .offset = 0, .size = indices_size },
-                false,
-            );
+            if (vertices_size > 0) {
+                c.SDL_UploadToGPUBuffer(
+                    copy_pass,
+                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                    &.{ .buffer = window.renderer.vertex_buffer.?, .offset = 0, .size = vertices_size },
+                    false,
+                );
+                copy_offset += vertices_size;
+
+                c.SDL_UploadToGPUBuffer(
+                    copy_pass,
+                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                    &.{ .buffer = window.renderer.index_buffer.?, .offset = 0, .size = indices_size },
+                    false,
+                );
+            }
             c.SDL_EndGPUCopyPass(copy_pass);
-            c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buffer);
         }
 
         // When a shader is pending, split draw calls into two passes:
@@ -3034,35 +3098,13 @@ pub const UI = struct {
                     }) catch @panic("Failed to cache canvas texture");
                 }
 
-                const buffer_size: u32 = canvas_.params.h * canvas_.params.w *
-                    c.SDL_GetPixelFormatDetails(canvas_.params.pixel_format).*.bytes_per_pixel;
-                const tb = c.SDL_CreateGPUTransferBuffer(
-                    self.gpu_device,
-                    &.{ .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = buffer_size },
-                );
-
-                const map = c.SDL_MapGPUTransferBuffer(self.gpu_device, tb, false);
-                @memcpy(@as([*]u8, @ptrCast(map))[0..buffer_size], canvas_.params.pixels);
-                c.SDL_UnmapGPUTransferBuffer(self.gpu_device, tb);
-
-                const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device);
-                const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf);
-
-                c.SDL_UploadToGPUTexture(
-                    copy_pass,
-                    &.{ .transfer_buffer = tb },
-                    &.{
-                        .texture = texture,
-                        .w = canvas_.params.w,
-                        .h = canvas_.params.h,
-                        .d = 1,
-                    },
-                    false,
-                );
-
-                c.SDL_EndGPUCopyPass(copy_pass);
-                _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-                c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, tb);
+                window.renderer.pushTexture(.{
+                    .texture = texture,
+                    .pixels = canvas_.params.pixels,
+                    .width = canvas_.params.w,
+                    .height = canvas_.params.h,
+                    .pixel_format = canvas_.params.pixel_format,
+                });
 
                 const bg_color_sdl: c.SDL_FColor = if (canvas_.params.bg_color) |bg|
                     bg.toSDL()
