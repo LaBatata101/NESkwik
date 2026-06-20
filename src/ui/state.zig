@@ -1150,6 +1150,7 @@ pub const AppState = struct {
         self.shader_download_state.store(@intFromEnum(shader_download.State.idle), .release);
 
         self.shader_download_thread = std.Thread.spawn(.{}, shaderDownloadThreadMain, .{self}) catch |err| {
+            self.alloc.free(root_path);
             self.shader_download_root_path = null;
             return err;
         };

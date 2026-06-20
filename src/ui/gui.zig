@@ -1894,7 +1894,7 @@ fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
 }
 
 fn drawAndroidShaderDownload(ui: *UI, app_state: *AppState) void {
-    const status = app_state.shaderDownloadStatus();
+    var status = app_state.shaderDownloadStatus();
     const installed = app_state.shaderDownloadInstalled();
     const can_download = !status.active and !installed;
 
@@ -1931,6 +1931,7 @@ fn drawAndroidShaderDownload(ui: *UI, app_state: *AppState) void {
                     .{@errorName(err)},
                 ) catch null;
             };
+            status = app_state.shaderDownloadStatus();
         }
     }
     row.end();
