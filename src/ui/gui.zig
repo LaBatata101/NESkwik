@@ -2016,7 +2016,102 @@ const PREVIEW_MAX_W: f32 = 320;
 const PREVIEW_MAX_H: f32 = 270;
 const PREVIEW_FRAME_PADDING: f32 = 2;
 const PREVIEW_LABEL_HEIGHT: f32 = 22;
-const black_pixel = [_]u8{ 0, 0, 0, 255 };
+const PreviewColor = struct {
+    r: u8,
+    g: u8,
+    b: u8,
+};
+
+fn createStoppedPreviewPlaceholder(alloc: std.mem.Allocator) []const u8 {
+    const pixels = alloc.alloc(u8, NES_VISIBLE_PIXEL_BYTES) catch @panic("OOM");
+
+    var y: u32 = 0;
+    while (y < NES_VISIBLE_HEIGHT) : (y += 1) {
+        var x: u32 = 0;
+        while (x < NES_WIDTH) : (x += 1) {
+            const sky: PreviewColor = if (y < 120)
+                .{ .r = 78, .g = 151, .b = 198 }
+            else
+                .{ .r = 64, .g = 130, .b = 176 };
+            setPreviewPixel(pixels, x, y, sky);
+        }
+    }
+
+    fillPreviewRect(pixels, 18, 28, 28, 8, .{ .r = 220, .g = 232, .b = 228 });
+    fillPreviewRect(pixels, 26, 20, 18, 8, .{ .r = 220, .g = 232, .b = 228 });
+    fillPreviewRect(pixels, 154, 38, 36, 8, .{ .r = 220, .g = 232, .b = 228 });
+    fillPreviewRect(pixels, 166, 30, 18, 8, .{ .r = 220, .g = 232, .b = 228 });
+
+    fillPreviewRect(pixels, 0, 134, 96, 38, .{ .r = 48, .g = 132, .b = 88 });
+    fillPreviewRect(pixels, 96, 148, 86, 24, .{ .r = 42, .g = 112, .b = 78 });
+    fillPreviewRect(pixels, 182, 128, 74, 44, .{ .r = 54, .g = 144, .b = 92 });
+
+    drawPreviewBlock(pixels, 112, 86, .{ .r = 194, .g = 126, .b = 50 });
+    drawPreviewBlock(pixels, 128, 86, .{ .r = 194, .g = 126, .b = 50 });
+    drawPreviewBlock(pixels, 144, 86, .{ .r = 194, .g = 126, .b = 50 });
+    drawPreviewBlock(pixels, 184, 62, .{ .r = 224, .g = 181, .b = 64 });
+    fillPreviewRect(pixels, 188, 66, 4, 4, .{ .r = 86, .g = 61, .b = 38 });
+
+    fillPreviewRect(pixels, 34, 120, 44, 10, .{ .r = 90, .g = 74, .b = 55 });
+    fillPreviewRect(pixels, 34, 116, 44, 4, .{ .r = 116, .g = 161, .b = 82 });
+    fillPreviewRect(pixels, 172, 106, 44, 10, .{ .r = 90, .g = 74, .b = 55 });
+    fillPreviewRect(pixels, 172, 102, 44, 4, .{ .r = 116, .g = 161, .b = 82 });
+
+    fillPreviewRect(pixels, 0, 172, NES_WIDTH, 52, .{ .r = 118, .g = 74, .b = 44 });
+    fillPreviewRect(pixels, 0, 172, NES_WIDTH, 8, .{ .r = 72, .g = 161, .b = 76 });
+    y = 184;
+    while (y < NES_VISIBLE_HEIGHT) : (y += 16) {
+        var x: u32 = 0;
+        while (x < NES_WIDTH) : (x += 16) {
+            fillPreviewRect(pixels, x, y, 14, 2, .{ .r = 92, .g = 55, .b = 34 });
+        }
+    }
+
+    fillPreviewRect(pixels, 80, 140, 12, 18, .{ .r = 213, .g = 76, .b = 54 });
+    fillPreviewRect(pixels, 82, 130, 10, 10, .{ .r = 240, .g = 184, .b = 112 });
+    fillPreviewRect(pixels, 78, 142, 4, 8, .{ .r = 240, .g = 184, .b = 112 });
+    fillPreviewRect(pixels, 92, 142, 4, 8, .{ .r = 240, .g = 184, .b = 112 });
+    fillPreviewRect(pixels, 80, 158, 5, 8, .{ .r = 48, .g = 64, .b = 118 });
+    fillPreviewRect(pixels, 88, 158, 5, 8, .{ .r = 48, .g = 64, .b = 118 });
+    fillPreviewRect(pixels, 84, 134, 2, 2, .{ .r = 38, .g = 32, .b = 28 });
+
+    fillPreviewRect(pixels, 148, 156, 12, 8, .{ .r = 92, .g = 66, .b = 45 });
+    fillPreviewRect(pixels, 150, 150, 8, 6, .{ .r = 132, .g = 92, .b = 54 });
+    fillPreviewRect(pixels, 142, 164, 24, 4, .{ .r = 72, .g = 45, .b = 31 });
+
+    fillPreviewRect(pixels, 10, 8, 28, 4, .{ .r = 255, .g = 232, .b = 128 });
+    fillPreviewRect(pixels, 42, 8, 6, 4, .{ .r = 255, .g = 232, .b = 128 });
+    fillPreviewRect(pixels, 212, 8, 34, 4, .{ .r = 255, .g = 232, .b = 128 });
+
+    return pixels;
+}
+
+fn drawPreviewBlock(pixels: []u8, x: u32, y: u32, color: PreviewColor) void {
+    fillPreviewRect(pixels, x, y, 16, 16, color);
+    fillPreviewRect(pixels, x, y, 16, 2, .{ .r = 240, .g = 170, .b = 84 });
+    fillPreviewRect(pixels, x, y + 14, 16, 2, .{ .r = 112, .g = 70, .b = 38 });
+    fillPreviewRect(pixels, x + 14, y, 2, 16, .{ .r = 112, .g = 70, .b = 38 });
+}
+
+fn fillPreviewRect(pixels: []u8, x: u32, y: u32, w: u32, h: u32, color: PreviewColor) void {
+    const x_end = @min(x + w, NES_WIDTH);
+    const y_end = @min(y + h, NES_VISIBLE_HEIGHT);
+    var py = y;
+    while (py < y_end) : (py += 1) {
+        var px = x;
+        while (px < x_end) : (px += 1) {
+            setPreviewPixel(pixels, px, py, color);
+        }
+    }
+}
+
+fn setPreviewPixel(pixels: []u8, x: u32, y: u32, color: PreviewColor) void {
+    const idx: usize = (@as(usize, y) * NES_WIDTH + x) * 4;
+    pixels[idx + 0] = color.r;
+    pixels[idx + 1] = color.g;
+    pixels[idx + 2] = color.b;
+    pixels[idx + 3] = 255;
+}
 
 fn drawShaderPreview(
     ui: *UI,
@@ -2380,11 +2475,9 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
         const preview_pixels: []const u8 = if (app_state.emulation_running)
             app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES)
         else
-            &black_pixel;
-        const px_w: u32 = if (app_state.emulation_running) NES_WIDTH else 1;
-        const px_h: u32 = if (app_state.emulation_running) NES_VISIBLE_HEIGHT else 1;
+            createStoppedPreviewPlaceholder(ui.current_window.ctx.frameAlloc());
         const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, preview_pixels, px_w, px_h, .border, preview_aspect_ratio);
+        drawShaderPreview(ui, preview_pixels, NES_WIDTH, NES_VISIBLE_HEIGHT, .border, preview_aspect_ratio);
         center.end();
     }
 }
