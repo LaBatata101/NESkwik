@@ -81,6 +81,11 @@ pub fn build(b: *std.Build) void {
                 .use_llvm = true,
                 .root_module = app_module,
             });
+
+            if (target.result.os.tag == .windows) {
+                exe.subsystem = .Windows;
+            }
+
             linkAppLibraries(exe, deps);
 
             b.installArtifact(exe);
