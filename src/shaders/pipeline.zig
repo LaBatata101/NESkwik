@@ -166,6 +166,7 @@ const MemberInfo = struct {
     field_type: FieldType,
     offset: u32,
     size: u32,
+    param_data: ?[]u8 = null,
 };
 
 const UniformBufferLayout = struct {
@@ -199,6 +200,7 @@ const BindingInfo = struct {
     name: []const u8, // owned
     binding: u32,
     binding_type: BindingType,
+    uniform_payload: []u8,
 };
 
 const DescriptorSetInfo = struct {
@@ -208,6 +210,7 @@ const DescriptorSetInfo = struct {
     fn deinit(self: *DescriptorSetInfo, alloc: std.mem.Allocator) void {
         for (self.bindings.items) |*binding| {
             alloc.free(binding.name);
+            if (binding.uniform_payload.len > 0) alloc.free(binding.uniform_payload);
             switch (binding.binding_type) {
                 .push_params, .UBO => |*layout| layout.deinit(alloc),
                 .sampler2D => {},
@@ -551,6 +554,10 @@ fn reflectResources(
                     });
                 }
 
+                const uniform_payload = try alloc.alloc(u8, block_size);
+                var payload_transferred = false;
+                defer if (!payload_transferred) alloc.free(uniform_payload);
+
                 try set_info.bindings.append(alloc, .{
                     .name = name,
                     .binding = @intCast(binding),
@@ -558,7 +565,9 @@ fn reflectResources(
                         .{ .push_params = layout }
                     else
                         .{ .UBO = layout },
+                    .uniform_payload = uniform_payload,
                 });
+                payload_transferred = true;
             },
 
             c.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE => {
@@ -567,6 +576,7 @@ fn reflectResources(
                     .name = name,
                     .binding = @intCast(binding),
                     .binding_type = .{ .sampler2D = sampler_type },
+                    .uniform_payload = &.{},
                 });
             },
             else => {
@@ -1163,6 +1173,7 @@ fn compilePreset(
     wg.wait();
 
     if (had_error) return error.ShaderCompilationFailed;
+    resolveUniformParamRefs(&preset);
 
     return preset;
 }
@@ -1181,8 +1192,36 @@ fn loadPresetFile(
     return compilePreset(alloc, &parsed, vk_version, device, swapchain_format, progress, shader_cache);
 }
 
+fn resolveUniformLayoutParamRefs(preset: *LoadedPreset, layout: *UniformBufferLayout) void {
+    for (layout.members.items) |*member| {
+        member.param_data = switch (member.field_type) {
+            .Other => |name| preset.param_data.get(name),
+            else => null,
+        };
+    }
+}
+
+fn resolveReflectionParamRefs(preset: *LoadedPreset, reflection: *ShaderReflection) void {
+    for (reflection.descriptor_sets.items) |*set_info| {
+        for (set_info.bindings.items) |*binding| {
+            switch (binding.binding_type) {
+                .push_params, .UBO => |*layout| resolveUniformLayoutParamRefs(preset, layout),
+                .sampler2D => {},
+            }
+        }
+    }
+}
+
+fn resolveUniformParamRefs(preset: *LoadedPreset) void {
+    for (preset.passes) |*pass| {
+        if (!pass.initialized) continue;
+        resolveReflectionParamRefs(preset, &pass.vertex_reflection);
+        resolveReflectionParamRefs(preset, &pass.fragment_reflection);
+    }
+}
+
 fn prepareUniformPayload(
-    arena: std.mem.Allocator,
+    payload: []u8,
     preset: *const LoadedPreset,
     layout: *const UniformBufferLayout,
     source_tex: *Texture,
@@ -1192,10 +1231,13 @@ fn prepareUniformPayload(
     history: []*Texture,
     pass_feedback: *const std.AutoHashMap(usize, *Texture),
     pass_output: *const std.AutoHashMap(usize, *Texture),
-) ![]u8 {
-    var payload = try arena.alloc(u8, layout.size);
+) []u8 {
+    const payload_size: usize = @intCast(layout.size);
+    std.debug.assert(payload.len >= payload_size);
+    const out = payload[0..payload_size];
+
     for (layout.members.items) |member| {
-        const dest = payload[member.offset .. member.offset + member.size];
+        const dest = out[member.offset .. member.offset + member.size];
         const src: []const u8 = switch (member.field_type) {
             .MVP => std.mem.asBytes(&uniforms.MVP),
             .OriginalSize => std.mem.asBytes(&uniforms.OriginalSize),
@@ -1203,7 +1245,7 @@ fn prepareUniformPayload(
             .OutputSize => std.mem.asBytes(&uniforms.OutputSize),
             .FinalViewportSize => std.mem.asBytes(&uniforms.FinalViewportSize),
             .FrameCount => std.mem.asBytes(&uniforms.FrameCount),
-            .Other => |name| preset.param_data.get(name) orelse &[_]u8{0} ** 4,
+            .Other => |name| member.param_data orelse preset.param_data.get(name) orelse &[_]u8{0} ** 4,
             .SizeVariant => |name| blk: {
                 const tex = aliases.get(name) orelse source_tex;
                 break :blk std.mem.asBytes(&tex.sizeVec4());
@@ -1226,11 +1268,10 @@ fn prepareUniformPayload(
         };
         @memcpy(dest, src[0..@min(src.len, dest.len)]);
     }
-    return payload;
+    return out;
 }
 
 fn bindShaderResources(
-    arena: std.mem.Allocator,
     rp: ?*c.SDL_GPURenderPass,
     cmd: ?*c.SDL_GPUCommandBuffer,
     pass: *ShaderPass,
@@ -1243,14 +1284,14 @@ fn bindShaderResources(
     pass_feedback: *const std.AutoHashMap(usize, *Texture),
     pass_output: *const std.AutoHashMap(usize, *Texture),
 ) !void {
-    for (pass.vertex_reflection.descriptor_sets.items) |set_info| {
-        for (set_info.bindings.items) |binding| {
+    for (pass.vertex_reflection.descriptor_sets.items) |*set_info| {
+        for (set_info.bindings.items) |*binding| {
             switch (binding.binding_type) {
-                .push_params, .UBO => |layout| {
-                    const payload = try prepareUniformPayload(
-                        arena,
+                .push_params, .UBO => |*layout| {
+                    const payload = prepareUniformPayload(
+                        binding.uniform_payload,
                         preset,
-                        &layout,
+                        layout,
                         source_tex,
                         original_tex,
                         uniforms,
@@ -1267,14 +1308,14 @@ fn bindShaderResources(
     }
 
     var lut_sampler: ?*c.SDL_GPUSampler = null;
-    for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
-        for (set_info.bindings.items) |binding| {
+    for (pass.fragment_reflection.descriptor_sets.items) |*set_info| {
+        for (set_info.bindings.items) |*binding| {
             switch (binding.binding_type) {
-                .push_params, .UBO => |layout| {
-                    const payload = try prepareUniformPayload(
-                        arena,
+                .push_params, .UBO => |*layout| {
+                    const payload = prepareUniformPayload(
+                        binding.uniform_payload,
                         preset,
-                        &layout,
+                        layout,
                         source_tex,
                         original_tex,
                         uniforms,
@@ -1354,7 +1395,6 @@ fn createRenderTarget(
 // Main render loop for one preset
 fn renderPasses(
     alloc: std.mem.Allocator,
-    arena: std.mem.Allocator,
     device: ?*c.SDL_GPUDevice,
     cmd: ?*c.SDL_GPUCommandBuffer,
     vertex_buffer: ?*c.SDL_GPUBuffer,
@@ -1492,7 +1532,6 @@ fn renderPasses(
         };
 
         try bindShaderResources(
-            arena,
             rp,
             cmd,
             pass,
@@ -1523,7 +1562,6 @@ pub const ShaderPipeline = struct {
     vk_version: c_uint,
 
     vertex_buffer: ?*c.SDL_GPUBuffer,
-    frame_arena: std.heap.ArenaAllocator,
 
     preset: ?LoadedPreset = null,
     preset_path: ?[]u8 = null,
@@ -1600,7 +1638,6 @@ pub const ShaderPipeline = struct {
             .device = device,
             .vk_version = vk_version,
             .vertex_buffer = vertex_buffer,
-            .frame_arena = std.heap.ArenaAllocator.init(alloc),
             .pass_output = .init(alloc),
             .pass_feedback = .init(alloc),
             .texture_aliases = .init(alloc),
@@ -1627,7 +1664,6 @@ pub const ShaderPipeline = struct {
         self.pass_feedback.deinit();
         self.texture_aliases.deinit();
         self.frame_history.deinit(self.alloc);
-        self.frame_arena.deinit();
         if (self.preset) |*p| p.deinit(self.alloc, self.device);
         if (self.preset_path) |path| self.alloc.free(path);
         if (self.black_input_texture) |t| c.SDL_ReleaseGPUTexture(self.device, t);
@@ -2004,9 +2040,6 @@ pub const ShaderPipeline = struct {
         self.last_swapchain_format = swapchain_format;
         const preset = &self.preset.?;
 
-        _ = self.frame_arena.reset(.retain_capacity);
-        const arena = self.frame_arena.allocator();
-
         const input = try Texture.init(self.alloc, input_texture, src_w, src_h, c.SDL_GPU_TEXTUREFORMAT_INVALID, 1);
         defer {
             input.ptr = null; // caller owns input_texture — don't SDL-release it
@@ -2028,7 +2061,6 @@ pub const ShaderPipeline = struct {
 
         try renderPasses(
             self.alloc,
-            arena,
             self.device,
             cmd,
             self.vertex_buffer,
