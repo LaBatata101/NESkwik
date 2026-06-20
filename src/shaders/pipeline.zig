@@ -59,12 +59,37 @@ pub const Texture = struct {
     ptr: ?*c.SDL_GPUTexture = null,
     width: u32 = 0,
     height: u32 = 0,
+    format: c.SDL_GPUTextureFormat = c.SDL_GPU_TEXTUREFORMAT_INVALID,
+    num_levels: u32 = 1,
     refcount: u32 = 0,
 
-    pub fn init(alloc: std.mem.Allocator, ptr: ?*c.SDL_GPUTexture, w: u32, h: u32) !*Texture {
+    pub fn init(
+        alloc: std.mem.Allocator,
+        ptr: ?*c.SDL_GPUTexture,
+        w: u32,
+        h: u32,
+        format: c.SDL_GPUTextureFormat,
+        num_levels: u32,
+    ) !*Texture {
         const obj = try alloc.create(Texture);
-        obj.* = .{ .alloc = alloc, .ptr = ptr, .width = w, .height = h, .refcount = 1 };
+        obj.* = .{
+            .alloc = alloc,
+            .ptr = ptr,
+            .width = w,
+            .height = h,
+            .format = format,
+            .num_levels = num_levels,
+            .refcount = 1,
+        };
         return obj;
+    }
+
+    pub fn matches(self: *const Texture, w: u32, h: u32, format: c.SDL_GPUTextureFormat, num_levels: u32) bool {
+        return self.ptr != null and
+            self.width == w and
+            self.height == h and
+            self.format == format and
+            self.num_levels == num_levels;
     }
 
     pub fn release(self: *Texture, device: ?*c.SDL_GPUDevice) void {
@@ -1025,19 +1050,19 @@ fn compilePreset(
 
         defer c.SDL_DestroySurface(surface);
 
-        var gpu_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);
-        if (gpu_fmt == c.SDL_GPU_TEXTUREFORMAT_INVALID) {
+        var texture_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);
+        if (texture_fmt == c.SDL_GPU_TEXTUREFORMAT_INVALID) {
             const new_surface = sdlError(c.SDL_ConvertSurface(surface, c.SDL_PIXELFORMAT_RGBA32));
             c.SDL_DestroySurface(surface);
             surface = new_surface;
-            gpu_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);
+            texture_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);
         }
 
         const w: u32 = @intCast(surface.*.w);
         const h: u32 = @intCast(surface.*.h);
         const gpu_texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
             .type = c.SDL_GPU_TEXTURETYPE_2D,
-            .format = gpu_fmt,
+            .format = texture_fmt,
             .width = w,
             .height = h,
             .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
@@ -1079,7 +1104,7 @@ fn compilePreset(
 
         try luts.put(
             try alloc.dupe(u8, entry.key_ptr.*),
-            .{ .texture = try Texture.init(alloc, gpu_texture, w, h), .sampler = sampler },
+            .{ .texture = try Texture.init(alloc, gpu_texture, w, h, texture_fmt, 1), .sampler = sampler },
         );
     }
 
@@ -1297,6 +1322,35 @@ fn calcMipLevels(w: u32, h: u32) u32 {
     return levels;
 }
 
+fn createRenderTarget(
+    alloc: std.mem.Allocator,
+    device: ?*c.SDL_GPUDevice,
+    slot: *?*Texture,
+    w: u32,
+    h: u32,
+    format: c.SDL_GPUTextureFormat,
+    num_levels: u32,
+) !*Texture {
+    if (slot.*) |tex| {
+        if (tex.matches(w, h, format, num_levels)) return tex;
+        tex.release(device);
+        slot.* = null;
+    }
+
+    const gpu_tex = sdlError(c.SDL_CreateGPUTexture(device, &.{
+        .type = c.SDL_GPU_TEXTURETYPE_2D,
+        .format = format,
+        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+        .width = w,
+        .height = h,
+        .layer_count_or_depth = 1,
+        .num_levels = num_levels,
+        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+    }));
+    slot.* = try Texture.init(alloc, gpu_tex, w, h, format, num_levels);
+    return slot.*.?;
+}
+
 // Main render loop for one preset
 fn renderPasses(
     alloc: std.mem.Allocator,
@@ -1329,7 +1383,6 @@ fn renderPasses(
             viewport.h,
         );
 
-        const prev_output = pass.output_texture;
         const format: c.SDL_GPUTextureFormat = if (pass.texture_format != c.SDL_GPU_TEXTUREFORMAT_INVALID)
             pass.texture_format
         else if (pass.float_framebuffer)
@@ -1338,27 +1391,47 @@ fn renderPasses(
             c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
         else
             swapchain_format;
+        const num_levels = if (pass.mipmap_input) calcMipLevels(output_size.w, output_size.h) else 1;
 
-        const target_tex = blk: {
-            const gpu_tex = sdlError(c.SDL_CreateGPUTexture(device, &.{
-                .type = c.SDL_GPU_TEXTURETYPE_2D,
-                .format = format,
-                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-                .width = output_size.w,
-                .height = output_size.h,
-                .layer_count_or_depth = 1,
-                .num_levels = if (pass.mipmap_input) calcMipLevels(output_size.w, output_size.h) else 1,
-                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-            }));
-            pass.output_texture = try Texture.init(alloc, gpu_tex, output_size.w, output_size.h);
+        const needs_feedback = uses_pass_feedback or (pass.alias != null);
+        if (needs_feedback) {
+            const previous_output = pass.output_texture;
+            pass.output_texture = pass.fb_feedback;
+            pass.fb_feedback = previous_output;
 
-            if (uses_pass_output) {
-                if (try pass_output.fetchPut(i, pass.output_texture.?.ref())) |old| {
-                    old.value.release(device);
+            if (pass.fb_feedback) |feedback| {
+                if (!feedback.matches(output_size.w, output_size.h, format, num_levels)) {
+                    feedback.release(device);
+                    pass.fb_feedback = null;
                 }
             }
-            break :blk pass.output_texture.?;
-        };
+        }
+
+        const target_tex = try createRenderTarget(
+            alloc,
+            device,
+            &pass.output_texture,
+            output_size.w,
+            output_size.h,
+            format,
+            num_levels,
+        );
+
+        if (uses_pass_feedback) {
+            if (pass.fb_feedback) |feedback| {
+                if (try pass_feedback.fetchPut(i, feedback.ref())) |old| {
+                    old.value.release(device);
+                }
+            } else if (pass_feedback.fetchRemove(i)) |old| {
+                old.value.release(device);
+            }
+        }
+
+        if (uses_pass_output) {
+            if (try pass_output.fetchPut(i, target_tex.ref())) |old| {
+                old.value.release(device);
+            }
+        }
 
         // Handle named aliases for feedback loops
         if (pass.alias) |alias| {
@@ -1368,18 +1441,6 @@ fn renderPasses(
             if (pass.feedback_alias) |fb_alias| {
                 const fb_tex = pass.fb_feedback orelse original_tex;
                 if (try aliases.fetchPut(fb_alias, fb_tex.ref())) |old| {
-                    old.value.release(device);
-                }
-            }
-        }
-
-        // Promote previous output to feedback for next frame
-        const needs_feedback = uses_pass_feedback or (pass.alias != null);
-        if (needs_feedback and prev_output != null and frame_count > 0) {
-            if (pass.fb_feedback) |old_fb| old_fb.release(device);
-            pass.fb_feedback = prev_output.?.ref();
-            if (uses_pass_feedback) {
-                if (try pass_feedback.fetchPut(i, pass.fb_feedback.?.ref())) |old| {
                     old.value.release(device);
                 }
             }
@@ -1453,8 +1514,6 @@ fn renderPasses(
             current_w.* = output_size.w;
             current_h.* = output_size.h;
         }
-
-        if (prev_output) |old| old.release(device);
     }
 }
 
@@ -1948,7 +2007,7 @@ pub const ShaderPipeline = struct {
         _ = self.frame_arena.reset(.retain_capacity);
         const arena = self.frame_arena.allocator();
 
-        const input = try Texture.init(self.alloc, input_texture, src_w, src_h);
+        const input = try Texture.init(self.alloc, input_texture, src_w, src_h, c.SDL_GPU_TEXTUREFORMAT_INVALID, 1);
         defer {
             input.ptr = null; // caller owns input_texture — don't SDL-release it
             input.release(self.device);
