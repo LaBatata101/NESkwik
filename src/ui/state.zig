@@ -77,7 +77,7 @@ pub const AppState = struct {
     /// Wheter to skip drawing the home screen.
     render_home_ui: bool = true,
     render_debug_ui: bool = false,
-    render_android_settings_ui: bool = false,
+    show_android_settings_ui: bool = false,
     show_android_sidepanel: bool = false,
     emulation_running: bool = false,
 
@@ -433,8 +433,8 @@ pub const AppState = struct {
             return;
         }
 
-        if (self.render_android_settings_ui) {
-            self.render_android_settings_ui = false;
+        if (self.show_android_settings_ui) {
+            self.show_android_settings_ui = false;
             self.render_home_ui = !self.emulation_running;
             return;
         }
@@ -769,7 +769,7 @@ pub const AppState = struct {
         self.emulation_running = true;
         self.render_home_ui = false;
         self.render_debug_ui = false;
-        self.render_android_settings_ui = false;
+        self.show_android_settings_ui = false;
         self.show_android_sidepanel = false;
 
         if (self.current_rom_path) |p| self.alloc.free(p);
@@ -797,7 +797,7 @@ pub const AppState = struct {
         self.render_home_ui = true;
         self.render_debug_ui = false;
 
-        self.render_android_settings_ui = false;
+        self.show_android_settings_ui = false;
         self.show_android_sidepanel = false;
         self.clearSaveStateInfo();
     }

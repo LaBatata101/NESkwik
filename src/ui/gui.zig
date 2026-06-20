@@ -80,7 +80,7 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             f.end();
         }
 
-        if (builtin.abi.isAndroid() and app_state.render_android_settings_ui) {
+        if (builtin.abi.isAndroid() and app_state.show_android_settings_ui) {
             drawAndroidSettingsUI(ui, app_state, safe_area_padding);
         } else if (app_state.render_home_ui) {
             drawHomeUI(ui, app_state, safe_area_padding);
@@ -372,17 +372,19 @@ fn drawAndroidHeader(ui: *UI, app_state: *AppState) void {
 
             _ = ui.spacer(.{ .sizing = .{ .w = .grow } });
 
-            if (ui.button(.{
-                .text = "Open ROM",
-                .font_size = 14,
-                .text_color = Color.white,
-                .bg_color = theme.accent_blue,
-                .hover_color = theme.accent_blue.lighten(0.12),
-                .padding = .{ .left = 14, .right = 14, .top = 9, .bottom = 9 },
-                .corner_radius = 6,
-                .elevation = 0,
-            }).clicked(ui.main_window.ctx)) {
-                openRomDialog(ui, app_state);
+            if (!app_state.show_android_settings_ui) {
+                if (ui.button(.{
+                    .text = "Open ROM",
+                    .font_size = 14,
+                    .text_color = Color.white,
+                    .bg_color = theme.accent_blue,
+                    .hover_color = theme.accent_blue.lighten(0.12),
+                    .padding = .{ .left = 14, .right = 14, .top = 9, .bottom = 9 },
+                    .corner_radius = 6,
+                    .elevation = 0,
+                }).clicked(ui.main_window.ctx)) {
+                    openRomDialog(ui, app_state);
+                }
             }
         }
         inner.end();
@@ -447,7 +449,7 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
             {
                 drawAndroidDrawerSectionLabel(ui, "Home");
                 if (drawAndroidDrawerAction(ui, "Home", true)) {
-                    app_state.render_android_settings_ui = false;
+                    app_state.show_android_settings_ui = false;
                     app_state.render_home_ui = true;
                     app_state.show_android_sidepanel = false;
                 }
@@ -510,7 +512,7 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                     app_state.setEmulationSpeed(nextEmulationSpeed(app_state.settings.emulation_speed));
                 }
                 if (drawAndroidDrawerAction(ui, "Settings", true)) {
-                    app_state.render_android_settings_ui = true;
+                    app_state.show_android_settings_ui = true;
                     app_state.render_home_ui = false;
                     app_state.show_android_sidepanel = false;
                     if (app_state.settings.selected_category != .shader) {
@@ -642,7 +644,7 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
                 .corner_radius = 6,
                 .elevation = 0,
             }).clicked(ui.main_window.ctx)) {
-                app_state.render_android_settings_ui = false;
+                app_state.show_android_settings_ui = false;
                 app_state.render_home_ui = true;
             }
 
@@ -658,6 +660,9 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
                 .corner_radius = 6,
                 .elevation = 0,
             }).clicked(ui.main_window.ctx)) {
+                app_state.show_android_settings_ui = false;
+                app_state.render_home_ui = !app_state.emulation_running;
+
                 app_state.saveSettings();
                 ui.setVSync(app_state.settings.vsync);
             }
