@@ -1229,8 +1229,8 @@ fn prepareUniformPayload(
     uniforms: *const BuiltinUniforms,
     aliases: *const std.StringHashMap(*Texture),
     history: []*Texture,
-    pass_feedback: *const std.AutoHashMap(usize, *Texture),
-    pass_output: *const std.AutoHashMap(usize, *Texture),
+    pass_feedback: []const ?*Texture,
+    pass_output: []const ?*Texture,
 ) []u8 {
     const payload_size: usize = @intCast(layout.size);
     std.debug.assert(payload.len >= payload_size);
@@ -1252,13 +1252,13 @@ fn prepareUniformPayload(
             },
             .SizeVariantWithId => |field| blk: {
                 if (std.mem.eql(u8, field.name, "PassFeedback")) {
-                    const tex = pass_feedback.get(field.id) orelse source_tex;
+                    const tex = passTextureAt(pass_feedback, field.id) orelse source_tex;
                     break :blk std.mem.asBytes(&tex.sizeVec4());
                 } else if (std.mem.eql(u8, field.name, "OriginalHistory")) {
                     const tex = if (field.id == 0) original_tex else history[field.id - 1];
                     break :blk std.mem.asBytes(&tex.sizeVec4());
                 } else if (std.mem.eql(u8, field.name, "PassOutput")) {
-                    const tex = pass_output.get(field.id) orelse source_tex;
+                    const tex = passTextureAt(pass_output, field.id) orelse source_tex;
                     break :blk std.mem.asBytes(&tex.sizeVec4());
                 } else {
                     break :blk &[_]u8{0} ** 16;
@@ -1281,8 +1281,8 @@ fn bindShaderResources(
     preset: *const LoadedPreset,
     aliases: *const std.StringHashMap(*Texture),
     history: []*Texture,
-    pass_feedback: *const std.AutoHashMap(usize, *Texture),
-    pass_output: *const std.AutoHashMap(usize, *Texture),
+    pass_feedback: []const ?*Texture,
+    pass_output: []const ?*Texture,
 ) !void {
     for (pass.vertex_reflection.descriptor_sets.items) |*set_info| {
         for (set_info.bindings.items) |*binding| {
@@ -1331,8 +1331,8 @@ fn bindShaderResources(
                         .Original => original_tex,
                         .Source => source_tex,
                         .OriginalHistory => |id| if (id == 0) original_tex else history[id - 1],
-                        .PassFeedback => |id| pass_feedback.get(id) orelse source_tex,
-                        .PassOutput => |id| pass_output.get(id) orelse source_tex,
+                        .PassFeedback => |id| passTextureAt(pass_feedback, id) orelse source_tex,
+                        .PassOutput => |id| passTextureAt(pass_output, id) orelse source_tex,
                         .Alias => |alias| blk: {
                             if (aliases.get(alias)) |t| break :blk t;
                             if (preset.luts.get(alias)) |lut| {
@@ -1352,6 +1352,33 @@ fn bindShaderResources(
                     lut_sampler = null;
                 },
             }
+        }
+    }
+}
+
+fn passTextureAt(slots: []const ?*Texture, id: usize) ?*Texture {
+    if (id >= slots.len) return null;
+    return slots[id];
+}
+
+fn setRetainedPassTextureSlot(slot: *?*Texture, tex: ?*Texture, device: ?*c.SDL_GPUDevice) void {
+    if (tex) |new_tex| {
+        if (slot.*) |old_tex| {
+            if (old_tex == new_tex) return;
+            old_tex.release(device);
+        }
+        slot.* = new_tex.ref();
+    } else {
+        if (slot.*) |old_tex| old_tex.release(device);
+        slot.* = null;
+    }
+}
+
+fn clearPassTextureSlots(device: ?*c.SDL_GPUDevice, slots: []?*Texture) void {
+    for (slots) |*slot| {
+        if (slot.*) |tex| {
+            tex.release(device);
+            slot.* = null;
         }
     }
 }
@@ -1407,9 +1434,9 @@ fn renderPasses(
     current_h: *u32,
     viewport: Viewport,
     frame_count: u32,
-    pass_output: *std.AutoHashMap(usize, *Texture),
+    pass_output: []?*Texture,
     aliases: *std.StringHashMap(*Texture),
-    pass_feedback: *std.AutoHashMap(usize, *Texture),
+    pass_feedback: []?*Texture,
     history: []*Texture,
     uses_pass_output: bool,
     uses_pass_feedback: bool,
@@ -1458,19 +1485,11 @@ fn renderPasses(
         );
 
         if (uses_pass_feedback) {
-            if (pass.fb_feedback) |feedback| {
-                if (try pass_feedback.fetchPut(i, feedback.ref())) |old| {
-                    old.value.release(device);
-                }
-            } else if (pass_feedback.fetchRemove(i)) |old| {
-                old.value.release(device);
-            }
+            if (i < pass_feedback.len) setRetainedPassTextureSlot(&pass_feedback[i], pass.fb_feedback, device);
         }
 
         if (uses_pass_output) {
-            if (try pass_output.fetchPut(i, target_tex.ref())) |old| {
-                old.value.release(device);
-            }
+            if (i < pass_output.len) setRetainedPassTextureSlot(&pass_output[i], target_tex, device);
         }
 
         // Handle named aliases for feedback loops
@@ -1585,8 +1604,8 @@ pub const ShaderPipeline = struct {
 
     // Per-frame accumulation state
     frame_count: u32 = 0,
-    pass_output: std.AutoHashMap(usize, *Texture),
-    pass_feedback: std.AutoHashMap(usize, *Texture),
+    pass_output: []?*Texture = &.{},
+    pass_feedback: []?*Texture = &.{},
     texture_aliases: std.StringHashMap(*Texture),
     frame_history: std.ArrayList(*Texture),
 
@@ -1638,13 +1657,26 @@ pub const ShaderPipeline = struct {
             .device = device,
             .vk_version = vk_version,
             .vertex_buffer = vertex_buffer,
-            .pass_output = .init(alloc),
-            .pass_feedback = .init(alloc),
             .texture_aliases = .init(alloc),
             .frame_history = .empty,
             .cache = try ShaderCache.init(alloc),
         };
         return self;
+    }
+
+    fn resizePassTextureSlots(self: *Self, pass_count: usize) !void {
+        const next_output = try self.alloc.alloc(?*Texture, pass_count);
+        @memset(next_output, null);
+
+        const next_feedback = try self.alloc.alloc(?*Texture, pass_count);
+        @memset(next_feedback, null);
+
+        clearPassTextureSlots(self.device, self.pass_output);
+        clearPassTextureSlots(self.device, self.pass_feedback);
+        self.alloc.free(self.pass_output);
+        self.alloc.free(self.pass_feedback);
+        self.pass_output = next_output;
+        self.pass_feedback = next_feedback;
     }
 
     pub fn deinit(self: *Self) void {
@@ -1660,8 +1692,8 @@ pub const ShaderPipeline = struct {
             if (self.compile_error_msg) |m| self.alloc.free(m);
         }
         self.clearAccumulationState();
-        self.pass_output.deinit();
-        self.pass_feedback.deinit();
+        self.alloc.free(self.pass_output);
+        self.alloc.free(self.pass_feedback);
         self.texture_aliases.deinit();
         self.frame_history.deinit(self.alloc);
         if (self.preset) |*p| p.deinit(self.alloc, self.device);
@@ -1689,6 +1721,7 @@ pub const ShaderPipeline = struct {
             self.cache,
         );
         self.preset_path = try self.alloc.dupe(u8, path);
+        try self.resizePassTextureSlots(self.preset.?.passes.len);
 
         // Pre-compute usage flags from reflection data
         self.uses_pass_output = false;
@@ -1748,6 +1781,10 @@ pub const ShaderPipeline = struct {
         self.compile_done.store(false, .monotonic);
 
         self.clearAccumulationState();
+        self.alloc.free(self.pass_output);
+        self.alloc.free(self.pass_feedback);
+        self.pass_output = &.{};
+        self.pass_feedback = &.{};
         if (self.preset) |*p| {
             p.deinit(self.alloc, self.device);
             self.preset = null;
@@ -2073,9 +2110,9 @@ pub const ShaderPipeline = struct {
             &current_h,
             viewport,
             self.frame_count,
-            &self.pass_output,
+            self.pass_output,
             &self.texture_aliases,
-            &self.pass_feedback,
+            self.pass_feedback,
             self.frame_history.items,
             self.uses_pass_output,
             self.uses_pass_feedback,
@@ -2115,24 +2152,15 @@ pub const ShaderPipeline = struct {
 
         // Release pass_output textures if no feedback is needed
         if (self.uses_pass_output and !self.uses_pass_feedback) {
-            var it = self.pass_output.iterator();
-            while (it.next()) |entry| {
-                entry.value_ptr.*.release(self.device);
-            }
-            self.pass_output.clearRetainingCapacity();
+            clearPassTextureSlots(self.device, self.pass_output);
         }
 
         self.frame_count += 1;
     }
 
     fn clearAccumulationState(self: *Self) void {
-        var po_it = self.pass_output.valueIterator();
-        while (po_it.next()) |t| t.*.release(self.device);
-        self.pass_output.clearRetainingCapacity();
-
-        var pf_it = self.pass_feedback.valueIterator();
-        while (pf_it.next()) |t| t.*.release(self.device);
-        self.pass_feedback.clearRetainingCapacity();
+        clearPassTextureSlots(self.device, self.pass_output);
+        clearPassTextureSlots(self.device, self.pass_feedback);
 
         var alias_it = self.texture_aliases.valueIterator();
         while (alias_it.next()) |t| t.*.release(self.device);
