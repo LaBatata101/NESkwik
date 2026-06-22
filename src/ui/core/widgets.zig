@@ -1283,10 +1283,11 @@ pub fn Combobox(comptime Option: type) type {
         id: clay.ElementId,
         ctx: *UIContext,
         params: Params,
+        options: []const Option,
 
         pub const Params = struct {
             id: ?[]const u8 = null,
-            options: []const Option = &.{},
+            filtered_options: ?[]const Option = null,
             selected: ?Option = null,
             border_color: Color = .black,
             border_color_on_open: Color = .black,
@@ -1329,14 +1330,22 @@ pub fn Combobox(comptime Option: type) type {
                 break :b element_id;
             } else clay.openElement();
 
-            std.debug.assert(params.options.len > 0);
+            const option_type_info = @typeInfo(Option).@"enum".fields;
+            const options = if (params.filtered_options) |options|
+                options
+            else blk: {
+                const buffer = ctx.frameAlloc().alloc(Option, option_type_info.len) catch @panic("OOM");
+                inline for (option_type_info, 0..) |option, i| {
+                    buffer[i] = @field(Option, option.name);
+                }
+                break :blk buffer;
+            };
 
             ctx.pushParent(element_id);
             const state = ctx.getOrCreateWidgetState(element_id, .{ .combobox = .{
                 .is_open = false,
-                .selected_key = optionKey(params.selected orelse params.options[0]),
+                .selected_key = optionKey(params.selected orelse options[0]),
             } });
-            state.combobox.selected_key = optionKey(params.selected orelse params.options[0]);
 
             const menu_list_id = clay.ElementId.localIDI("combobox_list", element_id.id);
 
@@ -1371,7 +1380,7 @@ pub fn Combobox(comptime Option: type) type {
                 });
 
                 _ = Label.start(.{
-                    .text = findOptionByKey(params.options, state.combobox.selected_key).label(),
+                    .text = findOptionByKey(options, state.combobox.selected_key).label(),
                     .font_size = 14,
                     .color = params.text_color,
                 });
@@ -1468,7 +1477,7 @@ pub fn Combobox(comptime Option: type) type {
                     .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = 0, .max = scroll_max_h }) },
                     .gap = 2,
                 });
-                for (params.options) |option| {
+                for (options) |option| {
                     _ = ComboboxItem.start(ctx, .{
                         .key = optionKey(option),
                         .label = option.label(),
@@ -1483,7 +1492,7 @@ pub fn Combobox(comptime Option: type) type {
                 clay.closeElement();
             }
 
-            return .{ .id = element_id, .ctx = ctx, .params = params };
+            return .{ .id = element_id, .ctx = ctx, .params = params, .options = options };
         }
 
         pub fn end(self: *const Self) void {
@@ -1492,7 +1501,7 @@ pub fn Combobox(comptime Option: type) type {
         }
 
         pub fn selected(self: *const Self) Option {
-            return findOptionByKey(self.params.options, self.ctx.getWidgetStateById(self.id).?.combobox.selected_key);
+            return findOptionByKey(self.options, self.ctx.getWidgetStateById(self.id).?.combobox.selected_key);
         }
     };
 }

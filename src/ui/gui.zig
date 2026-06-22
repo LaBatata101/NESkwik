@@ -1755,7 +1755,6 @@ fn drawEmulationSpeedRow(ui: *UI, app_state: *AppState) void {
 
         const speed_opts = ui.combobox(EmulationSpeed, .{
             .selected = app_state.settings.emulation_speed,
-            .options = &.{ .half, .normal, .double, .triple, .quadruple },
             .bg_color = theme.bg_hover,
             .bg_color_on_hover = theme.bg_hover,
             .border_color = theme.border_dim,
@@ -1800,7 +1799,6 @@ fn drawAspectRatioRow(ui: *UI, app_state: *AppState) void {
         const aspect_ratio_opts = ui.combobox(viewport.AspectRatio, .{
             .id = "aspect_ratio_combo",
             .selected = app_state.settings.aspect_ratio,
-            .options = &.{ .none, .@"4_3", .@"16_9" },
             .bg_color = theme.bg_hover,
             .bg_color_on_hover = theme.bg_hover,
             .border_color = theme.border_dim,
@@ -2404,7 +2402,6 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
         const border_shader_opts = ui.combobox(BorderShaderOpts, .{
             .id = "border_shader_combo",
             .selected = app_state.settings.border_shader,
-            .options = &.{ .none, .snow, .water, .mudlord, .bigblur },
             .bg_color = theme.bg_hover,
             .bg_color_on_hover = theme.bg_hover,
             .border_color = theme.border_dim,
