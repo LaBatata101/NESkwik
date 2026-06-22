@@ -6,6 +6,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const c = @import("../root.zig").c;
+const builtin_shaders = @import("builtin.zig");
 const slangp = @import("slangp.zig");
 const parser = @import("parser.zig");
 const ShaderCache = @import("cache.zig").ShaderCache;
@@ -749,10 +750,13 @@ fn compileAndCreatePipeline(
     texture_format: c.SDL_GPUTextureFormat,
     shader_cache: *ShaderCache,
 ) !CompilePassResult {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const raw_source = try file.readToEndAlloc(alloc, 1024 * 1024);
-    defer alloc.free(raw_source);
+    const embedded_source = builtin_shaders.sourceForPath(path);
+    const raw_source = if (embedded_source) |source| source else blk: {
+        const file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+        break :blk try file.readToEndAlloc(alloc, 1024 * 1024);
+    };
+    defer if (embedded_source == null) alloc.free(raw_source);
 
     var shader = try parser.parseShader(alloc, std.fs.path.dirname(path).?, raw_source);
     defer shader.deinit(alloc);
@@ -849,7 +853,7 @@ fn compileAndCreatePipeline(
 const WorkerArgs = struct {
     alloc: std.mem.Allocator,
     preset: *LoadedPreset,
-    dir: []const u8,
+    shader_dir: []const u8,
     pass: *slangp.ShaderPass,
     device: ?*c.SDL_GPUDevice,
     vk_version: c_uint,
@@ -871,7 +875,10 @@ fn compilePassWorker(args: WorkerArgs) void {
 }
 
 fn compilePassWorkerInner(args: WorkerArgs) !void {
-    const pass_path = try std.fs.path.resolve(args.alloc, &.{ args.dir, args.pass.path });
+    const pass_path = if (std.mem.eql(u8, args.shader_dir, builtin_shaders.border_shader_dir))
+        try builtin_shaders.joinBorderShaderPath(args.alloc, args.pass.path)
+    else
+        try std.fs.path.resolve(args.alloc, &.{ args.shader_dir, args.pass.path });
     defer args.alloc.free(pass_path);
 
     const target_format: c.SDL_GPUTextureFormat = if (args.pass.params.float_framebuffer orelse false)
@@ -999,6 +1006,17 @@ const ParsedPreset = struct {
 
 /// Read and parse a `.slangp` preset file.
 fn parsePresetFile(alloc: std.mem.Allocator, path: []const u8) !ParsedPreset {
+    if (builtin_shaders.sourceForPath(path)) |source| {
+        const content = try alloc.dupe(u8, source);
+        errdefer alloc.free(content);
+
+        const dir = try alloc.dupe(u8, std.fs.path.dirname(path) orelse builtin_shaders.border_shader_dir);
+        errdefer alloc.free(dir);
+
+        const shader_config = try slangp.parse_slangp(alloc, content);
+        return .{ .content = content, .shader_config = shader_config, .dir = dir };
+    }
+
     const full_path = std.fs.realpathAlloc(alloc, path) catch blk: {
         if (std.fs.path.isAbsolute(path))
             break :blk try alloc.dupe(u8, path);
@@ -1158,7 +1176,7 @@ fn compilePreset(
         pool.spawnWg(&wg, compilePassWorker, .{WorkerArgs{
             .alloc = alloc,
             .preset = &preset,
-            .dir = dir,
+            .shader_dir = dir,
             .pass = pass,
             .device = device,
             .vk_version = vk_version,

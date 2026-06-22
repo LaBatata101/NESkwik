@@ -45,6 +45,7 @@ const GamepadKeyBindings = bindings.GamepadKeyBindings;
 const ParamTarget = settings.ParamTarget;
 const ShaderParamSetting = settings.ShaderParamSetting;
 const EmulationSpeed = settings.EmulationSpeed;
+const BorderShaderOpts = settings.BorderShaderOpts;
 
 pub const ShaderFilePickerEntry = struct {
     kind: Kind,
@@ -228,8 +229,8 @@ pub const AppState = struct {
         shader_preset_path: ?[]u8 = null,
         /// Active shader parameter overrides (names are owned by this struct).
         shader_params: std.ArrayList(ShaderParamSetting) = .{},
-        /// Path to the active border shader preset (owned by this struct).
-        border_shader_preset_path: ?[]u8 = null,
+        /// Active bundled border shader preset.
+        border_shader: BorderShaderOpts = .none,
         /// Active border shader parameter overrides (names are owned by this struct).
         border_shader_params: std.ArrayList(ShaderParamSetting) = .{},
         /// Currently selected category in the settings sidebar.
@@ -534,7 +535,7 @@ pub const AppState = struct {
         // Handle deferred border shader preset load/clear requests.
         if (self.should_load_border_shader) {
             self.should_load_border_shader = false;
-            if (self.settings.border_shader_preset_path) |path| {
+            if (self.settings.border_shader.presetPath()) |path| {
                 if (self.border_shader_error) |old| {
                     self.alloc.free(old);
                     self.border_shader_error = null;
@@ -547,8 +548,7 @@ pub const AppState = struct {
                         "Load failed: {s}",
                         .{@errorName(err)},
                     ) catch null;
-                    self.alloc.free(path);
-                    self.settings.border_shader_preset_path = null;
+                    self.settings.border_shader = .none;
                     settings.clearShaderParamSettings(self.alloc, &self.settings.border_shader_params);
                 };
 
@@ -580,9 +580,8 @@ pub const AppState = struct {
                     self.border_shader_loading = false;
                     if (self.border_shader_error) |old| self.alloc.free(old);
                     self.border_shader_error = self.alloc.dupe(u8, msg) catch null;
-                    if (self.settings.border_shader_preset_path) |path| {
-                        self.alloc.free(path);
-                        self.settings.border_shader_preset_path = null;
+                    if (self.settings.border_shader != .none) {
+                        self.settings.border_shader = .none;
                         settings.clearShaderParamSettings(self.alloc, &self.settings.border_shader_params);
                     }
                 },
@@ -888,7 +887,7 @@ pub const AppState = struct {
         settings.load(self.alloc, self.config_dir, &self.settings) catch |err|
             std.log.err("settings load failed: {s}", .{@errorName(err)});
         self.should_load_shader = self.settings.shader_preset_path != null;
-        self.should_load_border_shader = self.settings.border_shader_preset_path != null;
+        self.should_load_border_shader = self.settings.border_shader != .none;
     }
 
     fn saveSettingsImpl(self: *Self) !void {
@@ -986,13 +985,7 @@ pub const AppState = struct {
                 self.should_load_shader = true;
                 self.should_clear_shader = false;
             },
-            .border => {
-                if (self.settings.border_shader_preset_path) |old| self.alloc.free(old);
-                self.settings.border_shader_preset_path = self.alloc.dupe(u8, shader_path) catch @panic("Failed to allocate!");
-                settings.clearShaderParamSettings(self.alloc, &self.settings.border_shader_params);
-                self.should_load_border_shader = true;
-                self.should_clear_border_shader = false;
-            },
+            .border => {},
         }
 
         self.closeShaderFilePicker();
@@ -1316,7 +1309,8 @@ fn deinitShaderGroup(
 
 fn deinitEmulatorSettings(alloc: std.mem.Allocator, s: *AppState.EmulatorSettings) void {
     deinitShaderGroup(alloc, &s.shader_preset_path, &s.shader_params);
-    deinitShaderGroup(alloc, &s.border_shader_preset_path, &s.border_shader_params);
+    settings.clearShaderParamSettings(alloc, &s.border_shader_params);
+    s.border_shader_params.deinit(alloc);
 }
 
 fn resetShaderRuntimeState(app_state: *AppState) void {
@@ -1328,8 +1322,8 @@ fn resetShaderRuntimeState(app_state: *AppState) void {
         app_state.shader_error = null;
     }
 
-    app_state.should_load_border_shader = app_state.settings.border_shader_preset_path != null;
-    app_state.should_clear_border_shader = app_state.settings.border_shader_preset_path == null;
+    app_state.should_load_border_shader = app_state.settings.border_shader != .none;
+    app_state.should_clear_border_shader = app_state.settings.border_shader == .none;
     app_state.border_shader_loading = false;
     if (app_state.border_shader_error) |old| {
         app_state.alloc.free(old);

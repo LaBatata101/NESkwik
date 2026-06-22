@@ -38,6 +38,7 @@ const ParamTarget = settings.ParamTarget;
 const SettingsCategory = state.SettingsCategory;
 pub const AppState = state.AppState;
 const EmulationSpeed = settings.EmulationSpeed;
+const BorderShaderOpts = settings.BorderShaderOpts;
 
 const dialog_filter_list: [2]c.SDL_DialogFileFilter = [_]c.SDL_DialogFileFilter{
     .{ .name = "NES ROMs", .pattern = "nes" },
@@ -2386,8 +2387,6 @@ fn shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u
 }
 
 fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
-    const can_clear_border_shader = app_state.settings.border_shader_preset_path != null or app_state.border_shader_loading;
-
     const header_row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .{ .y = .center },
@@ -2402,70 +2401,39 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
 
         _ = ui.spacer(.{ .sizing = .grow });
 
-        if (ui.button(.{
-            .text = "Load",
-            .font_size = 15,
-            .text_color = theme.text_primary,
+        const border_shader_opts = ui.combobox(BorderShaderOpts, .{
+            .id = "border_shader_combo",
+            .selected = app_state.settings.border_shader,
+            .options = &.{ .none, .snow, .water, .mudlord, .bigblur },
             .bg_color = theme.bg_hover,
-            .hover_color = theme.border,
-            .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
-            .elevation = 0,
-        }).clicked(ui.current_window.ctx)) {
-            if (builtin.abi.isAndroid()) {
-                app_state.openShaderFilePicker(.border);
-            } else {
-                const default_location = std.process.getCwdAlloc(ui.main_window.ctx.frameAlloc()) catch
-                    @panic("Failed to allocate");
-                defer ui.main_window.ctx.frameAlloc().free(default_location);
+            .bg_color_on_hover = theme.bg_hover,
+            .border_color = theme.border_dim,
+            .border_color_on_open = theme.border_open,
+            .border_color_on_hover = theme.border,
+            .text_color = theme.text_primary,
+            .float_panel = .{
+                .bg_color = theme.bg_section,
+                .border_color = theme.border_open,
+            },
+            .item = .{
+                .bg_color_on_hover = theme.bg_hover,
+                .bg_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                .text_color = theme.text_secondary,
+                .text_color_on_hover = theme.text_accent,
+            },
+        });
 
-                c.SDL_ShowOpenFileDialog(
-                    border_shader_dialog_callback,
-                    clay.anytypeToAnyopaquePtr(app_state),
-                    ui.main_window.ptr,
-                    &shader_filter_list,
-                    shader_filter_list.len,
-                    default_location.ptr,
-                    false,
-                );
-            }
-        }
-
-        if (ui.button(.{
-            .text = "Clear",
-            .font_size = 15,
-            .enabled = can_clear_border_shader,
-            .text_color = if (can_clear_border_shader) theme.text_primary else theme.text_secondary,
-            .bg_color = if (can_clear_border_shader) theme.bg_hover else theme.bg_panel,
-            .hover_color = if (can_clear_border_shader) theme.border else theme.bg_panel,
-            .padding = .{ .left = 10, .right = 10, .top = 5, .bottom = 5 },
-            .elevation = 0,
-        }).clicked(ui.current_window.ctx)) {
-            if (app_state.settings.border_shader_preset_path) |path| {
-                app_state.alloc.free(path);
-                app_state.settings.border_shader_preset_path = null;
-            }
+        const selected = border_shader_opts.selected();
+        if (app_state.settings.border_shader != selected) {
+            app_state.settings.border_shader = selected;
             settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
-            app_state.should_load_border_shader = false;
-            app_state.should_clear_border_shader = true;
+            app_state.should_load_border_shader = selected != .none;
+            app_state.should_clear_border_shader = selected == .none;
         }
     }
     header_row.end();
 
-    // Active preset filename.
-    const active_path = ui.getBorderShaderPresetPath();
-    const filename = if (active_path) |p| blk: {
-        const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
-            std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
-        break :blk if (slash > 0) p[slash + 1 ..] else p;
-    } else "None";
-
-    _ = ui.label(.{
-        .text = filename,
-        .font_size = 14,
-        .color = theme.text_secondary,
-    });
-
-    const show_border_preview = app_state.settings.border_shader_preset_path != null or
+    const show_border_preview = app_state.settings.border_shader != .none or
         app_state.border_shader_loading;
     if (show_border_preview) {
         const preview_aspect_ratio: viewport.AspectRatio = switch (app_state.settings.aspect_ratio) {
@@ -2480,29 +2448,6 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
         drawShaderPreview(ui, preview_pixels, NES_WIDTH, NES_VISIBLE_HEIGHT, .border, preview_aspect_ratio);
         center.end();
     }
-}
-
-fn border_shader_dialog_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
-    const app_state = clay.anyopaquePtrToType(*AppState, userdata);
-
-    if (filelist == null) {
-        std.log.err("An error ocurred while selecting border shader file: {s}\n", .{c.SDL_GetError()});
-        return;
-    }
-    if (filelist.* == null) {
-        return;
-    }
-
-    const filepath = std.mem.span(filelist.*);
-    std.log.debug("User selected border shader: {s}", .{filepath});
-
-    if (app_state.settings.border_shader_preset_path) |old_path| {
-        app_state.alloc.free(old_path);
-    }
-    app_state.settings.border_shader_preset_path = app_state.alloc.dupe(u8, filepath) catch @panic("Failed to allocate!");
-    settings.clearShaderParamSettings(app_state.alloc, &app_state.settings.border_shader_params);
-    app_state.should_load_border_shader = true;
-    app_state.should_clear_border_shader = false;
 }
 
 fn file_picker_callback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {

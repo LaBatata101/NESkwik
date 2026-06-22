@@ -3,6 +3,7 @@ const std = @import("std");
 const bindings = @import("bindings.zig");
 const viewport = @import("core/viewport.zig");
 const EmulatorSettings = @import("state.zig").AppState.EmulatorSettings;
+pub const BorderShaderOpts = @import("../shaders/builtin.zig").BorderShader;
 
 const SETTINGS_FILENAME = "config.json";
 
@@ -49,7 +50,7 @@ pub const SettingsConfig = struct {
     aspect_ratio: viewport.AspectRatio = .@"4_3",
     shader_preset_path: ?[]const u8 = null,
     shader_params: []const ShaderParamSetting = &.{},
-    border_shader_preset_path: ?[]const u8 = null,
+    border_shader: BorderShaderOpts = .none,
     border_shader_params: []const ShaderParamSetting = &.{},
     hide_mouse_on_inactivity: bool = false,
     vsync: bool = true,
@@ -147,7 +148,7 @@ fn clearParamsWithoutPreset(alloc: std.mem.Allocator, settings: *EmulatorSetting
     if (settings.shader_preset_path == null) {
         clearShaderParamSettings(alloc, &settings.shader_params);
     }
-    if (settings.border_shader_preset_path == null) {
+    if (settings.border_shader == .none) {
         clearShaderParamSettings(alloc, &settings.border_shader_params);
     }
 }

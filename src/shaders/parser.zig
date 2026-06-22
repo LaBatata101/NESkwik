@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin_shaders = @import("builtin.zig");
 
 const TokType = enum {
     Id,
@@ -795,8 +796,10 @@ fn resolveIncludeRecursive(
             const path_token = tokens[i];
 
             const include_rel_path = path_token.value;
-            const resolved_path = try std.fs.path.resolve(alloc, &.{ dir, include_rel_path });
-            // defer alloc.free(resolved_path);
+            const resolved_path = if (builtin_shaders.isBorderShaderPath(dir))
+                try std.fs.path.join(alloc, &.{ dir, include_rel_path })
+            else
+                try std.fs.path.resolve(alloc, &.{ dir, include_rel_path });
 
             if (included_files.contains(resolved_path)) {
                 alloc.free(resolved_path);
@@ -807,13 +810,19 @@ fn resolveIncludeRecursive(
             const include_dir = std.fs.path.dirname(resolved_path) orelse ".";
             try included_files.put(resolved_path, {});
 
-            const file = std.fs.cwd().openFile(resolved_path, .{}) catch |err| {
-                std.log.err("Failed to open include file: {s}\n", .{resolved_path});
-                return err;
+            const embedded_include = builtin_shaders.sourceForPath(resolved_path);
+            const content = if (embedded_include) |embedded|
+                embedded
+            else blk: {
+                const file = std.fs.cwd().openFile(resolved_path, .{}) catch |err| {
+                    std.log.err("Failed to open include file: {s}\n", .{resolved_path});
+                    return err;
+                };
+                defer file.close();
+                break :blk try file.readToEndAlloc(alloc, std.math.maxInt(usize));
             };
-            const content = try file.readToEndAlloc(alloc, std.math.maxInt(usize));
-            file.close();
-            defer alloc.free(content);
+            defer if (embedded_include == null) alloc.free(content);
+
             const processed_include = try resolveIncludeRecursive(alloc, content, include_dir, included_files);
             defer alloc.free(processed_include);
 

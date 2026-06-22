@@ -1,7 +1,7 @@
 const std = @import("std");
 const android = @import("android");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const exe_name = "neskwik";
     const package_name = "com.labatata.neskwik";
 
@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
     };
 
     for (targets) |target| {
-        const deps = createNessModule(b, target, optimize);
+        const deps = try createNessModule(b, target, optimize);
 
         const app_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -159,7 +159,7 @@ const NessDeps = struct {
     spirv_cross_lib: *std.Build.Step.Compile,
 };
 
-fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) NessDeps {
+fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) !NessDeps {
     const preferred_linkage: std.builtin.LinkMode = if (target.result.abi.isAndroid()) .dynamic else .static;
 
     const mod = b.createModule(.{
@@ -243,6 +243,8 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     mod.addAnonymousImport("stop_icon", .{ .root_source_file = b.path("resources/icons/stop_32x32.png") });
     mod.addAnonymousImport("menu_icon", .{ .root_source_file = b.path("resources/icons/menu_32x32.png") });
 
+    try addBorderShaderImports(b, mod);
+
     return .{
         .mod = mod,
         .sdl_lib = sdl_lib,
@@ -252,6 +254,142 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .glslang_lib = glslang_lib,
         .spirv_cross_lib = spirv_cross_lib,
     };
+}
+
+const BorderShaderFile = struct {
+    rel_path: []const u8,
+    import_name: []const u8,
+};
+
+fn addBorderShaderImports(b: *std.Build, mod: *std.Build.Module) !void {
+    const shader_dir_path = "resources/shaders";
+
+    var files: std.ArrayList(BorderShaderFile) = .empty;
+    try collectBorderShaderFiles(b, &files, shader_dir_path, "");
+
+    std.mem.sort(BorderShaderFile, files.items, {}, struct {
+        fn lessThan(_: void, lhs: BorderShaderFile, rhs: BorderShaderFile) bool {
+            return std.mem.lessThan(u8, lhs.rel_path, rhs.rel_path);
+        }
+    }.lessThan);
+
+    const generated_source = try renderBorderShaderEntries(b, files.items);
+    const generated_path = b.addWriteFiles().add("border_shader_entries.zig", generated_source);
+    const generated_mod = b.createModule(.{
+        .root_source_file = generated_path,
+    });
+
+    for (files.items) |file| {
+        const file_path = try std.fs.path.join(b.allocator, &.{ shader_dir_path, file.rel_path });
+        generated_mod.addAnonymousImport(
+            file.import_name,
+            .{ .root_source_file = b.path(file_path) },
+        );
+    }
+
+    mod.addImport("border_shader_entries", generated_mod);
+}
+
+fn collectBorderShaderFiles(
+    b: *std.Build,
+    files: *std.ArrayList(BorderShaderFile),
+    shader_dir_path: []const u8,
+    rel_dir: []const u8,
+) !void {
+    const dir_path = if (rel_dir.len == 0)
+        shader_dir_path
+    else
+        try std.fs.path.join(b.allocator, &.{ shader_dir_path, rel_dir });
+
+    var shader_dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err|
+        @panic(b.fmt("failed to open border shader directory '{s}': {s}", .{ dir_path, @errorName(err) }));
+    defer shader_dir.close();
+
+    var iter = shader_dir.iterate();
+    while (try iter.next()) |entry| {
+        const rel_path = if (rel_dir.len == 0)
+            try b.allocator.dupe(u8, entry.name)
+        else
+            try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ rel_dir, entry.name });
+
+        if (entry.kind == .directory) {
+            try collectBorderShaderFiles(b, files, shader_dir_path, rel_path);
+            continue;
+        }
+        if (entry.kind != .file) continue;
+
+        const ext = std.fs.path.extension(entry.name);
+        if (!isBorderShaderSourceFile(ext)) continue;
+
+        try files.append(b.allocator, .{
+            .rel_path = rel_path,
+            .import_name = try borderShaderImportName(b, rel_path, ext),
+        });
+    }
+}
+
+fn isBorderShaderSourceFile(ext: []const u8) bool {
+    return std.mem.eql(u8, ext, ".slang") or
+        std.mem.eql(u8, ext, ".slangp") or
+        std.mem.eql(u8, ext, ".h") or
+        std.mem.eql(u8, ext, ".inc");
+}
+
+fn borderShaderImportName(b: *std.Build, rel_path: []const u8, ext: []const u8) ![]const u8 {
+    var import_name: std.ArrayList(u8) = .empty;
+    try import_name.appendSlice(b.allocator, "border_shader_");
+    for (rel_path) |ch| {
+        try import_name.append(b.allocator, if (std.ascii.isAlphanumeric(ch) or ch == '_') ch else '_');
+    }
+
+    const suffix = if (std.mem.eql(u8, ext, ".slangp"))
+        "_preset"
+    else if (std.mem.eql(u8, ext, ".slang"))
+        "_source"
+    else if (std.mem.eql(u8, ext, ".h") or std.mem.eql(u8, ext, ".inc"))
+        "_header"
+    else
+        unreachable;
+
+    try import_name.appendSlice(b.allocator, suffix);
+    return import_name.toOwnedSlice(b.allocator);
+}
+
+fn renderBorderShaderEntries(b: *std.Build, files: []const BorderShaderFile) ![]const u8 {
+    var source: std.ArrayList(u8) = .empty;
+    try source.appendSlice(b.allocator,
+        \\pub const Entry = struct {
+        \\    path: []const u8,
+        \\    source: []const u8,
+        \\};
+        \\
+        \\pub const entries = [_]Entry{
+        \\
+    );
+
+    for (files) |file| {
+        try source.appendSlice(b.allocator, "    .{ .path = \"builtin://border-shaders/");
+        try appendZigStringContent(b, &source, file.rel_path);
+        try source.appendSlice(b.allocator, "\", .source = @embedFile(\"");
+        try appendZigStringContent(b, &source, file.import_name);
+        try source.appendSlice(b.allocator, "\") },\n");
+    }
+
+    try source.appendSlice(b.allocator, "};\n");
+    return source.toOwnedSlice(b.allocator);
+}
+
+fn appendZigStringContent(b: *std.Build, source: *std.ArrayList(u8), value: []const u8) !void {
+    for (value) |ch| {
+        switch (ch) {
+            '\\' => try source.appendSlice(b.allocator, "\\\\"),
+            '"' => try source.appendSlice(b.allocator, "\\\""),
+            '\n' => try source.appendSlice(b.allocator, "\\n"),
+            '\r' => try source.appendSlice(b.allocator, "\\r"),
+            '\t' => try source.appendSlice(b.allocator, "\\t"),
+            else => try source.append(b.allocator, ch),
+        }
+    }
 }
 
 fn linkAppLibraries(compile: *std.Build.Step.Compile, deps: NessDeps) void {
