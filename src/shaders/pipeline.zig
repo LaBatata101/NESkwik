@@ -1627,10 +1627,6 @@ pub const ShaderPipeline = struct {
     texture_aliases: std.StringHashMap(*Texture),
     frame_history: std.ArrayList(*Texture),
 
-    // Used for previewing the shader effect in the settings window
-    last_swapchain_format: c.SDL_GPUTextureFormat = c.SDL_GPU_TEXTUREFORMAT_INVALID,
-    black_input_texture: ?*c.SDL_GPUTexture = null,
-
     const Self = @This();
 
     pub fn init(
@@ -1716,58 +1712,9 @@ pub const ShaderPipeline = struct {
         self.frame_history.deinit(self.alloc);
         if (self.preset) |*p| p.deinit(self.alloc, self.device);
         if (self.preset_path) |path| self.alloc.free(path);
-        if (self.black_input_texture) |t| c.SDL_ReleaseGPUTexture(self.device, t);
         c.SDL_ReleaseGPUBuffer(self.device, self.vertex_buffer);
         self.cache.deinit();
         self.alloc.destroy(self);
-    }
-
-    /// Load (or reload) a `.slangp` shader preset.
-    pub fn loadPreset(self: *Self, path: []const u8, swapchain_format: c.SDL_GPUTextureFormat) !void {
-        // Unload any existing preset first
-        self.unloadPreset();
-        self.last_swapchain_format = swapchain_format;
-
-        var dummy_progress: std.atomic.Value(u32) = .init(0);
-        self.preset = try loadPresetFile(
-            self.alloc,
-            path,
-            self.vk_version,
-            self.device,
-            swapchain_format,
-            &dummy_progress,
-            self.cache,
-        );
-        self.preset_path = try self.alloc.dupe(u8, path);
-        try self.resizePassTextureSlots(self.preset.?.passes.len);
-
-        // Pre-compute usage flags from reflection data
-        self.uses_pass_output = false;
-        self.uses_pass_feedback = false;
-        self.max_frame_history = 0;
-
-        for (self.preset.?.passes) |pass| {
-            for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
-                for (set_info.bindings.items) |binding| {
-                    switch (binding.binding_type) {
-                        .sampler2D => |st| switch (st) {
-                            .PassOutput => self.uses_pass_output = true,
-                            .PassFeedback => self.uses_pass_feedback = true,
-                            .OriginalHistory => |id| self.max_frame_history = @max(id, self.max_frame_history),
-                            else => {},
-                        },
-                        else => {},
-                    }
-                }
-            }
-        }
-
-        // Pre-allocate frame history with dummy entries (will be overwritten each frame)
-        try self.frame_history.resize(self.alloc, self.max_frame_history);
-
-        std.log.info("Loaded shader preset: {s} ({} pass(es))", .{
-            path, self.preset.?.passes.len,
-        });
     }
 
     /// Unload the current preset and reset all GPU state.
@@ -1822,83 +1769,6 @@ pub const ShaderPipeline = struct {
         return self.preset != null;
     }
 
-    /// Returns the GPU texture containing the last rendered output of the final
-    /// shader pass, or null if no preset is loaded or the pass has no output.
-    pub fn getLastOutputTexture(self: *const Self) ?*c.SDL_GPUTexture {
-        const preset = self.preset orelse return null;
-        if (preset.passes.len == 0) return null;
-        const last = preset.passes[preset.passes.len - 1];
-        return if (last.output_texture) |t| t.ptr else null;
-    }
-
-    /// Runs the full shader pipeline with an all-black NES-sized input texture,
-    /// populating `last_pass.output_texture` without touching any swapchain.
-    /// Call this when the pipeline is active but no frame has been rendered yet
-    /// (e.g. emulation not running) so the settings preview has something to show.
-    pub fn renderForPreview(self: *Self, win_w: u32, win_h: u32) !void {
-        if (!self.isActive()) return;
-        if (win_w == 0 or win_h == 0) return;
-        if (self.last_swapchain_format == c.SDL_GPU_TEXTUREFORMAT_INVALID) return;
-
-        // Create a 256×240 all-black ABGR8888 source texture.
-        if (self.black_input_texture == null) {
-            const w: u32 = 256;
-            const h: u32 = 240;
-            const tex = c.SDL_CreateGPUTexture(self.device, &.{
-                .type = c.SDL_GPU_TEXTURETYPE_2D,
-                .format = c.SDL_GetGPUTextureFormatFromPixelFormat(c.SDL_PIXELFORMAT_ABGR8888),
-                .width = w,
-                .height = h,
-                .layer_count_or_depth = 1,
-                .num_levels = 1,
-                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-            }) orelse return error.SDLError;
-
-            const size: u32 = w * h * 4;
-            const tb = c.SDL_CreateGPUTransferBuffer(self.device, &.{
-                .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                .size = size,
-            }) orelse {
-                c.SDL_ReleaseGPUTexture(self.device, tex);
-                return error.SDLError;
-            };
-            const map = c.SDL_MapGPUTransferBuffer(self.device, tb, false);
-            @memset(@as([*]u8, @ptrCast(map))[0..size], 0);
-            c.SDL_UnmapGPUTransferBuffer(self.device, tb);
-
-            const upload_cmd = c.SDL_AcquireGPUCommandBuffer(self.device) orelse {
-                c.SDL_ReleaseGPUTransferBuffer(self.device, tb);
-                c.SDL_ReleaseGPUTexture(self.device, tex);
-                return error.SDLError;
-            };
-            const copy = c.SDL_BeginGPUCopyPass(upload_cmd);
-            c.SDL_UploadToGPUTexture(copy, &.{ .transfer_buffer = tb }, &.{ .texture = tex, .w = w, .h = h, .d = 1 }, false);
-            c.SDL_EndGPUCopyPass(copy);
-            _ = c.SDL_SubmitGPUCommandBuffer(upload_cmd);
-            c.SDL_ReleaseGPUTransferBuffer(self.device, tb);
-
-            self.black_input_texture = tex;
-        }
-
-        // Create a dummy render target that matches the preview viewport so the
-        // final blit stays within bounds even though we never present it.
-        const dummy = c.SDL_CreateGPUTexture(self.device, &.{
-            .type = c.SDL_GPU_TEXTURETYPE_2D,
-            .format = self.last_swapchain_format,
-            .width = win_w,
-            .height = win_h,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .usage = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        }) orelse return error.SDLError;
-        defer c.SDL_ReleaseGPUTexture(self.device, dummy);
-
-        const cmd = c.SDL_AcquireGPUCommandBuffer(self.device) orelse return error.SDLError;
-        const viewport = Viewport{ .x = 0, .y = 0, .w = win_w, .h = win_h };
-        try self.renderFrame(self.black_input_texture, 256, 240, viewport, cmd, dummy, win_w, win_h, self.last_swapchain_format, c.SDL_GPU_LOADOP_DONT_CARE);
-        _ = c.SDL_SubmitGPUCommandBuffer(cmd);
-    }
-
     pub fn getPresetPath(self: *const Self) ?[]const u8 {
         return self.preset_path;
     }
@@ -1932,10 +1802,9 @@ pub const ShaderPipeline = struct {
     /// Start an asynchronous shader preset load.  Progress can be tracked
     /// via `compile_progress` / `compile_total`, and the result retrieved
     /// by calling `pollLoadResult` each frame.
-    pub fn startLoadPreset(self: *Self, path: []const u8, swapchain_format: c.SDL_GPUTextureFormat) !void {
+    pub fn loadPreset(self: *Self, path: []const u8, swapchain_format: c.SDL_GPUTextureFormat) !void {
         // unloadPreset joins any in-progress thread and resets all state.
         self.unloadPreset();
-        self.last_swapchain_format = swapchain_format;
 
         var parsed = try parsePresetFile(self.alloc, path);
         errdefer parsed.deinit(self.alloc);
@@ -1968,6 +1837,7 @@ pub const ShaderPipeline = struct {
         failed: []const u8,
     };
 
+    // TODO: decouple the compilation  from ShaderPipeline?
     /// Poll the status of an async `startLoadPreset` call.
     /// When `.done` or `.failed` is returned the compile thread has been
     /// joined and the pipeline has been updated.
@@ -2086,13 +1956,10 @@ pub const ShaderPipeline = struct {
         src_h: u32,
         viewport: Viewport,
         cmd: ?*c.SDL_GPUCommandBuffer,
-        swapchain_tex: ?*c.SDL_GPUTexture,
         win_w: u32,
         win_h: u32,
         swapchain_format: c.SDL_GPUTextureFormat,
-        blit_load_op: c.SDL_GPULoadOp,
-    ) !void {
-        self.last_swapchain_format = swapchain_format;
+    ) !?*Texture {
         const preset = &self.preset.?;
 
         const input = try Texture.init(self.alloc, input_texture, src_w, src_h, c.SDL_GPU_TEXTUREFORMAT_INVALID, 1);
@@ -2136,29 +2003,6 @@ pub const ShaderPipeline = struct {
             self.uses_pass_feedback,
         );
 
-        // Blit the last pass output to the swapchain viewport
-        const last_pass = &preset.passes[preset.passes.len - 1];
-        if (last_pass.output_texture) |output| {
-            c.SDL_BlitGPUTexture(cmd, &c.SDL_GPUBlitInfo{
-                .source = .{
-                    .texture = output.ptr,
-                    .x = 0,
-                    .y = 0,
-                    .w = output.width,
-                    .h = output.height,
-                },
-                .destination = .{
-                    .texture = swapchain_tex,
-                    .x = @intCast(@max(0, viewport.x)),
-                    .y = @intCast(@max(0, viewport.y)),
-                    .w = viewport.w,
-                    .h = viewport.h,
-                },
-                .load_op = blit_load_op,
-                .filter = last_pass.filter,
-            });
-        }
-
         // Update frame history for OriginalHistory# uniforms
         if (self.max_frame_history > 0) {
             const history_index = self.frame_count % self.frame_history.items.len;
@@ -2174,6 +2018,7 @@ pub const ShaderPipeline = struct {
         }
 
         self.frame_count += 1;
+        return preset.passes[preset.passes.len - 1].output_texture;
     }
 
     fn clearAccumulationState(self: *Self) void {

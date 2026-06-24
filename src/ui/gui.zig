@@ -94,6 +94,12 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 .unknown;
             const is_portrait = orientation == .portrait or orientation == .portrait_flipped;
 
+            const border_shader = ui.shaderMode(.{
+                .id = "border",
+                .target = .canvas,
+                .composition = .original_on_top,
+            });
+            const main_shader = ui.shaderMode(.{ .id = "main" });
             const canvas = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
                 .pixels = app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
@@ -103,8 +109,9 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 .aspect_ratio = if (is_portrait) .@"4_3" else app_state.settings.aspect_ratio,
                 .viewport_alignment = if (is_portrait) .top else .center,
                 .bg_color = Color.black,
-                .apply_runtime_shaders = true,
             });
+            main_shader.end();
+            border_shader.end();
 
             if (builtin.abi.isAndroid()) {
                 drawGamepad(ui, canvas.id, orientation);
@@ -1840,7 +1847,7 @@ fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
         const section = drawContentSection(ui, .{});
         drawShaderPresetRow(ui, app_state);
         if (app_state.shader_loading) {
-            const progress = ui.getShaderProgress();
+            const progress = ui.getShaderProgress("main");
             const alloc = ui.current_window.ctx.frameAlloc();
             const progress_text = if (progress.total > 0)
                 std.fmt.allocPrint(
@@ -1863,7 +1870,7 @@ fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
             });
         }
 
-        const param_infos = ui.getShaderParamInfos();
+        const param_infos = ui.getShaderParamInfos("main");
         if (!app_state.shader_loading and param_infos.len > 0) {
             drawShaderParamsSection(ui, app_state, "Parameters", param_infos, .main);
         }
@@ -1888,7 +1895,7 @@ fn drawSettingsShaderContent(ui: *UI, app_state: *AppState) void {
             });
         }
 
-        const border_param_infos = ui.getBorderShaderParamInfos();
+        const border_param_infos = ui.getShaderParamInfos("border");
         if (!app_state.border_shader_loading and border_param_infos.len > 0) {
             drawShaderParamsSection(ui, app_state, "Border Parameters", border_param_infos, .border);
         }
@@ -2112,51 +2119,37 @@ fn setPreviewPixel(pixels: []u8, x: u32, y: u32, color: PreviewColor) void {
     pixels[idx + 3] = 255;
 }
 
-fn drawShaderPreview(
-    ui: *UI,
-    pixels: []const u8,
-    px_w: u32,
-    px_h: u32,
-    shader: widgets.Canvas.ShaderPreview,
-    aspect_ratio: viewport.AspectRatio,
-) void {
-    const content_aspect = aspect_ratio.value() orelse @as(f32, @floatFromInt(4)) / 3;
-    const preview_box_aspect = if (shader == .border)
-        @max(content_aspect, @as(f32, 16.0) / 9.0)
-    else
-        content_aspect;
-    const width_limited_height = PREVIEW_MAX_W / preview_box_aspect;
-    const preview_w: f32 = if (width_limited_height <= PREVIEW_MAX_H)
-        PREVIEW_MAX_W
-    else
-        PREVIEW_MAX_H * preview_box_aspect;
-    const preview_h: f32 = if (width_limited_height <= PREVIEW_MAX_H)
-        width_limited_height
-    else
-        PREVIEW_MAX_H;
+fn drawShaderPreview(ui: *UI, pixels: []const u8, px_w: u32, px_h: u32, aspect_ratio: viewport.AspectRatio) void {
+    const frame_aspect = @as(f32, @floatFromInt(16)) / 9;
+    const width_limited_height = PREVIEW_MAX_W / frame_aspect;
+    const preview_w: f32 = if (width_limited_height <= PREVIEW_MAX_H) PREVIEW_MAX_W else PREVIEW_MAX_H * frame_aspect;
+    const preview_h: f32 = if (width_limited_height <= PREVIEW_MAX_H) width_limited_height else PREVIEW_MAX_H;
 
-    const wrapper = ui.column(.{
-        .sizing = .{
-            .w = .fixed(preview_w + PREVIEW_FRAME_PADDING),
-            .h = .fixed(preview_h + PREVIEW_FRAME_PADDING + PREVIEW_LABEL_HEIGHT),
-        },
-        .bg_color = theme.border_dim,
-        .padding = .all(1),
-        .child_alignment = .center,
-    });
+    const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
     {
-        _ = ui.label(.{ .text = "Preview", .color = theme.accent_green });
-        _ = ui.canvas(.{
-            .sizing = .grow,
-            .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
-            .pixels = pixels,
-            .w = px_w,
-            .h = px_h,
-            .aspect_ratio = aspect_ratio,
-            .shader_preview = shader,
+        const wrapper = ui.column(.{
+            .sizing = .{
+                .w = .fixed(preview_w + PREVIEW_FRAME_PADDING),
+                .h = .fixed(preview_h + PREVIEW_FRAME_PADDING + PREVIEW_LABEL_HEIGHT),
+            },
+            .bg_color = theme.border_dim,
+            .padding = .all(1),
+            .child_alignment = .center,
         });
+        {
+            _ = ui.label(.{ .text = "Preview", .color = theme.accent_green });
+            _ = ui.canvas(.{
+                .sizing = .grow,
+                .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
+                .pixels = pixels,
+                .w = px_w,
+                .h = px_h,
+                .aspect_ratio = aspect_ratio,
+            });
+        }
+        wrapper.end();
     }
-    wrapper.end();
+    center.end();
 }
 
 fn drawShaderPresetRow(ui: *UI, app_state: *AppState) void {
@@ -2225,7 +2218,7 @@ fn drawShaderPresetRow(ui: *UI, app_state: *AppState) void {
     header_row.end();
 
     // Active preset filename.
-    const active_path = ui.getShaderPresetPath();
+    const active_path = ui.getShaderPresetPath("main");
     const filename = if (active_path) |p| blk: {
         const slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse
             std.mem.lastIndexOfScalar(u8, p, '\\') orelse 0;
@@ -2239,23 +2232,29 @@ fn drawShaderPresetRow(ui: *UI, app_state: *AppState) void {
     });
 
     if (app_state.emulation_running) {
-        const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES), NES_WIDTH, NES_VISIBLE_HEIGHT, .main, .none);
-        center.end();
+        const shader = ui.shaderMode(.{ .id = "main" });
+        drawShaderPreview(
+            ui,
+            app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
+            NES_WIDTH,
+            NES_VISIBLE_HEIGHT,
+            app_state.settings.aspect_ratio,
+        );
+        shader.end();
     }
 }
 
 fn getParamValue(ui: *UI, target: ParamTarget, name: []const u8) f32 {
     return switch (target) {
-        .main => ui.getShaderParam(name),
-        .border => ui.getBorderShaderParam(name),
+        .main => ui.getShaderParam("main", name),
+        .border => ui.getShaderParam("border", name),
     };
 }
 
 fn setParamValue(ui: *UI, target: ParamTarget, name: []const u8, value: f32) void {
     switch (target) {
-        .main => ui.setShaderParam(name, value),
-        .border => ui.setBorderShaderParam(name, value),
+        .main => ui.setShaderParam("main", name, value),
+        .border => ui.setShaderParam("border", name, value),
     }
 }
 
@@ -2433,17 +2432,24 @@ fn drawBorderShaderPresetRow(ui: *UI, app_state: *AppState) void {
     const show_border_preview = app_state.settings.border_shader != .none or
         app_state.border_shader_loading;
     if (show_border_preview) {
-        const preview_aspect_ratio: viewport.AspectRatio = switch (app_state.settings.aspect_ratio) {
-            .none => .@"4_3",
-            else => app_state.settings.aspect_ratio,
-        };
         const preview_pixels: []const u8 = if (app_state.emulation_running)
             app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES)
         else
             createStoppedPreviewPlaceholder(ui.current_window.ctx.frameAlloc());
-        const center = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .child_alignment = .{ .x = .center } });
-        drawShaderPreview(ui, preview_pixels, NES_WIDTH, NES_VISIBLE_HEIGHT, .border, preview_aspect_ratio);
-        center.end();
+
+        const shader = ui.shaderMode(.{
+            .id = "border",
+            .target = .canvas,
+            .composition = .original_on_top,
+        });
+        drawShaderPreview(
+            ui,
+            preview_pixels,
+            NES_WIDTH,
+            NES_VISIBLE_HEIGHT,
+            .@"4_3",
+        );
+        shader.end();
     }
 }
 

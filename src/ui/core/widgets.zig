@@ -893,11 +893,7 @@ pub const Spacer = struct {
 pub const Canvas = struct {
     id: clay.ElementId,
     params: Params,
-
-    /// Which shader pipeline to pull the preview texture from.
-    /// When set on a canvas in a secondary window, `renderCustom` will use
-    /// the pipeline's last rendered output texture instead of uploading pixels.
-    pub const ShaderPreview = enum { main, border };
+    shader_modes: []const ui.ShaderMode,
 
     pub const Params = struct {
         id: ?[]const u8 = null,
@@ -912,14 +908,6 @@ pub const Canvas = struct {
         padding: clay.Padding = .{},
         aspect_ratio: viewport.AspectRatio = .none,
         viewport_alignment: viewport.ViewportAlignment = .center,
-        /// When set, the canvas uses the named pipeline's last output texture
-        /// instead of uploading `pixels`. Falls back to `pixels` if the
-        /// pipeline has no output yet.
-        shader_preview: ?ShaderPreview = null,
-        /// Runtime shader pipelines are only meant for the emulator frame.
-        /// Other canvases, such as thumbnails and UI reference images, should
-        /// remain ordinary UI textures even when a shader is active.
-        apply_runtime_shaders: bool = false,
     };
     const Self = @This();
 
@@ -931,8 +919,13 @@ pub const Canvas = struct {
         } else clay.openElement();
 
         const alloc = ctx.frameAlloc();
+        const shader_modes = alloc.dupe(ui.ShaderMode, ctx.shader_mode_stack.items) catch @panic("Alloc failed");
         const custom_data = alloc.create(CustomData) catch @panic("Alloc failed");
-        custom_data.* = .{ .canvas = .{ .id = element_id, .params = params } };
+        custom_data.* = .{ .canvas = .{
+            .id = element_id,
+            .params = params,
+            .shader_modes = shader_modes,
+        } };
 
         clay.configureOpenElement(.{
             .layout = .{ .sizing = params.sizing },
@@ -941,7 +934,7 @@ pub const Canvas = struct {
         });
         clay.closeElement();
 
-        return .{ .id = element_id, .params = params };
+        return .{ .id = element_id, .params = params, .shader_modes = shader_modes };
     }
 };
 

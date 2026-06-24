@@ -482,7 +482,7 @@ pub const AppState = struct {
                     self.shader_error = null;
                 }
 
-                ui.startShaderPreset(path) catch |err| {
+                ui.loadShaderPreset("main", path) catch |err| {
                     std.log.err("Failed to start shader load '{s}': {s}", .{ path, @errorName(err) });
                     self.shader_error = std.fmt.allocPrint(
                         self.alloc,
@@ -501,7 +501,7 @@ pub const AppState = struct {
             }
         } else if (self.should_clear_shader) {
             self.should_clear_shader = false;
-            ui.clearShaderPreset();
+            ui.clearShaderPreset("main");
             self.shader_loading = false;
 
             if (self.shader_error) |old| {
@@ -512,7 +512,7 @@ pub const AppState = struct {
 
         // Poll an in-progress async shader compile.
         if (self.shader_loading) {
-            switch (ui.pollShaderLoad()) {
+            switch (ui.pollShaderLoad("main")) {
                 .idle => self.shader_loading = false,
                 .done => {
                     self.shader_loading = false;
@@ -541,7 +541,7 @@ pub const AppState = struct {
                     self.border_shader_error = null;
                 }
 
-                ui.startBorderShaderPreset(path) catch |err| {
+                ui.loadShaderPreset("border", path) catch |err| {
                     std.log.err("Failed to start border shader load '{s}': {s}", .{ path, @errorName(err) });
                     self.border_shader_error = std.fmt.allocPrint(
                         self.alloc,
@@ -558,7 +558,7 @@ pub const AppState = struct {
             }
         } else if (self.should_clear_border_shader) {
             self.should_clear_border_shader = false;
-            ui.clearBorderShaderPreset();
+            ui.clearShaderPreset("border");
             self.border_shader_loading = false;
 
             if (self.border_shader_error) |old| {
@@ -569,7 +569,7 @@ pub const AppState = struct {
 
         // Poll an in-progress async border shader compile.
         if (self.border_shader_loading) {
-            switch (ui.pollBorderShaderLoad()) {
+            switch (ui.pollShaderLoad("border")) {
                 .idle => self.border_shader_loading = false,
                 .done => {
                     self.border_shader_loading = false;
@@ -910,8 +910,8 @@ pub const AppState = struct {
 
         for (items) |item| {
             switch (target) {
-                .main => ui.setShaderParam(item.name, item.value),
-                .border => ui.setBorderShaderParam(item.name, item.value),
+                .main => ui.setShaderParam("main", item.name, item.value),
+                .border => ui.setShaderParam("border", item.name, item.value),
             }
         }
     }

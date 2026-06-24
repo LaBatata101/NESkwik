@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const c = @import("../../root.zig").c;
 const clay = @import("clay.zig");
 pub const widgets = @import("widgets.zig");
+const Color = @import("color.zig").Color;
 const sdlError = @import("../../utils/sdl.zig").sdlError;
 const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
@@ -101,6 +102,38 @@ fn setWindowIcon(window: ?*c.SDL_Window) void {
     sdlError(c.SDL_SetWindowIcon(window, surface));
 }
 
+pub const ShaderMode = struct {
+    id: []const u8,
+    target: Target = .viewport,
+    composition: Composition = .shader_only,
+
+    pub const Target = enum {
+        /// Render into the content viewport, excluding surrounding canvas space.
+        viewport,
+        /// Render into the full canvas area, including surrounding canvas space.
+        canvas,
+    };
+    pub const Composition = enum {
+        /// Draw only the shader pipeline output for this canvas.
+        shader_only,
+        /// Draw the shader pipeline output first, then redraw the original canvas pixels over it.
+        original_on_top,
+    };
+};
+
+pub const ShaderModeScope = struct {
+    ctx: *UIContext,
+
+    pub fn start(ctx: *UIContext, params: ShaderMode) @This() {
+        ctx.pushShaderMode(params);
+        return .{ .ctx = ctx };
+    }
+
+    pub fn end(self: *const @This()) void {
+        self.ctx.popShaderMode();
+    }
+};
+
 const TextCacheItem = struct {
     texture: ?*c.SDL_GPUTexture,
     width: f32,
@@ -130,6 +163,7 @@ pub const UIContext = struct {
     // Frame-ephemeral data (reset each frame)
     frame: FrameState,
     parent_stack: std.ArrayList(clay.ElementId),
+    shader_mode_stack: std.ArrayList(ShaderMode),
 
     // Persistent widget state (survives across frames)
     widgets: WidgetStateMap,
@@ -173,6 +207,7 @@ pub const UIContext = struct {
             .text_input = .empty,
             .scroll = .{},
         };
+        ctx.shader_mode_stack = .empty;
 
         ctx.dt = 0;
         ctx.widgets = WidgetStateMap.init(persistent_arena_alloc);
@@ -225,6 +260,7 @@ pub const UIContext = struct {
         _ = self.frame_arena.reset(.free_all);
         self.frame.text_input = .empty;
         self.parent_stack = .empty;
+        self.shader_mode_stack = .empty;
     }
 
     pub fn update(self: *Self) void {
@@ -270,6 +306,7 @@ pub const UIContext = struct {
         _ = self.frame_arena.reset(.retain_capacity);
 
         self.parent_stack = .empty;
+        self.shader_mode_stack = .empty;
         self.frame.text_input = .empty;
 
         self.frame.mouse_pressed = false;
@@ -292,6 +329,18 @@ pub const UIContext = struct {
     /// Pops the active parent (call this when the container closes/ends)
     pub fn popParent(self: *Self) void {
         _ = self.parent_stack.pop();
+    }
+
+    pub fn pushShaderMode(self: *Self, params: ShaderMode) void {
+        self.shader_mode_stack.append(self.frameAlloc(), .{
+            .id = self.frameAlloc().dupe(u8, params.id) catch @panic("OOM"),
+            .target = params.target,
+            .composition = params.composition,
+        }) catch @panic("OOM");
+    }
+
+    pub fn popShaderMode(self: *Self) void {
+        _ = self.shader_mode_stack.pop();
     }
 
     // TODO: find a better way of getting parents other than the immediate parent.
@@ -1825,10 +1874,8 @@ pub const UI = struct {
     is_suspended: bool = false,
     android_back_requested: bool = false,
 
-    shader_pipeline: ?*pipeline.ShaderPipeline = null,
-    border_shader_pipeline: ?*pipeline.ShaderPipeline = null,
-    pending_shader_render: ?PendingShaderRender = null,
-    border_shader_rendered_this_frame: bool = false,
+    vk_version: c_uint,
+    shaders_pipeline: std.StringHashMap(*pipeline.ShaderPipeline),
 
     gamepads: std.ArrayList(GamepadState) = .empty,
     on_screen_controller: ControllerButton = .{},
@@ -1851,19 +1898,6 @@ pub const UI = struct {
                 .menu => @embedFile("menu_icon"),
             };
         }
-    };
-
-    const PendingShaderRender = struct {
-        texture: ?*c.SDL_GPUTexture,
-        src_w: u32,
-        src_h: u32,
-        /// The letterbox-constrained game content area within the canvas.
-        viewport: pipeline.Viewport,
-        /// The full canvas bounding box (game + letterbox bars, excludes menubar etc.).
-        canvas: pipeline.Viewport,
-        /// Index into draw_calls where overlay elements (e.g. dropdown menus) begin.
-        /// These must be rendered AFTER the shader blit so they appear on top.
-        overlay_draw_call_start: usize,
     };
 
     pub const PressedGamepadButton = struct { gamepad_idx: usize, btn: GamepadButton };
@@ -1973,9 +2007,6 @@ pub const UI = struct {
             setWindowIcon(main_window.ptr);
         }
 
-        const shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
-        const border_shader_pipeline = try pipeline.ShaderPipeline.init(allocator, gpu_device, vk_version);
-
         const gui = try allocator.create(UI);
         gui.* = .{
             .allocator = allocator,
@@ -1985,8 +2016,8 @@ pub const UI = struct {
             .gpu_device = gpu_device,
             .font = font,
             .fps_manager = FPSManager.init(),
-            .shader_pipeline = shader_pipeline,
-            .border_shader_pipeline = border_shader_pipeline,
+            .vk_version = vk_version,
+            .shaders_pipeline = .init(allocator),
             .icons = blk: {
                 var arr = std.EnumArray(Icon, ?*c.SDL_GPUTexture).initUndefined();
                 inline for (std.meta.tags(Icon)) |icon| {
@@ -2023,8 +2054,12 @@ pub const UI = struct {
         }
         self.secondary_windows.deinit(self.allocator);
 
-        if (self.shader_pipeline) |sp| sp.deinit();
-        if (self.border_shader_pipeline) |bsp| bsp.deinit();
+        var shader_iter = self.shaders_pipeline.iterator();
+        while (shader_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit();
+        }
+        self.shaders_pipeline.deinit();
 
         inline for (std.meta.tags(Icon)) |icon| {
             c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(icon));
@@ -2102,105 +2137,64 @@ pub const UI = struct {
         ));
     }
 
-    pub fn getShaderParamInfos(self: *const Self) []const pipeline.ParamInfo {
-        const sp = self.shader_pipeline orelse return &.{};
-        return sp.getParamInfos();
+    pub fn getShaderParamInfos(self: *const Self, name: []const u8) []const pipeline.ParamInfo {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return &.{};
+        return shader_pipe.getParamInfos();
     }
 
-    pub fn getBorderShaderParamInfos(self: *const Self) []const pipeline.ParamInfo {
-        const bsp = self.border_shader_pipeline orelse return &.{};
-        return bsp.getParamInfos();
+    pub fn getShaderParam(self: *const Self, name: []const u8, param: []const u8) f32 {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return 0;
+        return shader_pipe.getParam(param);
     }
 
-    pub fn getShaderParam(self: *const Self, name: []const u8) f32 {
-        const sp = self.shader_pipeline orelse return 0;
-        return sp.getParam(name);
-    }
-
-    pub fn getBorderShaderParam(self: *const Self, name: []const u8) f32 {
-        const bsp = self.border_shader_pipeline orelse return 0;
-        return bsp.getParam(name);
-    }
-
-    pub fn setShaderParam(self: *Self, name: []const u8, value: f32) void {
-        if (self.shader_pipeline) |sp| sp.setParam(name, value);
-    }
-
-    pub fn setBorderShaderParam(self: *Self, name: []const u8, value: f32) void {
-        if (self.border_shader_pipeline) |bsp| bsp.setParam(name, value);
-    }
-
-    /// Load a RetroArch `.slangp` shader preset. Replaces any previously loaded preset.
-    /// TODO: remove?
-    pub fn setShaderPreset(self: *Self, path: []const u8) !void {
-        const sp = self.shader_pipeline orelse return error.NoShaderPipeline;
-        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
-        try sp.loadPreset(path, swapchain_format);
+    pub fn setShaderParam(self: *Self, name: []const u8, param: []const u8, value: f32) void {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return;
+        shader_pipe.setParam(param, value);
     }
 
     /// Start an asynchronous load of a `.slangp` shader preset.
     /// Poll progress and completion each frame via `pollShaderLoad`.
-    pub fn startShaderPreset(self: *Self, path: []const u8) !void {
-        const sp = self.shader_pipeline orelse return error.NoShaderPipeline;
-        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
-        try sp.startLoadPreset(path, swapchain_format);
+    pub fn loadShaderPreset(self: *Self, name: []const u8, path: []const u8) !void {
+        const shader_pipeline = self.shaders_pipeline.get(name) orelse blk: {
+            const new_pipeline = try pipeline.ShaderPipeline.init(self.allocator, self.gpu_device, self.vk_version);
+            errdefer new_pipeline.deinit();
+
+            const owned_name = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(owned_name);
+
+            try self.shaders_pipeline.put(owned_name, new_pipeline);
+            break :blk new_pipeline;
+        };
+
+        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.current_window.ptr);
+        try shader_pipeline.loadPreset(path, swapchain_format);
     }
 
     /// Poll the status of an in-progress async shader load.
-    pub fn pollShaderLoad(self: *Self) pipeline.ShaderPipeline.ShaderLoadPoll {
-        const sp = self.shader_pipeline orelse return .idle;
-        return sp.pollLoadResult();
+    pub fn pollShaderLoad(self: *Self, name: []const u8) pipeline.ShaderPipeline.ShaderLoadPoll {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return .idle;
+        return shader_pipe.pollLoadResult();
     }
 
     /// Return the current async compile progress counters.
-    pub fn getShaderProgress(self: *const Self) struct { completed: u32, total: u32 } {
-        const sp = self.shader_pipeline orelse return .{ .completed = 0, .total = 0 };
+    pub fn getShaderProgress(self: *const Self, name: []const u8) struct { completed: u32, total: u32 } {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return .{ .completed = 0, .total = 0 };
         return .{
-            .completed = sp.compile_progress.load(.monotonic),
-            .total = sp.compile_total,
+            .completed = shader_pipe.compile_progress.load(.monotonic),
+            .total = shader_pipe.compile_total,
         };
     }
 
     /// Clear the active shader preset and return to passthrough rendering.
-    pub fn clearShaderPreset(self: *Self) void {
-        if (self.shader_pipeline) |sp| sp.unloadPreset();
+    pub fn clearShaderPreset(self: *Self, name: []const u8) void {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return;
+        shader_pipe.unloadPreset();
     }
 
     /// Returns the path of the currently loaded shader preset, or null if none.
-    pub fn getShaderPresetPath(self: *const Self) ?[]const u8 {
-        const sp = self.shader_pipeline orelse return null;
-        return sp.getPresetPath();
-    }
-
-    /// Start an asynchronous load of a `.slangp` border shader preset.
-    /// The border shader is rendered into the letterbox area around the main content.
-    pub fn startBorderShaderPreset(self: *Self, path: []const u8) !void {
-        const bsp = self.border_shader_pipeline orelse return error.NoShaderPipeline;
-        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.main_window.ptr);
-        try bsp.startLoadPreset(path, swapchain_format);
-    }
-
-    /// Clear the active border shader preset.
-    pub fn clearBorderShaderPreset(self: *Self) void {
-        if (self.border_shader_pipeline) |bsp| bsp.unloadPreset();
-    }
-
-    /// Poll the status of an in-progress async border shader load.
-    pub fn pollBorderShaderLoad(self: *Self) pipeline.ShaderPipeline.ShaderLoadPoll {
-        const bsp = self.border_shader_pipeline orelse return .idle;
-        return bsp.pollLoadResult();
-    }
-
-    /// Returns true if a border shader preset is currently active.
-    pub fn hasBorderShader(self: *const Self) bool {
-        const bsp = self.border_shader_pipeline orelse return false;
-        return bsp.isActive();
-    }
-
-    /// Returns the path of the currently loaded border shader preset, or null if none.
-    pub fn getBorderShaderPresetPath(self: *const Self) ?[]const u8 {
-        const bsp = self.border_shader_pipeline orelse return null;
-        return bsp.getPresetPath();
+    pub fn getShaderPresetPath(self: *const Self, name: []const u8) ?[]const u8 {
+        const shader_pipe = self.shaders_pipeline.get(name) orelse return null;
+        return shader_pipe.getPresetPath();
     }
 
     pub fn createWindow(
@@ -2307,23 +2301,8 @@ pub const UI = struct {
     }
 
     pub fn endFrame(self: *Self) void {
-        self.border_shader_rendered_this_frame = false;
         const render_commands = clay.endLayout(self.current_window.ctx.dt);
         self.renderCommands(self.main_window, render_commands);
-
-        // If the settings window is open and the border shader has never rendered
-        // (e.g. emulation not started yet), do a preview-only pass so the settings
-        // preview canvas has an output texture to display.
-        if (self.secondary_windows.items.len > 0) {
-            if (self.border_shader_pipeline) |bsp| {
-                if (!self.border_shader_rendered_this_frame) {
-                    bsp.renderForPreview(
-                        @intCast(self.main_window.pixel_width),
-                        @intCast(self.main_window.pixel_height),
-                    ) catch {};
-                }
-            }
-        }
 
         // Render secondary windows
         for (self.secondary_windows.items) |window| {
@@ -2407,8 +2386,6 @@ pub const UI = struct {
     }
 
     fn handleAndroidLowMemory(self: *Self) void {
-        self.pending_shader_render = null;
-        self.border_shader_rendered_this_frame = false;
         self.main_window.ctx.freeFrameArena();
         self.main_window.renderer.releaseMemory();
         for (self.secondary_windows.items) |window| {
@@ -2447,8 +2424,6 @@ pub const UI = struct {
             },
             c.SDL_EVENT_WILL_ENTER_BACKGROUND => { // TODO: pause the emulation on background
                 self.is_suspended = true;
-                self.pending_shader_render = null;
-                self.border_shader_rendered_this_frame = false;
                 return;
             },
             c.SDL_EVENT_DID_ENTER_BACKGROUND => return,
@@ -2621,29 +2596,29 @@ pub const UI = struct {
     fn renderCommands(self: *Self, window: *Window, commands: []clay.RenderCommand) void {
         window.renderer.reset();
 
-        for (commands) |cmd| {
-            switch (cmd.command_type) {
-                clay.RenderCommandType.rectangle => self.renderRectangle(&cmd, window),
-                clay.RenderCommandType.text => self.renderText(&cmd, window),
-                clay.RenderCommandType.border => self.renderBorder(&cmd, window),
+        const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(self.gpu_device));
+        for (commands) |clay_cmd| {
+            switch (clay_cmd.command_type) {
+                clay.RenderCommandType.rectangle => self.renderRectangle(&clay_cmd, window),
+                clay.RenderCommandType.text => self.renderText(&clay_cmd, window),
+                clay.RenderCommandType.border => self.renderBorder(&clay_cmd, window),
                 clay.RenderCommandType.scissor_start => {
                     const clip_rect = c.SDL_Rect{
-                        .x = @intFromFloat(cmd.bounding_box.x),
-                        .y = @intFromFloat(cmd.bounding_box.y),
-                        .w = @intFromFloat(cmd.bounding_box.width),
-                        .h = @intFromFloat(cmd.bounding_box.height),
+                        .x = @intFromFloat(clay_cmd.bounding_box.x),
+                        .y = @intFromFloat(clay_cmd.bounding_box.y),
+                        .w = @intFromFloat(clay_cmd.bounding_box.width),
+                        .h = @intFromFloat(clay_cmd.bounding_box.height),
                     };
                     window.renderer.pushClipRect(clip_rect);
                 },
                 clay.RenderCommandType.scissor_end => window.renderer.popClipRect(),
-                clay.RenderCommandType.custom => self.renderCustom(&cmd, window),
+                clay.RenderCommandType.custom => self.renderCustom(&clay_cmd, cmd, window),
                 else => {
-                    std.log.warn("Render command not impl: {any}", .{cmd.command_type});
+                    std.log.warn("Render command not impl: {any}", .{clay_cmd.command_type});
                 },
             }
         }
 
-        const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(self.gpu_device));
         var swapchain_tex: ?*c.SDL_GPUTexture = null;
         var win_w: u32 = 0;
         var win_h: u32 = 0;
@@ -2724,16 +2699,6 @@ pub const UI = struct {
             c.SDL_EndGPUCopyPass(copy_pass);
         }
 
-        // When a shader is pending, split draw calls into two passes:
-        //   pass 1 (CLEAR): draw calls before the canvas element
-        //   shader blits: border + main shader
-        //   pass 2 (LOAD): overlay draw calls after the canvas (dropdowns, tooltips, etc.)
-        // When no shader is pending, everything goes into a single pass.
-        const overlay_start: usize = if (window.ptr == self.main_window.ptr)
-            if (self.pending_shader_render) |pending| pending.overlay_draw_call_start else window.renderer.draw_calls.items.len
-        else
-            window.renderer.draw_calls.items.len;
-
         const MVP = [16]f32{
             2.0 / window.logical_width, 0,                            0, 0,
             0,                          -2.0 / window.logical_height, 0, 0,
@@ -2741,338 +2706,253 @@ pub const UI = struct {
             -1,                         1,                            0, 1,
         };
 
-        // Pass 1: background UI elements (clear swapchain first).
-        {
-            const color_target = c.SDL_GPUColorTargetInfo{
-                .texture = swapchain_tex,
-                .clear_color = .{ .r = 0.94, .g = 0.94, .b = 0.98, .a = 1.0 },
-                .load_op = c.SDL_GPU_LOADOP_CLEAR,
-                .store_op = c.SDL_GPU_STOREOP_STORE,
-            };
-            const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
-            c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
-            c.SDL_PushGPUVertexUniformData(cmd, 0, &MVP, @sizeOf(@TypeOf(MVP)));
-            c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
-            c.SDL_BindGPUIndexBuffer(render_pass, &.{ .buffer = window.renderer.index_buffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
-
-            for (window.renderer.draw_calls.items[0..overlay_start]) |call| {
-                if (call.index_count == 0) continue;
-                c.SDL_BindGPUFragmentSamplers(render_pass, 0, &.{ .texture = call.texture, .sampler = window.renderer.sampler }, 1);
-                if (call.clip_rect) |rect| {
-                    const scissor = window.logicalRectToPixel(rect);
-                    c.SDL_SetGPUScissor(render_pass, &scissor);
-                } else {
-                    c.SDL_SetGPUScissor(render_pass, &.{ .x = 0, .y = 0, .w = @intCast(win_w), .h = @intCast(win_h) });
-                }
-                c.SDL_DrawGPUIndexedPrimitives(render_pass, call.index_count, 1, call.index_offset, 0, 0);
-            }
-            c.SDL_EndGPURenderPass(render_pass);
-        }
-
-        // Shader blits (between the two UI passes so overlays appear on top).
-        if (window.ptr == self.main_window.ptr) {
-            if (self.pending_shader_render) |pending| {
-                defer self.pending_shader_render = null;
-                const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, window.ptr);
-                const pixel_canvas = window.logicalViewportToPixel(pending.canvas);
-                const pixel_viewport = window.logicalViewportToPixel(pending.viewport);
-
-                // Render border shader first (behind main content) when there is a
-                // letterbox within the canvas area and a border preset is loaded. Fills only
-                // the letterbox bars around the maind content.
-                const has_letterbox = pending.viewport.w != pending.canvas.w or
-                    pending.viewport.h != pending.canvas.h;
-                if (has_letterbox) {
-                    if (self.border_shader_pipeline) |border_shader_pipeline| {
-                        if (border_shader_pipeline.isActive()) {
-                            self.border_shader_rendered_this_frame = true;
-                            border_shader_pipeline.renderFrame(
-                                pending.texture,
-                                pending.src_w,
-                                pending.src_h,
-                                pixel_canvas,
-                                cmd,
-                                swapchain_tex,
-                                win_w,
-                                win_h,
-                                swapchain_format,
-                                c.SDL_GPU_LOADOP_LOAD,
-                            ) catch |err| {
-                                std.log.err("Border shader render failed: {}", .{err});
-                            };
-                        }
-                    }
-                }
-
-                if (self.shader_pipeline) |shader_pipeline| {
-                    // Render the NES frame through all shader passes and blit the result to
-                    // the swapchain texture at the given viewport position.
-                    if (shader_pipeline.isActive()) {
-                        shader_pipeline.renderFrame(
-                            pending.texture,
-                            pending.src_w,
-                            pending.src_h,
-                            pixel_viewport,
-                            cmd,
-                            swapchain_tex,
-                            win_w,
-                            win_h,
-                            swapchain_format,
-                            c.SDL_GPU_LOADOP_LOAD,
-                        ) catch |err| {
-                            std.log.err("Shader pipeline render failed: {}", .{err});
-                        };
-                    } else {
-                        // No main shader — blit the NES frame directly to the viewport.
-                        c.SDL_BlitGPUTexture(cmd, &c.SDL_GPUBlitInfo{
-                            .source = .{
-                                .texture = pending.texture,
-                                .x = 0,
-                                .y = 0,
-                                .w = pending.src_w,
-                                .h = pending.src_h,
-                            },
-                            .destination = .{
-                                .texture = swapchain_tex,
-                                .x = @intCast(@max(0, pixel_viewport.x)),
-                                .y = @intCast(@max(0, pixel_viewport.y)),
-                                .w = pixel_viewport.w,
-                                .h = pixel_viewport.h,
-                            },
-                            .load_op = c.SDL_GPU_LOADOP_LOAD,
-                            .filter = c.SDL_GPU_FILTER_NEAREST,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Pass 2: overlay UI elements (dropdowns, tooltips, etc.) on top of the shader.
-        if (overlay_start < window.renderer.draw_calls.items.len) {
-            const color_target = c.SDL_GPUColorTargetInfo{
-                .texture = swapchain_tex,
-                .load_op = c.SDL_GPU_LOADOP_LOAD,
-                .store_op = c.SDL_GPU_STOREOP_STORE,
-            };
-            const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
-            c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
-            c.SDL_PushGPUVertexUniformData(cmd, 0, &MVP, @sizeOf(@TypeOf(MVP)));
-            c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
-            c.SDL_BindGPUIndexBuffer(render_pass, &.{ .buffer = window.renderer.index_buffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
-
-            for (window.renderer.draw_calls.items[overlay_start..]) |call| {
-                if (call.index_count == 0) continue;
-                c.SDL_BindGPUFragmentSamplers(render_pass, 0, &.{ .texture = call.texture, .sampler = window.renderer.sampler }, 1);
-                if (call.clip_rect) |rect| {
-                    const scissor = window.logicalRectToPixel(rect);
-                    c.SDL_SetGPUScissor(render_pass, &scissor);
-                } else {
-                    c.SDL_SetGPUScissor(render_pass, &.{ .x = 0, .y = 0, .w = @intCast(win_w), .h = @intCast(win_h) });
-                }
-                c.SDL_DrawGPUIndexedPrimitives(render_pass, call.index_count, 1, call.index_offset, 0, 0);
-            }
-            c.SDL_EndGPURenderPass(render_pass);
-        }
+        self.renderDrawCalls(
+            window,
+            cmd,
+            swapchain_tex,
+            win_w,
+            win_h,
+            &MVP,
+            c.SDL_GPU_LOADOP_CLEAR,
+        );
 
         sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
     }
 
-    fn renderCustom(self: *Self, cmd: *const clay.RenderCommand, window: *Window) void {
-        const data = clay.anyopaquePtrToType(*widgets.CustomData, cmd.render_data.custom.custom_data.?);
+    fn renderDrawCalls(
+        _: *Self,
+        window: *Window,
+        cmd: ?*c.SDL_GPUCommandBuffer,
+        swapchain_tex: ?*c.SDL_GPUTexture,
+        win_w: u32,
+        win_h: u32,
+        mvp: *const [16]f32,
+        load_op: c.SDL_GPULoadOp,
+    ) void {
+        const color_target = c.SDL_GPUColorTargetInfo{
+            .texture = swapchain_tex,
+            .clear_color = .{ .r = 0.94, .g = 0.94, .b = 0.98, .a = 1.0 },
+            .load_op = load_op,
+            .store_op = c.SDL_GPU_STOREOP_STORE,
+        };
+        const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
+        c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
+        c.SDL_PushGPUVertexUniformData(cmd, 0, mvp, @sizeOf(@TypeOf(mvp.*)));
+        c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
+        c.SDL_BindGPUIndexBuffer(
+            render_pass,
+            &.{ .buffer = window.renderer.index_buffer, .offset = 0 },
+            c.SDL_GPU_INDEXELEMENTSIZE_32BIT,
+        );
+
+        for (window.renderer.draw_calls.items) |call| {
+            if (call.index_count == 0) continue;
+            c.SDL_BindGPUFragmentSamplers(
+                render_pass,
+                0,
+                &.{ .texture = call.texture, .sampler = window.renderer.sampler },
+                1,
+            );
+            if (call.clip_rect) |rect| {
+                const scissor = window.logicalRectToPixel(rect);
+                c.SDL_SetGPUScissor(render_pass, &scissor);
+            } else {
+                c.SDL_SetGPUScissor(render_pass, &.{ .x = 0, .y = 0, .w = @intCast(win_w), .h = @intCast(win_h) });
+            }
+            c.SDL_DrawGPUIndexedPrimitives(render_pass, call.index_count, 1, call.index_offset, 0, 0);
+        }
+        c.SDL_EndGPURenderPass(render_pass);
+    }
+
+    fn uploadCanvasTexture(
+        self: *Self,
+        window: *Window,
+        id: u32,
+        pixel_format: c_uint,
+        pixels: []const u8,
+        w: u32,
+        h: u32,
+    ) ?*c.SDL_GPUTexture {
+        var texture: ?*c.SDL_GPUTexture = undefined;
+        var should_create = true;
+
+        if (window.ctx.canvas_cache.getPtr(id)) |item| {
+            if (item.width != w or item.height != h) {
+                c.SDL_ReleaseGPUTexture(self.gpu_device, item.texture);
+            } else {
+                texture = item.texture;
+                should_create = false;
+            }
+        }
+
+        if (should_create) {
+            texture = sdlError(c.SDL_CreateGPUTexture(self.gpu_device, &.{
+                .type = c.SDL_GPU_TEXTURETYPE_2D,
+                .format = c.SDL_GetGPUTextureFormatFromPixelFormat(pixel_format),
+                .width = @intCast(w),
+                .height = @intCast(h),
+                .layer_count_or_depth = 1,
+                .num_levels = 1,
+                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+            }));
+
+            window.ctx.canvas_cache.put(id, .{
+                .texture = texture,
+                .width = w,
+                .height = h,
+            }) catch @panic("Failed to cache canvas texture");
+        }
+
+        window.renderer.pushTexture(.{
+            .texture = texture,
+            .pixels = pixels,
+            .width = w,
+            .height = h,
+            .pixel_format = pixel_format,
+        });
+
+        return texture;
+    }
+
+    fn drawCanvasBackground(
+        window: *Window,
+        bounds: clay.BoundingBox,
+        bg_color: ?Color,
+        corner_radius: clay.CornerRadius,
+    ) void {
+        const bg_color_sdl: c.SDL_FColor = if (bg_color) |bg|
+            bg.toSDL()
+        else
+            .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 };
+
+        window.renderer.setTexture(null);
+        window.renderer.pushRoundedTexturedRect(.{
+            .x = bounds.x,
+            .y = bounds.y,
+            .w = bounds.width,
+            .h = bounds.height,
+        }, bg_color_sdl, corner_radius, null);
+    }
+
+    fn drawTextureInViewport(
+        window: *Window,
+        texture: ?*c.SDL_GPUTexture,
+        canvas_bounds: clay.BoundingBox,
+        style: widgets.Canvas.Params,
+        color: c.SDL_FColor,
+    ) void {
+        const viewport = utils.calculateViewport(
+            canvas_bounds.x,
+            canvas_bounds.y,
+            canvas_bounds.width,
+            canvas_bounds.height,
+            style.aspect_ratio,
+            style.viewport_alignment,
+        );
+        window.renderer.setTexture(texture);
+        window.renderer.pushRoundedTexturedRect(
+            .{ .x = viewport.x, .y = viewport.y, .w = viewport.w, .h = viewport.h },
+            color,
+            style.corner_radius,
+            null,
+        );
+    }
+
+    fn renderCanvasWithShader(
+        self: *Self,
+        window: *Window,
+        cmd: *const clay.RenderCommand,
+        gpu_cmd: ?*c.SDL_GPUCommandBuffer,
+        canvas_: widgets.Canvas,
+        texture: ?*c.SDL_GPUTexture,
+        bounds: clay.BoundingBox,
+    ) void {
+        const vp = utils.calculateViewport(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            canvas_.params.aspect_ratio,
+            canvas_.params.viewport_alignment,
+        );
+        const color = if (canvas_.params.fg_color) |fg_color| fg_color.toSDL() else Color.white.toSDL();
+
+        drawCanvasBackground(window, cmd.bounding_box, canvas_.params.bg_color, canvas_.params.corner_radius);
+
+        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, window.ptr);
+        for (canvas_.shader_modes) |shader_mode| {
+            const rect: c.SDL_FRect = switch (shader_mode.target) {
+                .canvas => .{ .x = bounds.x, .y = bounds.y, .w = bounds.width, .h = bounds.height },
+                .viewport => .{ .x = vp.x, .y = vp.y, .w = vp.w, .h = vp.h },
+            };
+
+            const shader_pipeline = self.shaders_pipeline.get(shader_mode.id) orelse continue;
+            if (!shader_pipeline.isActive()) continue;
+
+            const output = shader_pipeline.renderFrame(
+                texture,
+                canvas_.params.w,
+                canvas_.params.h,
+                window.logicalViewportToPixel(.{
+                    .w = @intFromFloat(rect.w),
+                    .h = @intFromFloat(rect.h),
+                    .x = @intFromFloat(rect.x),
+                    .y = @intFromFloat(rect.y),
+                }),
+                gpu_cmd,
+                @intCast(window.pixel_width),
+                @intCast(window.pixel_height),
+                swapchain_format,
+            ) catch |err| {
+                std.log.err("Shader pipeline '{s}' render failed: {any}", .{ shader_mode.id, err });
+                continue;
+            };
+
+            window.renderer.setTexture(output.?.ptr);
+            window.renderer.pushRoundedTexturedRect(rect, color, canvas_.params.corner_radius, null);
+
+            if (shader_mode.composition == .original_on_top) {
+                drawTextureInViewport(window, texture, bounds, canvas_.params, color);
+            }
+        }
+    }
+
+    fn renderCanvas(
+        _: *Self,
+        window: *Window,
+        bounds: clay.BoundingBox,
+        texture: ?*c.SDL_GPUTexture,
+        style: widgets.Canvas.Params,
+    ) void {
+        drawCanvasBackground(window, bounds, style.bg_color, style.corner_radius);
+        const color = if (style.fg_color) |fg_color| fg_color.toSDL() else Color.white.toSDL();
+        const canvas_bounds = utils.canvasContentBounds(bounds, style.padding);
+        drawTextureInViewport(window, texture, canvas_bounds, style, color);
+        window.renderer.flush();
+    }
+
+    fn renderCustom(self: *Self, clay_cmd: *const clay.RenderCommand, gpu_cmd: ?*c.SDL_GPUCommandBuffer, window: *Window) void {
+        const data = clay.anyopaquePtrToType(*widgets.CustomData, clay_cmd.render_data.custom.custom_data.?);
         switch (data.*) {
             .canvas => |canvas_| {
-                const canvas_bounds = utils.canvasContentBounds(cmd.bounding_box, canvas_.params.padding);
+                const canvas_bounds = utils.canvasContentBounds(clay_cmd.bounding_box, canvas_.params.padding);
+                const texture = self.uploadCanvasTexture(
+                    window,
+                    clay_cmd.id,
+                    canvas_.params.pixel_format,
+                    canvas_.params.pixels,
+                    canvas_.params.w,
+                    canvas_.params.h,
+                );
 
-                // Content-shader preview fast path: use the pipeline output texture
-                // directly, skipping the pixel upload entirely.
-                if (canvas_.params.shader_preview) |which| {
-                    if (which == .main) {
-                        if (self.shader_pipeline) |pl| {
-                            if (pl.getLastOutputTexture()) |tex| {
-                                window.renderer.setTexture(null);
-                                window.renderer.pushRect(.{
-                                    .x = cmd.bounding_box.x,
-                                    .y = cmd.bounding_box.y,
-                                    .w = cmd.bounding_box.width,
-                                    .h = cmd.bounding_box.height,
-                                }, .{ .r = 0, .g = 0, .b = 0, .a = 1 }, null);
-                                const vp = utils.calculateViewport(
-                                    canvas_bounds.x,
-                                    canvas_bounds.y,
-                                    canvas_bounds.width,
-                                    canvas_bounds.height,
-                                    canvas_.params.aspect_ratio,
-                                    canvas_.params.viewport_alignment,
-                                );
-                                window.renderer.setTexture(tex);
-                                window.renderer.pushRoundedTexturedRect(
-                                    .{ .x = vp.x, .y = vp.y, .w = vp.w, .h = vp.h },
-                                    .{ .r = 1, .g = 1, .b = 1, .a = 1 },
-                                    canvas_.params.corner_radius,
-                                    null,
-                                );
-                                window.renderer.flush();
-                                return;
-                            }
-                        }
-                    }
-                    // .border falls through to the normal upload path below so the
-                    // NES frame is available as a GPU texture for the composite.
-                }
-
-                var texture: ?*c.SDL_GPUTexture = undefined;
-                var should_create = true;
-
-                if (window.ctx.canvas_cache.getPtr(cmd.id)) |item| {
-                    if (item.width != canvas_.params.w or item.height != canvas_.params.h) {
-                        c.SDL_ReleaseGPUTexture(self.gpu_device, item.texture);
-                    } else {
-                        texture = item.texture;
-                        should_create = false;
-                    }
-                }
-
-                if (should_create) {
-                    texture = sdlError(c.SDL_CreateGPUTexture(self.gpu_device, &.{
-                        .type = c.SDL_GPU_TEXTURETYPE_2D,
-                        .format = c.SDL_GetGPUTextureFormatFromPixelFormat(canvas_.params.pixel_format),
-                        .width = @intCast(canvas_.params.w),
-                        .height = @intCast(canvas_.params.h),
-                        .layer_count_or_depth = 1,
-                        .num_levels = 1,
-                        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                    }));
-
-                    window.ctx.canvas_cache.put(cmd.id, .{
-                        .texture = texture,
-                        .width = canvas_.params.w,
-                        .height = canvas_.params.h,
-                    }) catch @panic("Failed to cache canvas texture");
-                }
-
-                window.renderer.pushTexture(.{
-                    .texture = texture,
-                    .pixels = canvas_.params.pixels,
-                    .width = canvas_.params.w,
-                    .height = canvas_.params.h,
-                    .pixel_format = canvas_.params.pixel_format,
-                });
-
-                const bg_color_sdl: c.SDL_FColor = if (canvas_.params.bg_color) |bg|
-                    bg.toSDL()
-                else
-                    .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 }; // TODO: make it transparent or not?
-                window.renderer.setTexture(null);
-                window.renderer.pushRoundedTexturedRect(.{
-                    .x = cmd.bounding_box.x,
-                    .y = cmd.bounding_box.y,
-                    .w = cmd.bounding_box.width,
-                    .h = cmd.bounding_box.height,
-                }, bg_color_sdl, canvas_.params.corner_radius, null);
-
-                // Border-shader preview composite: stretch border output to fill the
-                // preview area, then overlay the NES frame using the canvas aspect
-                // ratio so only the letterbox strips around the content show it.
-                if (canvas_.params.shader_preview) |which| {
-                    if (which == .border) {
-                        if (self.border_shader_pipeline) |pl| {
-                            if (pl.getLastOutputTexture()) |border_tex| {
-                                window.renderer.setTexture(border_tex);
-                                window.renderer.pushRoundedTexturedRect(.{
-                                    .x = canvas_bounds.x,
-                                    .y = canvas_bounds.y,
-                                    .w = canvas_bounds.width,
-                                    .h = canvas_bounds.height,
-                                }, .{ .r = 1, .g = 1, .b = 1, .a = 1 }, canvas_.params.corner_radius, null);
-                                const content_vp = utils.calculateViewport(
-                                    canvas_bounds.x,
-                                    canvas_bounds.y,
-                                    canvas_bounds.width,
-                                    canvas_bounds.height,
-                                    canvas_.params.aspect_ratio,
-                                    canvas_.params.viewport_alignment,
-                                );
-                                window.renderer.setTexture(texture);
-                                window.renderer.pushRoundedTexturedRect(
-                                    .{ .x = content_vp.x, .y = content_vp.y, .w = content_vp.w, .h = content_vp.h },
-                                    .{ .r = 1, .g = 1, .b = 1, .a = 1 },
-                                    canvas_.params.corner_radius,
-                                    null,
-                                );
-                                window.renderer.flush();
-                                return;
-                            }
-                        }
-                        // No border shader output yet: fall through to render just the
-                        // NES frame pixels (or black) as a plain preview.
-                    }
-                }
-
-                const sp = self.shader_pipeline orelse null;
-                const bsp = self.border_shader_pipeline orelse null;
-                const should_defer = canvas_.params.apply_runtime_shaders and
-                    window.ptr == self.main_window.ptr and
-                    ((sp != null and sp.?.isActive()) or (bsp != null and bsp.?.isActive()));
-                if (should_defer) {
-                    // A shader pipeline is active: defer rendering to after the UI pass.
-                    const vp = utils.calculateViewport(
-                        canvas_bounds.x,
-                        canvas_bounds.y,
-                        canvas_bounds.width,
-                        canvas_bounds.height,
-                        canvas_.params.aspect_ratio,
-                        canvas_.params.viewport_alignment,
-                    );
-
-                    // Flush and force a batch boundary so overlay elements rendered after
-                    // the canvas cannot be merged back into the pre-shader solid-color
-                    // draw call and then get overwritten by the shader blit.
-                    window.renderer.flush();
-                    const overlay_start = window.renderer.forceDrawCallBreak();
-                    self.pending_shader_render = .{
-                        .texture = texture,
-                        .src_w = canvas_.params.w,
-                        .src_h = canvas_.params.h,
-                        .viewport = .{
-                            .x = @intFromFloat(vp.x),
-                            .y = @intFromFloat(vp.y),
-                            .w = @intFromFloat(vp.w),
-                            .h = @intFromFloat(vp.h),
-                        },
-                        .canvas = .{
-                            .x = @intFromFloat(canvas_bounds.x),
-                            .y = @intFromFloat(canvas_bounds.y),
-                            .w = @intFromFloat(canvas_bounds.width),
-                            .h = @intFromFloat(canvas_bounds.height),
-                        },
-                        .overlay_draw_call_start = overlay_start,
-                    };
+                if (self.hasAnyShaderLoaded(canvas_.shader_modes)) {
+                    self.renderCanvasWithShader(window, clay_cmd, gpu_cmd, canvas_, texture, canvas_bounds);
                 } else {
-                    // No shader pipeline: draw the NES frame directly into the UI batch.
-                    const viewport = utils.calculateViewport(
-                        canvas_bounds.x,
-                        canvas_bounds.y,
-                        canvas_bounds.width,
-                        canvas_bounds.height,
-                        canvas_.params.aspect_ratio,
-                        canvas_.params.viewport_alignment,
-                    );
-                    const dest: c.SDL_FRect = .{
-                        .x = viewport.x,
-                        .y = viewport.y,
-                        .w = viewport.w,
-                        .h = viewport.h,
-                    };
-                    const color: c.SDL_FColor = if (canvas_.params.fg_color) |fg_color| blk: {
-                        break :blk fg_color.toSDL();
-                    } else .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
-                    window.renderer.setTexture(texture);
-                    window.renderer.pushRoundedTexturedRect(dest, color, canvas_.params.corner_radius, null);
-                    window.renderer.flush();
+                    self.renderCanvas(window, clay_cmd.bounding_box, texture, canvas_.params);
                 }
             },
             .shape => |shape_data| {
-                const rect = cmd.bounding_box;
+                const rect = clay_cmd.bounding_box;
                 const x = rect.x;
                 const y = rect.y;
                 const w = rect.width;
@@ -3132,10 +3012,10 @@ pub const UI = struct {
                 window.renderer.setTexture(icon_data.texture);
                 window.renderer.pushRoundedTexturedRect(
                     .{
-                        .x = cmd.bounding_box.x,
-                        .y = cmd.bounding_box.y,
-                        .w = cmd.bounding_box.width,
-                        .h = cmd.bounding_box.height,
+                        .x = clay_cmd.bounding_box.x,
+                        .y = clay_cmd.bounding_box.y,
+                        .w = clay_cmd.bounding_box.width,
+                        .h = clay_cmd.bounding_box.height,
                     },
                     icon_data.tint.toSDL(),
                     .{},
@@ -3276,6 +3156,13 @@ pub const UI = struct {
         );
     }
 
+    fn hasAnyShaderLoaded(self: *const Self, shaders_mode: []const ShaderMode) bool {
+        for (shaders_mode) |shader| {
+            if (self.shaders_pipeline.contains(shader.id)) return true;
+        }
+        return false;
+    }
+
     pub fn scrollArea(self: *Self, params: widgets.ScrollContainer.Params) *widgets.ScrollContainer {
         return self.current_window.ctx.allocWidget(widgets.ScrollContainer, .start(self.current_window.ctx, params));
     }
@@ -3314,6 +3201,10 @@ pub const UI = struct {
 
     pub fn canvas(self: *Self, params: widgets.Canvas.Params) *widgets.Canvas {
         return self.current_window.ctx.allocWidget(widgets.Canvas, .start(self.current_window.ctx, params));
+    }
+
+    pub fn shaderMode(self: *Self, params: ShaderMode) *ShaderModeScope {
+        return self.current_window.ctx.allocWidget(ShaderModeScope, .start(self.current_window.ctx, params));
     }
 
     pub fn menuBar(self: *Self, params: widgets.MenuBar.Params) *widgets.MenuBar {
