@@ -2821,6 +2821,9 @@ void Clay__CalculateFinalLayout(float deltaTime, bool useStoredBoundingBoxes, bo
                 }
                 Clay_LayoutElementHashMapItem *currentElementData = Clay__GetHashMapItem(currentElement->id);
                 if (currentElement->config.noRender) { noRenderDepth--; }
+                if (!currentElement->isTextElement && (currentElement->config.clip.horizontal || currentElement->config.clip.vertical) && Clay__ElementIsOffscreen(&currentElementData->boundingBox)) {
+                    noRenderDepth--;
+                }
                 if (generateRenderCommands && noRenderDepth == 0 && !Clay__ElementIsOffscreen(&currentElementData->boundingBox)) {
                     // DFS is returning upwards backwards
                     bool closeClipElement = false;
@@ -2970,6 +2973,9 @@ void Clay__CalculateFinalLayout(float deltaTime, bool useStoredBoundingBoxes, bo
             bool offscreen = Clay__ElementIsOffscreen(&currentElementBoundingBox);
 
             if (!currentElement->isTextElement && currentElement->config.noRender) { noRenderDepth++; }
+            if (!currentElement->isTextElement && (currentElement->config.clip.horizontal || currentElement->config.clip.vertical) && offscreen) {
+                noRenderDepth++;
+            }
 
             // Generate render commands for current element
             if (generateRenderCommands && noRenderDepth == 0 && !offscreen) {
