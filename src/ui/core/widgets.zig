@@ -684,10 +684,11 @@ pub const TextField = struct {
 
         if (is_focused) {
             if (ctx.frame.text_input.items.len > 0) {
-                state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), ctx.frame.text_input.items) catch @panic("panic");
+                state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), ctx.frame.text_input.items) catch
+                    @panic("panic");
             }
 
-            if (ctx.input.isKeyPressed(.BACKSPACE, false) and state.text_input.buffer.items.len > 0) {
+            if (ctx.input.isKeyPressed(.BACKSPACE, true) and state.text_input.buffer.items.len > 0) {
                 _ = state.text_input.buffer.pop();
             }
         }

@@ -305,6 +305,8 @@ pub const UIContext = struct {
     pub fn reset(self: *Self) void {
         _ = self.frame_arena.reset(.retain_capacity);
 
+        self.input.advanceFrame();
+
         self.parent_stack = .empty;
         self.shader_mode_stack = .empty;
         self.frame.text_input = .empty;
@@ -916,6 +918,7 @@ const KeyData = struct {
 };
 
 const KeyEventType = enum {
+    pressed,
     down,
     released,
     none,
@@ -948,21 +951,41 @@ const GamepadState = struct {
 
     fn addButtonEvent(self: *GamepadState, btn_idx: u8, event: KeyEventType) void {
         if (btn_idx < GAMEPAD_BUTTON_COUNT) {
-            self.buttons[btn_idx].event = event;
+            const btn = &self.buttons[btn_idx];
+            switch (event) {
+                .down => if (btn.event != .pressed and btn.event != .down) {
+                    btn.event = .pressed;
+                },
+                .released => if (btn.event == .pressed or btn.event == .down) {
+                    btn.event = .released;
+                },
+                .pressed, .none => btn.event = event,
+            }
+        }
+    }
+
+    fn advanceFrame(self: *GamepadState) void {
+        for (&self.buttons) |*btn| {
+            btn.event = switch (btn.event) {
+                .pressed => .down,
+                .released => .none,
+                else => btn.event,
+            };
         }
     }
 
     fn update(self: *GamepadState, dt: f32) void {
         for (&self.buttons) |*btn| {
             btn.duration_prev = btn.duration;
-            if (btn.event == .down) {
-                if (btn.duration < 0.0) {
-                    btn.duration = 0.0;
-                } else {
-                    btn.duration += dt;
-                }
-            } else {
-                btn.duration = -1.0;
+            switch (btn.event) {
+                .pressed, .down => {
+                    if (btn.duration < 0.0) {
+                        btn.duration = 0.0;
+                    } else {
+                        btn.duration += dt;
+                    }
+                },
+                .released, .none => btn.duration = -1.0,
             }
         }
     }
@@ -990,7 +1013,26 @@ pub const InputContext = struct {
     pub fn addKeyEvent(self: *InputContext, event: InputContext.KeyEvent) void {
         const idx = event.scancode;
         if (idx >= 0 and idx < self.keys.len) {
-            self.keys[idx].event = event.event;
+            const key = &self.keys[idx];
+            switch (event.event) {
+                .down => if (key.event != .pressed and key.event != .down) {
+                    key.event = .pressed;
+                },
+                .released => if (key.event == .pressed or key.event == .down) {
+                    key.event = .released;
+                },
+                .pressed, .none => key.event = event.event,
+            }
+        }
+    }
+
+    pub fn advanceFrame(self: *InputContext) void {
+        for (&self.keys) |*key| {
+            key.event = switch (key.event) {
+                .pressed => .down,
+                .released => .none,
+                else => key.event,
+            };
         }
     }
 
@@ -998,14 +1040,15 @@ pub const InputContext = struct {
         for (&self.keys) |*key| {
             key.duration_prev = key.duration;
 
-            if (key.event == .down) {
-                if (key.duration < 0.0) {
-                    key.duration = 0.0;
-                } else {
-                    key.duration += dt;
-                }
-            } else {
-                key.duration = -1.0;
+            switch (key.event) {
+                .pressed, .down => {
+                    if (key.duration < 0.0) {
+                        key.duration = 0.0;
+                    } else {
+                        key.duration += dt;
+                    }
+                },
+                .released, .none => key.duration = -1.0,
             }
         }
     }
@@ -1015,8 +1058,9 @@ pub const InputContext = struct {
 
         if (key_data.event == .released) return false;
 
+        if (key_data.event == .pressed) return true;
+
         const t = key_data.duration;
-        if (t == 0.0) return true;
 
         if (repeat and t > self.key_repeat_delay) {
             const t_prev = key_data.duration_prev;
@@ -1036,7 +1080,7 @@ pub const InputContext = struct {
 
     pub fn getPressedKey(self: *const InputContext) ?Key {
         for (self.keys, 0..) |key, i| { // TODO: find a way where we don't have to iterate all the keys
-            if (key.event == .down and key.duration == 0.0) {
+            if (key.event == .pressed) {
                 return @enumFromInt(i);
             }
         }
@@ -1045,7 +1089,7 @@ pub const InputContext = struct {
 
     pub fn getReleasedKey(self: *const InputContext) ?Key {
         for (self.keys, 0..) |key, i| { // TODO: find a way where we don't have to iterate all the keys
-            if (key.event == .released and key.duration_prev >= 0.0) {
+            if (key.event == .released) {
                 return @enumFromInt(i);
             }
         }
@@ -1053,7 +1097,10 @@ pub const InputContext = struct {
     }
 
     pub fn isKeyDown(self: *const InputContext, key: Key) bool {
-        return self.keys[@intFromEnum(key)].event == .down;
+        return switch (self.keys[@intFromEnum(key)].event) {
+            .pressed, .down => true,
+            .released, .none => false,
+        };
     }
 };
 
@@ -2301,6 +2348,9 @@ pub const UI = struct {
         for (self.secondary_windows.items) |window| {
             window.inner.ctx.reset();
         }
+        for (self.gamepads.items) |*state| {
+            state.advanceFrame();
+        }
 
         if (self.main_window.ctx.tickTimer("title_update", 1000)) {
             const title = std.fmt.allocPrintSentinel(
@@ -2393,13 +2443,16 @@ pub const UI = struct {
     }
 
     pub fn isGamepadButtonDown(self: *const Self, gamepad_idx: ControllerPlayer, btn: GamepadButton) bool {
-        return self.gamepads.items[gamepad_idx.value()].buttons[@intFromEnum(btn)].event == .down;
+        return switch (self.gamepads.items[gamepad_idx.value()].buttons[@intFromEnum(btn)].event) {
+            .pressed, .down => true,
+            .released, .none => false,
+        };
     }
 
     pub fn getPressedGamepadButton(self: *const Self) ?PressedGamepadButton {
         for (self.gamepads.items, 0..) |*state, i| {
             for (state.buttons, 0..) |btn, b| {
-                if (btn.event == .down and btn.duration == 0.0) {
+                if (btn.event == .pressed) {
                     return .{ .gamepad_idx = i, .btn = @enumFromInt(b) };
                 }
             }
