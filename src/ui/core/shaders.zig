@@ -12,6 +12,7 @@ pub const FRAG =
     \\layout(location = 2) in vec2 v_Position;
     \\layout(location = 3) in vec4 v_Rect;
     \\layout(location = 4) in vec4 v_CornerRadius;
+    \\layout(location = 5) in vec4 v_OverlayColor;
     \\
     \\layout(location = 0) out vec4 Target0;
     \\
@@ -35,6 +36,7 @@ pub const FRAG =
     \\        float aa = max(fwidth(dist), 0.0001);
     \\        color.a *= clamp(0.5 - dist / aa, 0.0, 1.0);
     \\    }
+    \\    color.rgb = mix(color.rgb, v_OverlayColor.rgb, v_OverlayColor.a);
     \\    Target0 = color;
     \\}
 ;
@@ -45,12 +47,14 @@ pub const VERT =
     \\layout(location = 2) in vec2 a_UV;
     \\layout(location = 3) in vec4 a_Rect;
     \\layout(location = 4) in vec4 a_CornerRadius;
+    \\layout(location = 5) in vec4 a_OverlayColor;
     \\
     \\layout(location = 0) out vec4 v_Color;
     \\layout(location = 1) out vec2 v_UV;
     \\layout(location = 2) out vec2 v_Position;
     \\layout(location = 3) out vec4 v_Rect;
     \\layout(location = 4) out vec4 v_CornerRadius;
+    \\layout(location = 5) out vec4 v_OverlayColor;
     \\
     \\layout(set = 1, binding = 0) uniform UniformBlock {
     \\    mat4 u_Projection;
@@ -62,6 +66,7 @@ pub const VERT =
     \\    v_Position = a_Position;
     \\    v_Rect = a_Rect;
     \\    v_CornerRadius = a_CornerRadius;
+    \\    v_OverlayColor = a_OverlayColor;
     \\    gl_Position = u_Projection * vec4(a_Position, 0.0, 1.0);
     \\}
 ;

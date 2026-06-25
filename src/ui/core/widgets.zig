@@ -586,7 +586,7 @@ pub const IconButton = struct {
         enabled: bool = true,
         bg_color: Color = Color.transparent,
         hover_color: ?Color = null,
-        tint: Color = Color.white,
+        overlay_color: Color = Color.transparent,
         corner_radius: f32 = 4,
         padding: clay.Padding = .all(4),
         tooltip: ?Button.Tooltip = null,
@@ -603,7 +603,6 @@ pub const IconButton = struct {
         const is_hovered = params.enabled and clay.hovered();
         const hover_col = params.hover_color orelse params.bg_color.lighten(0.2);
         const bg = if (is_hovered) hover_col else params.bg_color;
-        const tint = if (params.enabled) params.tint else params.tint.withAlpha(0.4);
 
         clay.configureOpenElement(.{
             .layout = .{
@@ -622,6 +621,7 @@ pub const IconButton = struct {
             custom_data.* = .{ .icon = .{ .texture = params.icon, .tint = tint } };
             clay.configureOpenElement(.{
                 .layout = .{ .sizing = .{ .w = .fixed(icon_size), .h = .fixed(icon_size) } },
+                .overlay_color = params.overlay_color.toClay(),
                 .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(custom_data) },
             });
             clay.closeElement();
@@ -908,6 +908,7 @@ pub const Canvas = struct {
         padding: clay.Padding = .{},
         aspect_ratio: viewport.AspectRatio = .none,
         viewport_alignment: viewport.ViewportAlignment = .center,
+        overlay_color: Color = Color.transparent,
     };
     const Self = @This();
 
@@ -929,6 +930,7 @@ pub const Canvas = struct {
 
         clay.configureOpenElement(.{
             .layout = .{ .sizing = params.sizing },
+            .overlay_color = params.overlay_color.toClay(),
             .corner_radius = params.corner_radius,
             .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(custom_data) },
         });

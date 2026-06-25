@@ -363,7 +363,7 @@ fn drawAndroidHeader(ui: *UI, app_state: *AppState) void {
                 .padding = .all(10),
                 .bg_color = Color.transparent,
                 .hover_color = theme.bg_hover,
-                .tint = theme.text_primary,
+                .overlay_color = theme.text_primary,
                 .corner_radius = 8,
             }).clicked(ui.main_window.ctx)) {
                 app_state.show_android_sidepanel = true;

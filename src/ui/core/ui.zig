@@ -1063,17 +1063,19 @@ const UIVertex = extern struct {
     tex_coord: c.SDL_FPoint,
     rect: c.SDL_FRect,
     corner_radius: c.SDL_FColor,
+    overlay_color: c.SDL_FColor,
 
     const empty_rect = c.SDL_FRect{ .x = 0, .y = 0, .w = 0, .h = 0 };
     const no_radius = c.SDL_FColor{ .r = 0, .g = 0, .b = 0, .a = 0 };
 
-    fn init(position: c.SDL_FPoint, color: c.SDL_FColor, tex_coord: c.SDL_FPoint) UIVertex {
+    fn init(position: c.SDL_FPoint, color: c.SDL_FColor, tex_coord: c.SDL_FPoint, overlay_color: c.SDL_FColor) UIVertex {
         return .{
             .position = position,
             .color = color,
             .tex_coord = tex_coord,
             .rect = empty_rect,
             .corner_radius = no_radius,
+            .overlay_color = overlay_color,
         };
     }
 
@@ -1083,6 +1085,7 @@ const UIVertex = extern struct {
         tex_coord: c.SDL_FPoint,
         rect: c.SDL_FRect,
         corner_radius: clay.CornerRadius,
+        overlay_color: c.SDL_FColor,
     ) UIVertex {
         return .{
             .position = position,
@@ -1095,6 +1098,7 @@ const UIVertex = extern struct {
                 .b = corner_radius.bottom_right,
                 .a = corner_radius.bottom_left,
             },
+            .overlay_color = overlay_color,
         };
     }
 };
@@ -1109,6 +1113,7 @@ pub const Renderer = struct {
     indices: std.ArrayList(u32),
     draw_calls: std.ArrayList(DrawCall),
     clip_stack: std.ArrayList(?c.SDL_Rect),
+    overlay_stack: std.ArrayList(c.SDL_FColor),
     textures: std.ArrayList(TextureUpload),
 
     vertex_buffer: ?*c.SDL_GPUBuffer = null,
@@ -1120,6 +1125,7 @@ pub const Renderer = struct {
 
     current_texture: ?*c.SDL_GPUTexture = null,
     current_clip: ?c.SDL_Rect = null,
+    current_overlay_color: c.SDL_FColor = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
 
     // Default 1x1 white texture for solid color rendering
     white_texture: ?*c.SDL_GPUTexture,
@@ -1212,6 +1218,7 @@ pub const Renderer = struct {
             .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(UIVertex, "tex_coord") },
             .{ .location = 3, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(UIVertex, "rect") },
             .{ .location = 4, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(UIVertex, "corner_radius") },
+            .{ .location = 5, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(UIVertex, "overlay_color") },
         };
         const vertex_bindings = [_]c.SDL_GPUVertexBufferDescription{.{
             .slot = 0,
@@ -1236,8 +1243,10 @@ pub const Renderer = struct {
             .indices = .empty,
             .draw_calls = .empty,
             .clip_stack = .empty,
+            .overlay_stack = .empty,
             .textures = .empty,
             .current_texture = white_texture,
+            .current_overlay_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
             .pipeline = sdlError(c.SDL_CreateGPUGraphicsPipeline(device, &.{
                 .vertex_shader = vert,
                 .fragment_shader = frag,
@@ -1291,6 +1300,7 @@ pub const Renderer = struct {
         self.indices.deinit(self.allocator);
         self.draw_calls.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
+        self.overlay_stack.deinit(self.allocator);
         self.textures.deinit(self.allocator);
         self.allocator.destroy(self);
     }
@@ -1300,9 +1310,11 @@ pub const Renderer = struct {
         self.indices.clearRetainingCapacity();
         self.draw_calls.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
+        self.overlay_stack.clearRetainingCapacity();
         self.textures.clearRetainingCapacity();
         self.current_texture = self.white_texture;
         self.current_clip = null;
+        self.current_overlay_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 };
 
         self.draw_calls.append(self.allocator, .{
             .texture = self.white_texture,
@@ -1317,6 +1329,7 @@ pub const Renderer = struct {
         self.indices.clearAndFree(self.allocator);
         self.draw_calls.clearAndFree(self.allocator);
         self.clip_stack.clearAndFree(self.allocator);
+        self.overlay_stack.clearAndFree(self.allocator);
         self.textures.clearAndFree(self.allocator);
         c.SDL_ReleaseGPUTransferBuffer(self.device, self.frame_transfer_buffer);
         self.frame_transfer_buffer = null;
@@ -1389,6 +1402,15 @@ pub const Renderer = struct {
         self.flush();
     }
 
+    fn pushOverlayColor(self: *Self, color: c.SDL_FColor) void {
+        self.overlay_stack.append(self.allocator, self.current_overlay_color) catch @panic("OOM");
+        self.current_overlay_color = color;
+    }
+
+    fn popOverlayColor(self: *Self) void {
+        self.current_overlay_color = self.overlay_stack.pop().?;
+    }
+
     fn ensureGeometryCapacity(self: *Self, vertex_count: usize, index_count: usize) void {
         self.vertices.ensureUnusedCapacity(self.allocator, vertex_count) catch @panic("Failed to allocate");
         self.indices.ensureUnusedCapacity(self.allocator, index_count) catch @panic("Failed to allocate");
@@ -1432,10 +1454,10 @@ pub const Renderer = struct {
 
         // 4 vertices (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
         self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
-            UIVertex.init(.{ .x = x, .y = y }, color, .{ .x = uvs.x, .y = uvs.y }),
-            UIVertex.init(.{ .x = x + w, .y = y }, color, .{ .x = uvs.x + uvs.w, .y = uvs.y }),
-            UIVertex.init(.{ .x = x + w, .y = y + h }, color, .{ .x = uvs.x + uvs.w, .y = uvs.y + uvs.h }),
-            UIVertex.init(.{ .x = x, .y = y + h }, color, .{ .x = uvs.x, .y = uvs.y + uvs.h }),
+            UIVertex.init(.{ .x = x, .y = y }, color, .{ .x = uvs.x, .y = uvs.y }, self.current_overlay_color),
+            UIVertex.init(.{ .x = x + w, .y = y }, color, .{ .x = uvs.x + uvs.w, .y = uvs.y }, self.current_overlay_color),
+            UIVertex.init(.{ .x = x + w, .y = y + h }, color, .{ .x = uvs.x + uvs.w, .y = uvs.y + uvs.h }, self.current_overlay_color),
+            UIVertex.init(.{ .x = x, .y = y + h }, color, .{ .x = uvs.x, .y = uvs.y + uvs.h }, self.current_overlay_color),
         });
 
         // 6 indices (2 triangles)
@@ -1498,10 +1520,10 @@ pub const Renderer = struct {
         self.ensureGeometryCapacity(4, 6);
 
         self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
-            UIVertex.rounded(.{ .x = x, .y = y }, color, texCoordForPoint(rect, uv, x, y), rect, radius),
-            UIVertex.rounded(.{ .x = x + w, .y = y }, color, texCoordForPoint(rect, uv, x + w, y), rect, radius),
-            UIVertex.rounded(.{ .x = x + w, .y = y + h }, color, texCoordForPoint(rect, uv, x + w, y + h), rect, radius),
-            UIVertex.rounded(.{ .x = x, .y = y + h }, color, texCoordForPoint(rect, uv, x, y + h), rect, radius),
+            UIVertex.rounded(.{ .x = x, .y = y }, color, texCoordForPoint(rect, uv, x, y), rect, radius, self.current_overlay_color),
+            UIVertex.rounded(.{ .x = x + w, .y = y }, color, texCoordForPoint(rect, uv, x + w, y), rect, radius, self.current_overlay_color),
+            UIVertex.rounded(.{ .x = x + w, .y = y + h }, color, texCoordForPoint(rect, uv, x + w, y + h), rect, radius, self.current_overlay_color),
+            UIVertex.rounded(.{ .x = x, .y = y + h }, color, texCoordForPoint(rect, uv, x, y + h), rect, radius, self.current_overlay_color),
         });
 
         self.indices.appendSliceAssumeCapacity(&[_]u32{
@@ -1579,6 +1601,7 @@ pub const Renderer = struct {
                     .{ .x = c_out.x + cos_a * radius_outer, .y = c_out.y + sin_a * radius_outer },
                     col,
                     .{ .x = 0, .y = 0 },
+                    self.current_overlay_color,
                 ));
 
                 // Push Inner Vertex
@@ -1586,6 +1609,7 @@ pub const Renderer = struct {
                     .{ .x = c_in.x + cos_a * radius_inner, .y = c_in.y + sin_a * radius_inner },
                     col,
                     .{ .x = 0, .y = 0 },
+                    self.current_overlay_color,
                 ));
 
                 const idx_out = current_v_count;
@@ -1624,9 +1648,9 @@ pub const Renderer = struct {
         const base_idx: u32 = @intCast(self.vertices.items.len);
         self.ensureGeometryCapacity(3, 3);
         self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
-            UIVertex.init(.{ .x = p1.x, .y = p1.y }, color, .{ .x = 0, .y = 0 }),
-            UIVertex.init(.{ .x = p2.x, .y = p2.y }, color, .{ .x = 0, .y = 0 }),
-            UIVertex.init(.{ .x = p3.x, .y = p3.y }, color, .{ .x = 0, .y = 0 }),
+            UIVertex.init(.{ .x = p1.x, .y = p1.y }, color, .{ .x = 0, .y = 0 }, self.current_overlay_color),
+            UIVertex.init(.{ .x = p2.x, .y = p2.y }, color, .{ .x = 0, .y = 0 }, self.current_overlay_color),
+            UIVertex.init(.{ .x = p3.x, .y = p3.y }, color, .{ .x = 0, .y = 0 }, self.current_overlay_color),
         });
         self.indices.appendSliceAssumeCapacity(&[_]u32{
             base_idx, base_idx + 1, base_idx + 2,
@@ -2614,6 +2638,16 @@ pub const UI = struct {
                     window.renderer.pushClipRect(clip_rect);
                 },
                 clay.RenderCommandType.scissor_end => window.renderer.popClipRect(),
+                clay.RenderCommandType.overlay_color_start => {
+                    const color = clay_cmd.render_data.overlay_color.color;
+                    window.renderer.pushOverlayColor(.{
+                        .r = color[0] / 255.0,
+                        .g = color[1] / 255.0,
+                        .b = color[2] / 255.0,
+                        .a = color[3] / 255.0,
+                    });
+                },
+                clay.RenderCommandType.overlay_color_end => window.renderer.popOverlayColor(),
                 clay.RenderCommandType.custom => self.renderCustom(&clay_cmd, cmd, window),
                 else => {
                     std.log.warn("Render command not impl: {any}", .{clay_cmd.command_type});
