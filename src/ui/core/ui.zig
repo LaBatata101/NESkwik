@@ -2208,6 +2208,7 @@ pub const UI = struct {
         },
     ) void {
         const previous_clay_ctx = clay.getCurrentContext();
+        const debug_mode_enabled = clay.isDebugModeEnabled();
 
         const window = self.allocator.create(Window) catch @panic("OOM");
         const win_ptr = sdlError(c.SDL_CreateWindow(
@@ -2245,6 +2246,7 @@ pub const UI = struct {
             },
         };
 
+        clay.setDebugModeEnabled(debug_mode_enabled);
         setWindowIcon(window.ptr);
         sdlError(c.SDL_SetWindowParent(window.ptr, self.main_window.ptr));
         sdlError(c.SDL_SetWindowModal(window.ptr, true));
