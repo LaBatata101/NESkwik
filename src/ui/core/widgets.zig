@@ -9,12 +9,6 @@ const viewport = @import("viewport.zig");
 pub const CustomData = union(enum) {
     canvas: Canvas,
     shape: ShapeData,
-    icon: IconData,
-};
-
-pub const IconData = struct {
-    texture: ?*c.SDL_GPUTexture,
-    tint: Color,
 };
 
 pub const LayoutDirection = enum {
@@ -617,12 +611,10 @@ pub const IconButton = struct {
         {
             const icon_size: f32 = @floatFromInt(params.size);
             _ = clay.openElement();
-            const custom_data = ctx.frameAlloc().create(CustomData) catch @panic("OOM");
-            custom_data.* = .{ .icon = .{ .texture = params.icon, .tint = tint } };
             clay.configureOpenElement(.{
                 .layout = .{ .sizing = .{ .w = .fixed(icon_size), .h = .fixed(icon_size) } },
                 .overlay_color = params.overlay_color.toClay(),
-                .custom = .{ .custom_data = clay.anytypeToAnyopaquePtr(custom_data) },
+                .image = .{ .image_data = params.icon },
             });
             clay.closeElement();
         }

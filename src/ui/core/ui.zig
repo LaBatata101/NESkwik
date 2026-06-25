@@ -2628,6 +2628,7 @@ pub const UI = struct {
                 clay.RenderCommandType.rectangle => self.renderRectangle(&clay_cmd, window),
                 clay.RenderCommandType.text => self.renderText(&clay_cmd, window),
                 clay.RenderCommandType.border => self.renderBorder(&clay_cmd, window),
+                clay.RenderCommandType.image => self.renderImage(&clay_cmd, window),
                 clay.RenderCommandType.scissor_start => {
                     const clip_rect = c.SDL_Rect{
                         .x = @intFromFloat(clay_cmd.bounding_box.x),
@@ -3044,22 +3045,35 @@ pub const UI = struct {
                     }
                 }
             },
-            .icon => |icon_data| {
-                window.renderer.setTexture(icon_data.texture);
-                window.renderer.pushRoundedTexturedRect(
-                    .{
-                        .x = clay_cmd.bounding_box.x,
-                        .y = clay_cmd.bounding_box.y,
-                        .w = clay_cmd.bounding_box.width,
-                        .h = clay_cmd.bounding_box.height,
-                    },
-                    icon_data.tint.toSDL(),
-                    .{},
-                    null,
-                );
-                window.renderer.flush();
-            },
         }
+    }
+
+    fn renderImage(_: *const Self, cmd: *const clay.RenderCommand, window: *Window) void {
+        const image = cmd.render_data.image;
+        const image_texture = clay.anyopaquePtrToType(*c.SDL_GPUTexture, image.image_data);
+        const background_color = image.background_color;
+        const color: c.SDL_FColor = if (background_color[0] == 0 and background_color[1] == 0 and background_color[2] == 0 and background_color[3] == 0)
+            Color.white.toSDL()
+        else
+            .{
+                .r = background_color[0] / 255.0,
+                .g = background_color[1] / 255.0,
+                .b = background_color[2] / 255.0,
+                .a = background_color[3] / 255.0,
+            };
+
+        window.renderer.setTexture(image_texture);
+        window.renderer.pushRoundedTexturedRect(
+            .{
+                .x = cmd.bounding_box.x,
+                .y = cmd.bounding_box.y,
+                .w = cmd.bounding_box.width,
+                .h = cmd.bounding_box.height,
+            },
+            color,
+            image.corner_radius,
+            null,
+        );
     }
 
     fn renderRectangle(_: *const Self, cmd: *const clay.RenderCommand, window: *Window) void {
