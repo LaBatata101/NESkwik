@@ -1,6 +1,6 @@
 # NESkwik
 
-NESkwik is a Nintendo Entertainment System emulator written in Zig. It has a custom desktop UI powered by [Clay](https://github.com/nicbarker/clay), audio output, gamepad support, a simple debug UI, and support for [RetroArch shaders](https://github.com/libretro/slang-shaders).
+NESkwik is a cross-platform NES (Nintendo Entertainment System) emulator written in Zig. It has a custom desktop UI powered by [Clay](https://github.com/nicbarker/clay), audio output, gamepad support, a simple debug UI, and support for [RetroArch shaders](https://github.com/libretro/slang-shaders).
 
 
 ## Screenshots
@@ -30,10 +30,30 @@ NESkwik is a Nintendo Entertainment System emulator written in Zig. It has a cus
 
 That totals to around **1900** supported games of the NES library.
 
-## Requirements
+## Build - Requirements
 
 - Zig 0.15.2.
 - Vulkan runtime and development headers/library available on your system.
+
+### Android
+
+Android builds require the Android SDK, command-line tools, platform tools, NDK, build tools, and a JDK. The build script currently expects:
+
+- Android SDK with `ANDROID_HOME` set, or installed in a standard Android Studio location.
+- JDK with `JDK_HOME` or `JAVA_HOME` set, or available on `PATH`.
+- Android Build Tools `36.1.0`.
+- Android NDK `28.2.13676358`.
+
+If the exact build tools or NDK versions are missing, install them with `sdkmanager`:
+
+```sh
+sdkmanager "build-tools;36.1.0" "ndk;28.2.13676358" "platform-tools" "platforms;android-35"
+```
+
+#### Runtime Requirements
+
+- Android 7.0/API 24 or newer.
+- Vulkan support. 
 
 ## Build
 
@@ -41,7 +61,29 @@ That totals to around **1900** supported games of the NES library.
 zig build --release=fast
 ```
 
-The executable is installed to `zig-out/bin/ness`.
+The executable is located at `zig-out/bin/neskwik`.
+
+### Android
+
+Build a universal APK containing all supported Android ABIs:
+
+```sh
+zig build -Dandroid=true --release=fast
+```
+
+Build a smaller APK for one ABI:
+
+```sh
+zig build -Dtarget=aarch64-linux-android --release=fast
+```
+
+The APK is located at `zig-out/bin/neskwik.apk`.
+
+Install and start the app on a connected device or emulator:
+
+```sh
+zig build run -Dtarget=aarch64-linux-android --release=fast
+```
 
 ## Run
 
@@ -104,8 +146,9 @@ Controls can be changed from the settings window.
 
 ## Shaders
 
-NESkwik doesn't ship with the RetroArch `.slangp` shaders, you'll have to clone the [https://github.com/libretro/slang-shaders](https://github.com/libretro/slang-shaders) repository and place somewhere in your system. And then, you can set the shader by going to the "**Shader**" tab in the settings window. 
-**TODO border shader**
+NESkwik doesn't ship with the RetroArch `.slangp` shaders, you'll have to clone the [https://github.com/libretro/slang-shaders](https://github.com/libretro/slang-shaders) repository and place somewhere in your system. And then, you can select the shader by going to the "**Shader**" tab in the settings window. 
+
+The border shaders can be selected from a couple of options in the "**Shader**" tab.
 
 ## Tests
 
