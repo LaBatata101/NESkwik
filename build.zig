@@ -46,6 +46,8 @@ pub fn build(b: *std.Build) !void {
     };
 
     for (targets) |target| {
+        if (target.result.cpu.arch == .x86 or target.result.cpu.arch == .arm) continue;
+
         const deps = try createNessModule(b, target, optimize);
 
         const app_module = b.createModule(.{
@@ -118,6 +120,8 @@ pub fn build(b: *std.Build) !void {
 
 fn addAndroidLibcxxShared(b: *std.Build, apk: *android.Apk, targets: []const std.Build.ResolvedTarget) void {
     for (targets) |target| {
+        if (target.result.cpu.arch == .x86 or target.result.cpu.arch == .arm) continue;
+
         const system_triple = androidSystemTriple(b, target);
         const libcxx_path: std.Build.LazyPath = .{
             .cwd_relative = b.fmt("{s}/usr/lib/{s}/libc++_shared.so", .{
@@ -128,9 +132,7 @@ fn addAndroidLibcxxShared(b: *std.Build, apk: *android.Apk, targets: []const std
 
         switch (target.result.cpu.arch) {
             .aarch64 => apk.addLibraryFile(.arm64_v8a, libcxx_path),
-            .arm => apk.addLibraryFile(.armeabi_v7a, libcxx_path),
             .x86_64 => apk.addLibraryFile(.x86_64, libcxx_path),
-            .x86 => apk.addLibraryFile(.x86, libcxx_path),
             else => @panic(b.fmt("unsupported Android target arch: {s}", .{@tagName(target.result.cpu.arch)})),
         }
     }
@@ -142,9 +144,7 @@ fn androidSystemTriple(b: *std.Build, target: std.Build.ResolvedTarget) []const 
     }
     return switch (target.result.cpu.arch) {
         .aarch64 => "aarch64-linux-android",
-        .arm => "arm-linux-androideabi",
         .x86_64 => "x86_64-linux-android",
-        .x86 => "i686-linux-android",
         else => @panic(b.fmt("unsupported Android target arch: {s}", .{@tagName(target.result.cpu.arch)})),
     };
 }
