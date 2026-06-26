@@ -59,6 +59,7 @@ pub const SettingsConfig = struct {
     general_bindings: bindings.GeneralKeyBindings = .{},
     gamepad_bindings: bindings.GamepadKeyBindings = .{},
     gamepad_deadzone: u8 = 25,
+    show_home_screen_snow_effect: bool = true,
 };
 
 pub fn load(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: *EmulatorSettings) !void {

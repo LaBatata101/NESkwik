@@ -151,6 +151,8 @@ pub const AppState = struct {
     writing_frame_idx: std.atomic.Value(u8) = .init(NO_FRAME),
     render_frame_idx: u8 = 0,
     emulation_speed_percent: std.atomic.Value(u64) = .init(0),
+    /// Currently selected category in the settings sidebar.
+    selected_category: SettingsCategory = .general,
 
     const Self = @This();
     pub const DebugSnapshot = struct {
@@ -233,8 +235,6 @@ pub const AppState = struct {
         border_shader: BorderShaderOpts = .none,
         /// Active border shader parameter overrides (names are owned by this struct).
         border_shader_params: std.ArrayList(ShaderParamSetting) = .{},
-        /// Currently selected category in the settings sidebar.
-        selected_category: SettingsCategory = .general,
         vsync: bool = true,
         hide_mouse_on_inactivity: bool = false,
         emulation_speed: EmulationSpeed = .normal,
@@ -246,6 +246,7 @@ pub const AppState = struct {
         gamepad_bindings: GamepadKeyBindings = .{},
         capture_gamepad_binding: ?ControllerBindingTarget = null,
         gamepad_deadzone: u8 = 25,
+        show_home_screen_snow_effect: bool = true,
     };
 
     pub fn init(alloc: std.mem.Allocator) Self {

@@ -1609,8 +1609,6 @@ pub const ShaderPipeline = struct {
     compile_total: u32 = 0,
     compile_thread: ?std.Thread = null,
     compile_mutex: std.Thread.Mutex = .{},
-    pending_preset: ?LoadedPreset = null,
-    pending_preset_path: ?[]u8 = null,
     compile_failed: bool = false,
     compile_error_msg: ?[]u8 = null,
     compile_done: std.atomic.Value(bool) = .init(false),
@@ -1701,8 +1699,6 @@ pub const ShaderPipeline = struct {
         {
             self.compile_mutex.lock();
             defer self.compile_mutex.unlock();
-            if (self.pending_preset) |*p| p.deinit(self.alloc, self.device);
-            if (self.pending_preset_path) |p| self.alloc.free(p);
             if (self.compile_error_msg) |m| self.alloc.free(m);
         }
         self.clearAccumulationState();
@@ -1727,14 +1723,6 @@ pub const ShaderPipeline = struct {
         {
             self.compile_mutex.lock();
             defer self.compile_mutex.unlock();
-            if (self.pending_preset) |*p| {
-                p.deinit(self.alloc, self.device);
-                self.pending_preset = null;
-            }
-            if (self.pending_preset_path) |p| {
-                self.alloc.free(p);
-                self.pending_preset_path = null;
-            }
             if (self.compile_error_msg) |m| {
                 self.alloc.free(m);
                 self.compile_error_msg = null;
@@ -1864,40 +1852,6 @@ pub const ShaderPipeline = struct {
             return .{ .failed = self.compile_error_msg orelse "Unknown error" };
         }
 
-        // Move the pending result into the active fields.
-        if (self.pending_preset) |preset| {
-            self.preset = preset;
-            self.pending_preset = null;
-            self.preset_path = self.pending_preset_path;
-            self.pending_preset_path = null;
-
-            self.uses_pass_output = false;
-            self.uses_pass_feedback = false;
-            self.max_frame_history = 0;
-
-            for (self.preset.?.passes) |pass| {
-                for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
-                    for (set_info.bindings.items) |binding| {
-                        switch (binding.binding_type) {
-                            .sampler2D => |st| switch (st) {
-                                .PassOutput => self.uses_pass_output = true,
-                                .PassFeedback => self.uses_pass_feedback = true,
-                                .OriginalHistory => |id| self.max_frame_history = @max(id, self.max_frame_history),
-                                else => {},
-                            },
-                            else => {},
-                        }
-                    }
-                }
-            }
-
-            self.frame_history.resize(self.alloc, self.max_frame_history) catch {};
-
-            std.log.info("Loaded shader preset: {s} ({} pass(es))", .{
-                self.preset_path.?, self.preset.?.passes.len,
-            });
-        }
-
         return .done;
     }
 
@@ -1930,10 +1884,33 @@ pub const ShaderPipeline = struct {
         )) |preset| {
             self.compile_mutex.lock();
             defer self.compile_mutex.unlock();
-            self.pending_preset = preset;
-            self.pending_preset_path = ctx.path;
-            // Prevent the defer above from double-freeing ctx.path now that
-            // ownership has moved to pending_preset_path.
+
+            self.preset = preset;
+            self.preset_path = ctx.path;
+
+            for (self.preset.?.passes) |pass| {
+                for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
+                    for (set_info.bindings.items) |binding| {
+                        switch (binding.binding_type) {
+                            .sampler2D => |st| switch (st) {
+                                .PassOutput => self.uses_pass_output = true,
+                                .PassFeedback => self.uses_pass_feedback = true,
+                                .OriginalHistory => |id| self.max_frame_history = @max(id, self.max_frame_history),
+                                else => {},
+                            },
+                            else => {},
+                        }
+                    }
+                }
+            }
+
+            self.frame_history.resize(self.alloc, self.max_frame_history) catch @panic("OOM");
+
+            std.log.info("Loaded shader preset: {s} ({} pass(es))", .{
+                self.preset_path.?, self.preset.?.passes.len,
+            });
+
+            // Prevent the defer above from double-freeing `ctx.path` now that ownership has moved to `self.preset_path`.
             ctx.path = &.{};
         } else |err| {
             self.compile_mutex.lock();

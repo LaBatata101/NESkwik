@@ -523,9 +523,6 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                     app_state.show_android_settings_ui = true;
                     app_state.render_home_ui = false;
                     app_state.show_android_sidepanel = false;
-                    if (app_state.settings.selected_category != .shader) {
-                        app_state.settings.selected_category = .video;
-                    }
                 }
                 if (drawAndroidDrawerAction(ui, "Exit", true)) {
                     ui.quit = true;
@@ -605,6 +602,7 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
                 .child_alignment = .{ .x = .left, .y = .center },
             });
             {
+                drawAndroidSettingsTab(ui, app_state, .general);
                 drawAndroidSettingsTab(ui, app_state, .video);
                 drawAndroidSettingsTab(ui, app_state, .shader);
             }
@@ -625,9 +623,11 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
                 .child_alignment = .{ .x = .left, .y = .top },
             });
             {
-                switch (app_state.settings.selected_category) {
+                switch (app_state.selected_category) {
+                    .general => drawSettingsGeneralContent(ui, app_state),
                     .shader => drawSettingsShaderContent(ui, app_state),
-                    else => drawSettingsVideoContent(ui, app_state),
+                    .video => drawSettingsVideoContent(ui, app_state),
+                    else => unreachable,
                 }
             }
             body.end();
@@ -685,7 +685,7 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
 }
 
 fn drawAndroidSettingsTab(ui: *UI, app_state: *AppState, category: SettingsCategory) void {
-    const is_active = app_state.settings.selected_category == category;
+    const is_active = app_state.selected_category == category;
     if (ui.button(.{
         .text = category.displayName(),
         .font_size = 15,
@@ -696,7 +696,7 @@ fn drawAndroidSettingsTab(ui: *UI, app_state: *AppState, category: SettingsCateg
         .corner_radius = 6,
         .elevation = 0,
     }).clicked(ui.main_window.ctx)) {
-        app_state.settings.selected_category = category;
+        app_state.selected_category = category;
     }
 }
 
@@ -1049,53 +1049,71 @@ fn drawHomeUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) vo
             .{},
     });
     {
-        // Empty state home
-        if (entries.len == 0) {
-            if (builtin.abi.isAndroid()) {
-                _ = ui.spacer(.{ .sizing = .grow });
-                _ = ui.label(.{ .text = "No ROMs added", .font_size = 16, .color = theme.text_secondary });
-                _ = ui.spacer(.{ .sizing = .grow });
-            } else {
-                _ = ui.spacer(.{ .sizing = .grow });
-                if (ui.button(.{
-                    .text = "Open ROM",
-                    .font_size = 15,
-                    .bg_color = theme.accent_blue,
-                    .text_color = Color.white,
-                    .padding = .{ .left = 28, .right = 28, .top = 10, .bottom = 10 },
-                    .corner_radius = 6,
-                    .elevation = 0,
-                }).clicked(ui.main_window.ctx)) openRomDialog(ui, app_state);
-                _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(14) } });
-                _ = ui.label(.{ .text = "or use System > Open", .font_size = 13, .color = theme.text_secondary });
-                _ = ui.spacer(.{ .sizing = .grow });
-            }
-        } else {
-            const card_title_lines = maxGameCardTitleLines(ui, entries);
-            const scroll = ui.scrollArea(.{ .sizing = .grow, .vertical = true });
-            {
-                const grid = ui.grid(.{
-                    .id = "cards_grid",
-                    .gap = 16,
-                    .sizing = .grow,
-                    .bg_color = theme.bg_base,
-                    .child_alignment = .{ .x = .left, .y = .top },
-                    .padding = .{ .left = 24, .right = 24, .top = 20, .bottom = 24 },
-                    .item_transition = .{
-                        .handler = clay.easeOut,
-                        .duration = 0.22,
-                        .properties = clay.TransitionProperty.position,
-                        .interaction_handling = .allow_interactions_while_transitioning_position,
-                    },
-                });
-                for (entries) |*entry| {
-                    const slot = grid.item();
-                    drawGameCard(ui, app_state, entry, card_title_lines);
-                    slot.end();
+        const float = ui.float(.{
+            .z_index = 5,
+            .attach_to = .to_element_with_id,
+            .parentId = root.id.id,
+            .sizing = .grow,
+        });
+        {
+            if (entries.len == 0) { // Empty state home
+                if (builtin.abi.isAndroid()) {
+                    _ = ui.spacer(.{ .sizing = .grow });
+                    _ = ui.label(.{ .text = "No ROMs added", .font_size = 16, .color = theme.text_secondary });
+                    _ = ui.spacer(.{ .sizing = .grow });
+                } else {
+                    _ = ui.spacer(.{ .sizing = .grow });
+                    if (ui.button(.{
+                        .text = "Open ROM",
+                        .font_size = 15,
+                        .bg_color = theme.accent_blue,
+                        .text_color = Color.white,
+                        .padding = .{ .left = 28, .right = 28, .top = 10, .bottom = 10 },
+                        .corner_radius = 6,
+                        .elevation = 0,
+                    }).clicked(ui.main_window.ctx)) openRomDialog(ui, app_state);
+                    _ = ui.spacer(.{ .sizing = .{ .w = .fixed(0), .h = .fixed(14) } });
+                    _ = ui.label(.{ .text = "or use System > Open", .font_size = 13, .color = theme.text_secondary });
+                    _ = ui.spacer(.{ .sizing = .grow });
                 }
-                grid.end();
+            } else {
+                const card_title_lines = maxGameCardTitleLines(ui, entries);
+                const scroll = ui.scrollArea(.{ .sizing = .grow, .vertical = true });
+                {
+                    const grid = ui.grid(.{
+                        .id = "cards_grid",
+                        .gap = 16,
+                        .sizing = .grow,
+                        .child_alignment = .{ .x = .left, .y = .top },
+                        .padding = .{ .left = 24, .right = 24, .top = 20, .bottom = 24 },
+                        .item_transition = .{
+                            .handler = clay.easeOut,
+                            .duration = 0.22,
+                            .properties = clay.TransitionProperty.position,
+                            .interaction_handling = .allow_interactions_while_transitioning_position,
+                        },
+                    });
+                    for (entries) |*entry| {
+                        const slot = grid.item();
+                        drawGameCard(ui, app_state, entry, card_title_lines);
+                        slot.end();
+                    }
+                    grid.end();
+                }
+                scroll.end();
             }
-            scroll.end();
+        }
+        float.end();
+
+        if (app_state.settings.show_home_screen_snow_effect) {
+            const shader = ui.shaderMode(.{ .id = "snow" });
+            _ = ui.canvas(.{
+                .pixels = &.{ 0, 0, 0, 255 },
+                .w = 1,
+                .h = 1,
+                .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
+            });
+            shader.end();
         }
     }
     root.end();
@@ -1312,7 +1330,7 @@ fn drawSettingsSidebar(ui: *UI, app_state: *AppState) void {
 }
 
 fn drawSidebarItem(ui: *UI, app_state: *AppState, category: SettingsCategory) void {
-    const is_active = app_state.settings.selected_category == category;
+    const is_active = app_state.selected_category == category;
     if (ui.button(.{
         .text = category.displayName(),
         .font_size = 19,
@@ -1325,7 +1343,7 @@ fn drawSidebarItem(ui: *UI, app_state: *AppState, category: SettingsCategory) vo
         .sizing = .{ .w = .grow, .h = .fit },
         .text_alignment = .left,
     }).clicked(ui.current_window.ctx)) {
-        app_state.settings.selected_category = category;
+        app_state.selected_category = category;
     }
 }
 
@@ -1341,7 +1359,7 @@ fn drawSettingsContent(ui: *UI, app_state: *AppState) void {
         });
 
         {
-            switch (app_state.settings.selected_category) {
+            switch (app_state.selected_category) {
                 .general => drawSettingsGeneralContent(ui, app_state),
                 .video => drawSettingsVideoContent(ui, app_state),
                 .shader => drawSettingsShaderContent(ui, app_state),
@@ -1407,23 +1425,41 @@ fn drawSettingsGeneralContent(ui: *UI, app_state: *AppState) void {
     drawContentSectionHeader(ui, "General");
     const section = drawContentSection(ui, .{});
     {
-        const row = ui.row(.{
+        if (!builtin.abi.isAndroid()) {
+            const row = ui.row(.{
+                .sizing = .{ .w = .grow, .h = .fit },
+            });
+            {
+                _ = ui.label(.{
+                    .text = "Hide mouse on inactivity",
+                    .font_size = theme.LABEL_FONT,
+                    .color = theme.text_primary,
+                });
+                _ = ui.spacer(.{ .sizing = .grow });
+                app_state.settings.hide_mouse_on_inactivity = ui
+                    .toggle(.{ .value = app_state.settings.hide_mouse_on_inactivity, .size = 22 })
+                    .value();
+            }
+            row.end();
+        }
+
+        drawEmulationSpeedRow(ui, app_state);
+
+        const row2 = ui.row(.{
             .sizing = .{ .w = .grow, .h = .fit },
         });
         {
             _ = ui.label(.{
-                .text = "Hide mouse on inactivity",
+                .text = "Show snow effect on the home screen",
                 .font_size = theme.LABEL_FONT,
                 .color = theme.text_primary,
             });
             _ = ui.spacer(.{ .sizing = .grow });
-            app_state.settings.hide_mouse_on_inactivity = ui
-                .toggle(.{ .value = app_state.settings.hide_mouse_on_inactivity, .size = 22 })
+            app_state.settings.show_home_screen_snow_effect = ui
+                .toggle(.{ .value = app_state.settings.show_home_screen_snow_effect, .size = 22 })
                 .value();
         }
-        row.end();
-
-        drawEmulationSpeedRow(ui, app_state);
+        row2.end();
     }
     section.end();
 }

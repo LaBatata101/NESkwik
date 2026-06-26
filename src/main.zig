@@ -87,6 +87,18 @@ pub fn main() !void {
     }
     ui.setFramerate(.unlimited);
 
+    // Load the "snow" shader to be displayed in the home screen
+    try ui.loadShaderPreset("snow", "builtin://border-shaders/snow.slangp");
+    var result = ui.pollShaderLoad("snow");
+    while (result != .done) {
+        result = ui.pollShaderLoad("snow");
+    }
+
+    ui.setShaderParam("snow", "A", 0.0);
+    ui.setShaderParam("snow", "LAYERS", 10.0);
+    ui.setShaderParam("snow", "SPEED", 0.005);
+    ui.setShaderParam("snow", "FALL_DIRECTION", 0.0);
+
     while (!ui.shouldClose()) {
         app_state.update(ui);
 

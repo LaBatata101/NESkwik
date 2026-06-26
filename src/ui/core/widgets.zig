@@ -195,6 +195,12 @@ pub const Float = struct {
         sizing: clay.Sizing = .fit,
         transition: clay.TransitionElementConfig = .{},
         no_render: bool = false,
+        layout: struct {
+            direction: LayoutDirection = .column,
+            child_alignment: clay.ChildAlignment = .center,
+            child_gap: u16 = 0,
+            padding: clay.Padding = .{},
+        } = .{},
     };
     const Self = @This();
 
@@ -216,7 +222,13 @@ pub const Float = struct {
                 .attach_to = params.attach_to,
                 .clip_to = params.clip_to,
             },
-            .layout = .{ .sizing = params.sizing },
+            .layout = .{
+                .sizing = params.sizing,
+                .child_alignment = params.layout.child_alignment,
+                .child_gap = params.layout.child_gap,
+                .padding = params.layout.padding,
+                .direction = if (params.layout.direction == .row) .left_to_right else .top_to_bottom,
+            },
             .transition = params.transition,
             .no_render = params.no_render,
         });

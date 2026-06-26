@@ -13,6 +13,7 @@ layout(push_constant) uniform Push
    float R;
    float G;
    float B;
+   float A;
    float LAYERS;
    float DEPTH;
    float WIDTH;
@@ -24,6 +25,7 @@ layout(push_constant) uniform Push
 #pragma parameter R "Red" 0.20 0.0 1.0 0.01
 #pragma parameter G "Green" 0.1 0.0 1.0 0.01
 #pragma parameter B "Blue" 0.5 0.0 1.0 0.01
+#pragma parameter A "Alpha" 1.0 0.0 1.0 0.01
 #pragma parameter LAYERS "Snow Layers" 15.0 5.0 30.0 1.0
 #pragma parameter DEPTH "Parallax Depth" 1.0 0.1 3.0 0.1
 #pragma parameter WIDTH "Flake Spread" 1.0 0.1 3.0 0.1
@@ -63,6 +65,7 @@ vec4 snow(vec2 texture_size, float frame_count, vec2 uv)
                        21.1212, 28.7312, 11.9312,
                        21.8112, 14.7212, 61.3934);
    vec3 acc = vec3(params.R, params.G, params.B);
+   float snow_alpha = 0.0;
    float dof = 5.0 * sin(frame_count * 0.1);
    
    vec2 fall_dir;
@@ -103,8 +106,9 @@ vec4 snow(vec2 texture_size, float frame_count, vec2 uv)
       float edge = 0.05 + 0.05 * min(0.5 * abs(fi - 5.0 - dof), 1.0);
       float acc_mod = smoothstep(edge, -edge, d) * (r.x / (1.0 + 0.02 * fi * params.DEPTH));
       acc += vec3(acc_mod, acc_mod, acc_mod);
+      snow_alpha = clamp(snow_alpha + acc_mod, 0.0, 1.0);
    }
-   return vec4(vec3(acc), 1.0);
+   return vec4(vec3(acc), mix(params.A, 1.0, snow_alpha));
 }
 
 void main()
