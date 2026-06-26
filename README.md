@@ -79,7 +79,7 @@ zig build -Dtarget=aarch64-linux-android --release=fast
 
 The APK is located at `zig-out/bin/neskwik.apk`.
 
-Install and start the app on a connected device or emulator:
+Install and start the app on a connected device:
 
 ```sh
 zig build run -Dtarget=aarch64-linux-android --release=fast
