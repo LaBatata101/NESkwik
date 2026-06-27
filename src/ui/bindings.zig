@@ -218,6 +218,8 @@ pub const GeneralAction = enum {
     run_tick,
     run_frame,
     toggle_fullscreen,
+    quick_save,
+    quick_load,
 
     pub fn displayName(self: @This()) []const u8 {
         return switch (self) {
@@ -229,10 +231,13 @@ pub const GeneralAction = enum {
             .toggle_fullscreen => "Toggle Fullscreen",
             .stop => "Stop",
             .toggle_pause => "Toggle Pause",
+            .quick_save => "Quick Save",
+            .quick_load => "Quick Load",
         };
     }
 };
 
+// TODO: maybe merge this struct with `GeneralAction`
 pub const GeneralKeyBindings = struct {
     quit: Key = .ESCAPE,
     toggle_step_mode: Key = .F9,
@@ -242,6 +247,8 @@ pub const GeneralKeyBindings = struct {
     run_tick: Key = .F10,
     run_frame: Key = .F11,
     toggle_fullscreen: Key = .F,
+    quick_save: Key = .F1,
+    quick_load: Key = .F3,
 
     pub fn get(self: @This(), action: GeneralAction) Key {
         return switch (action) {

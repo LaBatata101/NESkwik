@@ -382,6 +382,8 @@ pub const AppState = struct {
             if (main_window_active) {
                 self.syncControllers(ui);
 
+                if (ui.isKeyPressed(self.generalBinding(.quick_save))) self.saveStateSlot(0);
+                if (ui.isKeyPressed(self.generalBinding(.quick_load))) self.loadStateSlot(0);
                 if (ui.isKeyPressed(self.generalBinding(.quit))) ui.quit = true;
                 if (ui.isKeyPressed(self.generalBinding(.toggle_step_mode))) self.toggleDebug();
                 if (ui.isKeyPressed(self.generalBinding(.restart))) self.resetSystem();

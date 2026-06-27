@@ -277,7 +277,21 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
                 .border_color = theme.border,
             });
             {
-                drawStateSlotItems(ui, app_state, .save);
+                const col = ui.column(.{ .gap = 5 });
+                {
+                    if (ui.menuItem(.{
+                        .label = "Quick Save",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.saveStateSlot(0);
+                    }
+                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+                    drawStateSlotItems(ui, app_state, .save);
+                }
+                col.end();
             }
             save_state_submenu.end();
         }
@@ -298,7 +312,21 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
                 .border_color = theme.border,
             });
             {
-                drawStateSlotItems(ui, app_state, .load);
+                const col = ui.column(.{ .gap = 5 });
+                {
+                    if (ui.menuItem(.{
+                        .label = "Quick Load",
+                        .enabled = app_state.emulation_running,
+                        .bg_color = theme.bg_section,
+                        .hover_color = theme.accent_blue,
+                        .text_color = theme.text_secondary,
+                    }).clicked(ui.main_window.ctx)) {
+                        app_state.loadStateSlot(0);
+                    }
+                    _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
+                    drawStateSlotItems(ui, app_state, .load);
+                }
+                col.end();
             }
             load_state_submenu.end();
         }
@@ -976,7 +1004,6 @@ const SaveStateMenuMode = enum { save, load };
 fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) void {
     for (0..save_state.SLOT_COUNT) |slot| {
         const slot_info = app_state.saveStateSlotInfo(slot);
-        const enabled = mode == .save or slot_info != null;
         const label = if (slot_info) |info|
             std.fmt.allocPrint(
                 ui.main_window.ctx.frameAlloc(),
@@ -992,7 +1019,7 @@ fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) vo
 
         if (ui.menuItem(.{
             .label = label,
-            .enabled = enabled,
+            .enabled = app_state.emulation_running,
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
