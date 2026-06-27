@@ -75,6 +75,7 @@ pub const SettingsCategory = enum {
 
 pub const AppState = struct {
     alloc: std.mem.Allocator,
+    ui: *UI,
     /// Wheter to skip drawing the home screen.
     render_home_ui: bool = true,
     render_debug_ui: bool = false,
@@ -129,9 +130,6 @@ pub const AppState = struct {
     shader_file_picker_current_dir: []u8 = &.{},
     shader_file_picker_entries: std.ArrayList(ShaderFilePickerEntry) = .{},
     shader_file_picker_error: ?[]u8 = null,
-
-    show_save_state_toast: bool = false,
-    show_load_state_toast: bool = false,
 
     show_fps: bool = false,
 
@@ -249,7 +247,7 @@ pub const AppState = struct {
         show_home_screen_snow_effect: bool = true,
     };
 
-    pub fn init(alloc: std.mem.Allocator) Self {
+    pub fn init(alloc: std.mem.Allocator, ui: *UI) Self {
         var hist = game_history.GameHistory.init(alloc);
         hist.load();
 
@@ -263,6 +261,7 @@ pub const AppState = struct {
 
         var state = Self{
             .alloc = alloc,
+            .ui = ui,
             .history = hist,
             .config_dir = config_dir,
             .controller_img = .{ .raw = surface },
@@ -413,7 +412,7 @@ pub const AppState = struct {
             }
 
             if (self.settings.hide_mouse_on_inactivity and !self.render_debug_ui) {
-                if (!self.is_cursor_hidden and ui.hasTimerExpired("hide_cursor")) {
+                if (!self.is_cursor_hidden and ui.hasTimerExpired("hide_cursor").unwrap_or(false)) {
                     sdlError(c.SDL_HideCursor());
                     self.is_cursor_hidden = true;
                 }
@@ -449,10 +448,9 @@ pub const AppState = struct {
         ui.quit = true;
     }
 
-    pub fn update(self: *Self, ui: *UI) void {
-        self.tickTimers(ui);
-        self.handleInput(ui);
-        self.updateShaderState(ui);
+    pub fn update(self: *Self) void {
+        self.handleInput(self.ui);
+        self.updateShaderState(self.ui);
 
         if (builtin.abi.isAndroid()) self.pollShaderDownload();
 
@@ -465,11 +463,6 @@ pub const AppState = struct {
             }
             std.atomic.spinLoopHint();
         }
-    }
-
-    fn tickTimers(self: *Self, ui: *UI) void {
-        if (ui.hasTimerExpired("save_state_toast")) self.show_save_state_toast = false;
-        if (ui.hasTimerExpired("load_state_toast")) self.show_load_state_toast = false;
     }
 
     fn updateShaderState(self: *Self, ui: *UI) void {
@@ -712,6 +705,7 @@ pub const AppState = struct {
         };
 
         self.save_state_info[slot] = info;
+        self.ui.setTimer("save_state_toast", 1000);
     }
 
     pub fn loadStateSlot(self: *Self, slot: usize) void {
@@ -731,6 +725,7 @@ pub const AppState = struct {
         save_state.loadSlot(self.alloc, name, &self.system.?, slot) catch |err| {
             std.log.err("load state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
         };
+        self.ui.setTimer("load_state_toast", 1000);
     }
 
     pub fn saveStateSlotInfo(self: *const Self, slot: usize) ?save_state.SlotInfo {

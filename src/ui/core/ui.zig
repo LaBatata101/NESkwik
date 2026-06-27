@@ -10,6 +10,7 @@ const vulkan = @import("../../root.zig").vulkan;
 const FPSManager = @import("../../render.zig").FPSManager;
 const shaders = @import("shaders.zig");
 const utils = @import("viewport.zig");
+const Optional = @import("../../utils/misc.zig").Optional;
 const android = @import("../../utils/android.zig");
 const pipeline = @import("../../shaders/pipeline.zig");
 const GamepadButton = @import("../bindings.zig").GamepadButton;
@@ -415,14 +416,11 @@ pub const UIContext = struct {
         _ = self.timers.remove(id);
     }
 
-    pub fn hasTimerExpired(self: *Self, name: []const u8) bool {
+    pub fn hasTimerExpired(self: *Self, name: []const u8) Optional(bool) {
         const key = timerKey(name);
-        const value = self.timers.get(key) orelse return false;
+        const value = self.timers.get(key) orelse return .none;
 
-        const has_expired = c.SDL_GetTicks() - value.start >= value.ms;
-        if (has_expired) _ = self.timers.remove(key);
-
-        return has_expired;
+        return .{ .value = c.SDL_GetTicks() - value.start >= value.ms };
     }
 
     fn allocWidget(self: *Self, T: type, value: T) *T {
@@ -2176,7 +2174,7 @@ pub const UI = struct {
         return self.current_window.ctx.tickTimer(name, ms);
     }
 
-    pub fn hasTimerExpired(self: *Self, name: []const u8) bool {
+    pub fn hasTimerExpired(self: *Self, name: []const u8) Optional(bool) {
         return self.current_window.ctx.hasTimerExpired(name);
     }
 

@@ -137,14 +137,18 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             }
         }
 
-        if (app_state.show_save_state_toast) toast(ui, "State saved");
-        if (app_state.show_load_state_toast) toast(ui, "State loaded");
+        if (ui.hasTimerExpired("save_state_toast").is_some_and(check_timer_result)) toast(ui, "State saved");
+        if (ui.hasTimerExpired("load_state_toast").is_some_and(check_timer_result)) toast(ui, "State loaded");
 
         if (builtin.abi.isAndroid() and app_state.show_android_sidepanel) {
             drawAndroidSidepanel(ui, app_state, root.id);
         }
     }
     root.end();
+}
+
+fn check_timer_result(result: bool) bool {
+    return !result;
 }
 
 fn toastTransition(state_: clay.TransitionData, _: clay.TransitionProperty) callconv(.c) clay.TransitionData {
@@ -488,7 +492,6 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                 if (drawAndroidDrawerAction(ui, "Save Slot 1", app_state.emulation_running)) {
                     app_state.saveStateSlot(0);
                     app_state.show_android_sidepanel = false;
-                    app_state.show_save_state_toast = true;
                     ui.setTimer("save_state_toast", 1000);
                 }
                 if (drawAndroidDrawerAction(
@@ -498,7 +501,6 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                 )) {
                     app_state.loadStateSlot(0);
                     app_state.show_android_sidepanel = false;
-                    app_state.show_load_state_toast = true;
                     ui.setTimer("load_state_toast", 1000);
                 }
 
@@ -996,16 +998,8 @@ fn drawStateSlotItems(ui: *UI, app_state: *AppState, mode: SaveStateMenuMode) vo
             .text_color = theme.text_secondary,
         }).clicked(ui.main_window.ctx)) {
             switch (mode) {
-                .save => {
-                    app_state.show_save_state_toast = true;
-                    ui.setTimer("save_state_toast", 1000);
-                    app_state.saveStateSlot(slot);
-                },
-                .load => {
-                    app_state.show_load_state_toast = true;
-                    ui.setTimer("load_state_toast", 1000);
-                    app_state.loadStateSlot(slot);
-                },
+                .save => app_state.saveStateSlot(slot),
+                .load => app_state.loadStateSlot(slot),
             }
         }
     }

@@ -62,7 +62,7 @@ pub fn main() !void {
 
     var ui = try UI.init(allocator, "NESkwik", 1280, 720);
     defer ui.deinit();
-    var app_state = gui.AppState.init(allocator);
+    var app_state = gui.AppState.init(allocator, ui);
     defer app_state.deinit();
 
     ui.setVSync(app_state.settings.vsync);
@@ -100,7 +100,7 @@ pub fn main() !void {
     ui.setShaderParam("snow", "FALL_DIRECTION", 0.0);
 
     while (!ui.shouldClose()) {
-        app_state.update(ui);
+        app_state.update();
 
         ui.beginFrame();
         gui.drawGUI(ui, &app_state);
