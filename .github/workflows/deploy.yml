@@ -52,9 +52,6 @@ jobs:
           - name: Windows
             os: windows-latest
             artifact_suffix: windows-x86_64
-          - name: macOS
-            os: macos-latest
-            artifact_suffix: macos-x86_64
 
     steps:
       - name: Checkout
