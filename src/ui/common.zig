@@ -16,7 +16,7 @@ pub const theme = struct {
 
     pub const text_primary = Color.rgb(220, 225, 235); // main text
     pub const text_secondary = Color.rgb(140, 150, 170); // dim labels
-    pub const text_muted = Color.rgb(80, 90, 110); // very dim
+    pub const text_muted = Color.rgb(80, 90, 110).lighten(0.2); // very dim
     pub const text_accent = Color.rgb(97, 175, 255); // blue accent
     pub const text_value = Color.rgb(152, 221, 130); // green
     pub const text_warn = Color.rgb(255, 200, 80); // amber

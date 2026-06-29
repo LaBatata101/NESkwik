@@ -161,7 +161,7 @@ fn toast(ui: *UI, text: []const u8) void {
     const f = ui.float(.{
         .attach_to = .to_root,
         .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
-        .z_index = 100,
+        .z_index = std.math.maxInt(i16),
         .sizing = .fit,
         .offset = .{ .x = 15, .y = -15 },
         .transition = .{
@@ -443,6 +443,7 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
     const dims = clay.getLayoutDimensions();
     const sidepanel_w = @min(340.0, dims.w * 0.86);
     const is_open = app_state.show_android_sidepanel;
+    var pointer_over_state_dialog = false;
     const sidepanel_transition = clay.TransitionElementConfig{
         .handler = clay.easeOut,
         .duration = 0.18,
@@ -488,12 +489,12 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
             });
             {
                 drawAndroidDrawerSectionLabel(ui, "Home");
-                if (drawAndroidDrawerAction(ui, "Home", true)) {
+                if (drawAndroidDrawerAction(ui, "Home", true).clicked(ui.main_window.ctx)) {
                     app_state.show_android_settings_ui = false;
                     app_state.render_home_ui = true;
                     app_state.show_android_sidepanel = false;
                 }
-                if (drawAndroidDrawerAction(ui, "Open ROM", true)) {
+                if (drawAndroidDrawerAction(ui, "Open ROM", true).clicked(ui.main_window.ctx)) {
                     app_state.show_android_sidepanel = false;
                     openRomDialog(ui, app_state);
                 }
@@ -503,37 +504,45 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                     ui,
                     if (app_state.paused) "Resume" else "Pause",
                     app_state.emulation_running,
-                )) {
+                ).clicked(ui.main_window.ctx)) {
                     app_state.togglePause();
                     app_state.show_android_sidepanel = false;
                 }
-                if (drawAndroidDrawerAction(ui, "Restart", app_state.emulation_running)) {
+                if (drawAndroidDrawerAction(ui, "Restart", app_state.emulation_running).clicked(ui.main_window.ctx)) {
                     app_state.resetSystem();
                     app_state.show_android_sidepanel = false;
                 }
-                if (drawAndroidDrawerAction(ui, "Stop", app_state.emulation_running)) {
+                if (drawAndroidDrawerAction(ui, "Stop", app_state.emulation_running).clicked(ui.main_window.ctx)) {
                     app_state.unloadCurrentRom();
                     ui.setWindowFullscreen(false);
                 }
 
                 drawAndroidDrawerSectionLabel(ui, "State");
-                if (drawAndroidDrawerAction(ui, "Save Slot 1", app_state.emulation_running)) {
-                    app_state.saveStateSlot(0);
-                    app_state.show_android_sidepanel = false;
-                    ui.setTimer("save_state_toast", 1000);
+                const save_state_btn = drawAndroidDrawerAction(ui, "Save State", app_state.emulation_running);
+                if (save_state_btn.clicked(ui.main_window.ctx)) {
+                    ui.setTimer("android_state_dialog", 250);
+                    app_state.show_android_save_state_dialog = true;
                 }
-                if (drawAndroidDrawerAction(
-                    ui,
-                    "Load Slot 1",
-                    app_state.emulation_running and app_state.saveStateSlotInfo(0) != null,
-                )) {
-                    app_state.loadStateSlot(0);
-                    app_state.show_android_sidepanel = false;
-                    ui.setTimer("load_state_toast", 1000);
+
+                const load_state_btn = drawAndroidDrawerAction(ui, "Load State", app_state.emulation_running);
+                if (load_state_btn.clicked(ui.main_window.ctx)) {
+                    // Set a timer of 250ms to avoid closing the sidepanel as soon as it's opened
+                    ui.setTimer("android_state_dialog", 250);
+                    app_state.show_android_load_state_dialog = true;
+                }
+
+                if (app_state.show_android_save_state_dialog) {
+                    pointer_over_state_dialog = drawAndroidStateDialog(ui, app_state, save_state_btn.id, .save);
+                } else if (app_state.show_android_load_state_dialog) {
+                    pointer_over_state_dialog = drawAndroidStateDialog(ui, app_state, load_state_btn.id, .load);
                 }
 
                 drawAndroidDrawerSectionLabel(ui, "Tools");
-                if (drawAndroidDrawerAction(ui, if (app_state.show_fps) "Hide FPS" else "Show FPS", true)) {
+                if (drawAndroidDrawerAction(
+                    ui,
+                    if (app_state.show_fps) "Hide FPS" else "Show FPS",
+                    true,
+                ).clicked(ui.main_window.ctx)) {
                     app_state.show_fps = !app_state.show_fps;
                     app_state.show_android_sidepanel = false;
                 }
@@ -546,15 +555,15 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                         .{app_state.settings.emulation_speed.label()},
                     ) catch @panic("OOM"),
                     true,
-                )) {
+                ).clicked(ui.main_window.ctx)) {
                     app_state.setEmulationSpeed(nextEmulationSpeed(app_state.settings.emulation_speed));
                 }
-                if (drawAndroidDrawerAction(ui, "Settings", true)) {
+                if (drawAndroidDrawerAction(ui, "Settings", true).clicked(ui.main_window.ctx)) {
                     app_state.show_android_settings_ui = true;
                     app_state.render_home_ui = false;
                     app_state.show_android_sidepanel = false;
                 }
-                if (drawAndroidDrawerAction(ui, "Exit", true)) {
+                if (drawAndroidDrawerAction(ui, "Exit", true).clicked(ui.main_window.ctx)) {
                     ui.quit = true;
                 }
             }
@@ -565,9 +574,143 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
     sidepanel.end();
 
     // close the sidepanel when a click happens outside of it
-    if (is_open and !clay.pointerOver(sidepanel.id) and ui.current_window.ctx.frame.mouse_down) {
-        if (ui.hasTimerExpired("android_sidepanel")) app_state.show_android_sidepanel = false;
+    if (is_open and !clay.pointerOver(sidepanel.id) and !pointer_over_state_dialog and
+        ui.current_window.ctx.frame.mouse_down)
+    {
+        if (ui.hasTimerExpired("android_sidepanel").unwrap_or(false)) {
+            app_state.show_android_sidepanel = false;
+            app_state.show_android_save_state_dialog = false;
+            app_state.show_android_load_state_dialog = false;
+        }
     }
+}
+
+fn drawAndroidStateDialog(ui: *UI, app_state: *AppState, parent_id: clay.ElementId, mode: SaveStateMenuMode) bool {
+    const is_open = app_state.show_android_save_state_dialog or app_state.show_android_load_state_dialog;
+    const safe_padding = ui.main_window.safeAreaPadding();
+    const offset = clay.Vector2{ .x = 20, .y = 40 };
+    const bottom_margin = @as(f32, @floatFromInt(safe_padding.bottom)) + 8.0;
+
+    const parent_data = clay.getElementData(parent_id);
+    const dialog_top = if (parent_data.found)
+        parent_data.bounding_box.y + offset.y
+    else
+        @as(f32, @floatFromInt(safe_padding.top)) + offset.y;
+    const max_dialog_h = @max(48.0, ui.main_window.logical_height - bottom_margin - dialog_top);
+    const max_slot_list_h = @max(48.0, max_dialog_h - 58.0);
+
+    const float_panel = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .z_index = 65,
+        .offset = offset,
+    });
+    {
+        const panel = ui.column(.{
+            .bg_color = theme.bg_section,
+            .border_width = 1,
+            .border_color = theme.border,
+            .corner_radius = 8,
+            .padding = .{ .left = 8, .right = 8, .top = 8, .bottom = 8 },
+            .gap = 8,
+            .sizing = .{ .w = .fixed(260), .h = .fitMinMax(.{ .max = max_dialog_h }) },
+            .child_alignment = .{ .x = .left, .y = .top },
+        });
+        {
+            const scroll = ui.scrollArea(.{
+                .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .max = max_slot_list_h }) },
+                .gap = 5,
+                .padding = .{ .right = 3 },
+            });
+            {
+                for (0..save_state.SLOT_COUNT) |slot| {
+                    const slot_info = app_state.saveStateSlotInfo(slot);
+                    if (drawAndroidStateSlotRow(ui, slot, slot_info, mode)) {
+                        switch (mode) {
+                            .save => {
+                                app_state.saveStateSlot(slot);
+                                app_state.show_android_save_state_dialog = false;
+                            },
+                            .load => {
+                                app_state.loadStateSlot(slot);
+                                app_state.show_android_sidepanel = false;
+                                app_state.show_android_load_state_dialog = false;
+                            },
+                        }
+                    }
+                }
+            }
+            scroll.end();
+        }
+        panel.end();
+    }
+    float_panel.end();
+
+    const pointer_over_dialog = clay.pointerOver(float_panel.id);
+    if (is_open and !pointer_over_dialog and ui.current_window.ctx.frame.mouse_down) {
+        if (ui.hasTimerExpired("android_state_dialog").unwrap_or(false)) {
+            app_state.show_android_save_state_dialog = false;
+            app_state.show_android_load_state_dialog = false;
+        }
+    }
+
+    return pointer_over_dialog;
+}
+
+fn drawAndroidStateSlotRow(
+    ui: *UI,
+    slot: usize,
+    slot_info: ?save_state.SlotInfo,
+    mode: SaveStateMenuMode,
+) bool {
+    const frame_alloc = ui.main_window.ctx.frameAlloc();
+    const enabled = mode == .save or slot_info != null;
+    const slot_label = std.fmt.allocPrint(frame_alloc, "Slot {d}", .{slot + 1}) catch @panic("OOM");
+    const status_label = if (slot_info) |info|
+        std.fmt.allocPrint(frame_alloc, "{s}", .{&info.display_time}) catch @panic("OOM")
+    else if (mode == .save)
+        "Empty slot"
+    else
+        "No state";
+
+    const row = ui.row(.{
+        .sizing = .{ .w = .grow, .h = .fixed(48) },
+        .padding = .{ .left = 10, .right = 10, .top = 6, .bottom = 6 },
+        .gap = 8,
+        .bg_color = if (enabled) theme.bg_panel else theme.bg_panel.darken(0.18),
+        .hover_bg_color = if (enabled)
+            switch (mode) {
+                .save => theme.accent_green,
+                .load => theme.accent_blue,
+            }.withAlpha(0.28)
+        else
+            null,
+        .corner_radius = 5,
+        .border_width = 1,
+        .border_color = if (enabled) theme.border_dim else theme.border_dim.darken(0.18),
+        .child_alignment = .{ .x = .left, .y = .center },
+    });
+    {
+        _ = ui.label(.{
+            .text = slot_label,
+            .font_size = 14,
+            .line_height = 16,
+            .color = if (enabled) theme.text_primary else theme.text_muted,
+        });
+        _ = ui.spacer(.{ .sizing = .{ .w = .grow } });
+        _ = ui.label(.{
+            .text = status_label,
+            .font_size = 12,
+            .line_height = 14,
+            .color = if (slot_info != null)
+                (if (mode == .load) theme.text_value else theme.text_secondary)
+            else
+                theme.text_muted,
+        });
+    }
+    row.end();
+
+    return enabled and row.clicked(ui.current_window.ctx);
 }
 
 fn drawAndroidDrawerSectionLabel(ui: *UI, text: []const u8) void {
@@ -582,7 +725,7 @@ fn drawAndroidDrawerSectionLabel(ui: *UI, text: []const u8) void {
     row.end();
 }
 
-fn drawAndroidDrawerAction(ui: *UI, text: []const u8, enabled: bool) bool {
+fn drawAndroidDrawerAction(ui: *UI, text: []const u8, enabled: bool) *widgets.Button {
     return ui.button(.{
         .text = text,
         .font_size = 16,
@@ -595,7 +738,7 @@ fn drawAndroidDrawerAction(ui: *UI, text: []const u8, enabled: bool) bool {
         .sizing = .{ .w = .grow, .h = .fit },
         .text_alignment = .left,
         .enabled = enabled,
-    }).clicked(ui.main_window.ctx);
+    });
 }
 
 fn nextEmulationSpeed(speed: EmulationSpeed) EmulationSpeed {
@@ -641,8 +784,6 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
         col.end();
 
         const scroll = ui.scrollArea(.{
-            .sizing = .grow,
-            .vertical = true,
             .padding = .{ .left = 10, .right = 10, .top = 10, .bottom = 10 },
             .gap = 8,
         });

@@ -81,6 +81,8 @@ pub const AppState = struct {
     render_debug_ui: bool = false,
     show_android_settings_ui: bool = false,
     show_android_sidepanel: bool = false,
+    show_android_save_state_dialog: bool = false,
+    show_android_load_state_dialog: bool = false,
     emulation_running: bool = false,
 
     step_mode: bool = false,
@@ -444,6 +446,8 @@ pub const AppState = struct {
 
         if (self.emulation_running) {
             self.show_android_sidepanel = true;
+            // Set a timer of 250ms to avoid closing the sidepanel as soon as it's opened
+            ui.setTimer("android_sidepanel", 250);
             return;
         }
 
