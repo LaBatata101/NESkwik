@@ -114,8 +114,8 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             main_shader.end();
             border_shader.end();
 
-            if (builtin.abi.isAndroid()) {
-                drawGamepad(ui, canvas.id, orientation);
+            if (builtin.abi.isAndroid() and !(app_state.settings.hide_android_onscreen_controller and ui.getGamepadCount() > 0)) {
+                drawOnScreenGamepad(ui, canvas.id, orientation);
             }
 
             if (app_state.paused) {
@@ -1035,7 +1035,7 @@ fn drawAndroidShaderFilePickerBody(ui: *UI, app_state: *AppState) void {
     scroll.end();
 }
 
-fn drawGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
+fn drawOnScreenGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
     const bottom_offset = -22;
     const arrows = ui.float(.{
         .attach_to = .to_element_with_id,
@@ -1637,6 +1637,24 @@ fn drawSettingsGeneralContent(ui: *UI, app_state: *AppState) void {
                 .value();
         }
         row2.end();
+
+        if (builtin.abi.isAndroid()) {
+            const row3 = ui.row(.{
+                .sizing = .{ .w = .grow, .h = .fit },
+            });
+            {
+                _ = ui.label(.{
+                    .text = "Hide on-screen controller when gamepad is connected",
+                    .font_size = theme.LABEL_FONT,
+                    .color = theme.text_primary,
+                });
+                _ = ui.spacer(.{ .sizing = .grow });
+                app_state.settings.hide_android_onscreen_controller = ui
+                    .toggle(.{ .value = app_state.settings.hide_android_onscreen_controller, .size = 22 })
+                    .value();
+            }
+            row3.end();
+        }
     }
     section.end();
 }

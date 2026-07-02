@@ -252,6 +252,7 @@ pub const AppState = struct {
         capture_gamepad_binding: ?ControllerBindingTarget = null,
         gamepad_deadzone: u8 = 25,
         show_home_screen_snow_effect: bool = true,
+        hide_android_onscreen_controller: bool = false,
     };
 
     pub fn init(alloc: std.mem.Allocator, ui: *UI) Self {
@@ -469,6 +470,7 @@ pub const AppState = struct {
         self.handleInput(self.ui);
         self.updateShaderState(self.ui);
 
+        // Track connected/disconnected gamepads
         const prev_input_devices: isize = @intCast(self.input_devices.items.len - if (builtin.abi.isAndroid()) 0 else 1);
         if (@as(isize, @intCast(self.ui.gamepads.items.len)) - prev_input_devices != 0) {
             self.input_devices.clearRetainingCapacity();
@@ -481,11 +483,9 @@ pub const AppState = struct {
                     @panic("OOM");
             }
 
-            if (builtin.abi.isAndroid()) {
+            if (builtin.abi.isAndroid() and self.ui.gamepads.items.len > 0) {
                 // Switch the input to the first connected gamepad
-                if (self.ui.gamepads.items.len > 0) {
-                    self.selected_input_device[0] = .{ .gamepad = self.input_devices.items[0].gamepad };
-                }
+                self.selected_input_device[0] = .{ .gamepad = self.input_devices.items[0].gamepad };
             }
         }
 
