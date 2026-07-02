@@ -825,12 +825,16 @@ pub const ScrollContainer = struct {
         } });
 
         var padding = params.padding;
-        if (params.show_scrollbar and params.vertical and state.scroll.scrollbar_visible) {
+        if (params.show_scrollbar and params.vertical and state.scroll.vertical_scrollbar_visible) {
             padding.right = 10;
         }
+        if (params.show_scrollbar and params.horizontal and state.scroll.horizontal_scrollbar_visible) {
+            padding.bottom = 10;
+        }
 
-        // Reset for this frame; set to true below if we actually render the scrollbar.
-        state.scroll.scrollbar_visible = false;
+        // Reset for this frame; set to true below if we actually render each scrollbar.
+        state.scroll.vertical_scrollbar_visible = false;
+        state.scroll.horizontal_scrollbar_visible = false;
 
         clay.configureOpenElement(.{
             .layout = .{
@@ -846,74 +850,140 @@ pub const ScrollContainer = struct {
             },
         });
 
-        if (params.show_scrollbar and params.vertical) {
+        if (params.show_scrollbar and (params.vertical or params.horizontal)) {
             const scroll_data = clay.getScrollContainerData(element_id);
             if (scroll_data.found) {
                 state.scroll.offset = scroll_data.scroll_position.*;
 
-                if (scroll_data.content_dimensions.h > scroll_data.scroll_container_dimensions.h) {
-                    state.scroll.scrollbar_visible = true;
+                if (params.vertical and scroll_data.content_dimensions.h > scroll_data.scroll_container_dimensions.h) {
+                    state.scroll.vertical_scrollbar_visible = true;
+                    renderVerticalScrollbar(ctx, element_id, scroll_data, params.scrollbar_color);
+                }
 
-                    const viewport_h = scroll_data.scroll_container_dimensions.h;
-                    const content_h = scroll_data.content_dimensions.h;
-                    var scroll_bar_height = (viewport_h / content_h) * viewport_h;
-                    if (scroll_bar_height < 20.0) scroll_bar_height = 20.0;
-
-                    const max_scroll_y = content_h - viewport_h;
-                    const current_scroll_y = @abs(scroll_data.scroll_position.y);
-                    const scroll_ratio = if (max_scroll_y > 0) current_scroll_y / max_scroll_y else 0;
-                    const scroll_track_space = viewport_h - scroll_bar_height;
-                    const scroll_bar_y = scroll_ratio * scroll_track_space;
-
-                    const scrollbar_id = clay.ElementId.localIDI("scrollbar", element_id.id);
-                    const is_hovered = clay.pointerOver(scrollbar_id);
-
-                    if (is_hovered and ctx.frame.mouse_pressed) {
-                        ctx.frame.active_id = scrollbar_id.id;
-                    }
-                    const is_dragging = (ctx.frame.active_id == scrollbar_id.id);
-                    if (is_dragging) {
-                        if (ctx.frame.mouse_down) {
-                            // Calculate how much content moves per pixel of scrollbar movement
-                            // Ratio = (Content Range) / (Scrollbar Track Range)
-                            const move_ratio = max_scroll_y / scroll_track_space;
-
-                            // Apply delta. Note:
-                            // Mouse Down (+Y) -> Scrollbar Down -> Content moves UP (Negative Y)
-                            // So we subtract.
-                            scroll_data.scroll_position.y -= ctx.frame.mouse_delta.y * move_ratio;
-                        } else {
-                            // Mouse released, stop dragging
-                            ctx.frame.active_id = null;
-                        }
-                    }
-
-                    const scrollbar_data = ctx.frameAlloc().create(clay.ElementId) catch @panic("failed to allocate");
-                    scrollbar_data.* = scrollbar_id;
-                    clay.openElementWithId(scrollbar_id);
-                    clay.configureOpenElement(.{
-                        .layout = .{ .sizing = .{ .w = .fixed(6), .h = .fixed(scroll_bar_height) } },
-                        .floating = .{
-                            .attach_to = .to_element_with_id,
-                            .parentId = element_id.id,
-                            .attach_points = .{ .element = .right_top, .parent = .right_top },
-                            .offset = .{ .x = -1, .y = scroll_bar_y },
-                            .z_index = std.math.maxInt(i16),
-                            .pointer_capture_mode = .passthrough,
-                            .clip_to = .to_attached_parent,
-                        },
-                        .background_color = if (is_dragging or is_hovered)
-                            params.scrollbar_color.toClay()
-                        else
-                            params.scrollbar_color.withAlpha(0.55).toClay(),
-                        .corner_radius = .all(3),
-                    });
-                    clay.closeElement();
+                if (params.horizontal and scroll_data.content_dimensions.w > scroll_data.scroll_container_dimensions.w) {
+                    state.scroll.horizontal_scrollbar_visible = true;
+                    renderHorizontalScrollbar(ctx, element_id, scroll_data, params.scrollbar_color);
                 }
             }
         }
 
         return .{ .id = element_id, .ctx = ctx, .params = params };
+    }
+
+    fn renderVerticalScrollbar(
+        ctx: *UIContext,
+        element_id: clay.ElementId,
+        scroll_data: clay.ScrollContainerData,
+        scrollbar_color: Color,
+    ) void {
+        const viewport_h = scroll_data.scroll_container_dimensions.h;
+        const content_h = scroll_data.content_dimensions.h;
+        var scroll_bar_height = (viewport_h / content_h) * viewport_h;
+        if (scroll_bar_height < 20.0) scroll_bar_height = @min(20.0, viewport_h);
+
+        const max_scroll_y = content_h - viewport_h;
+        const current_scroll_y = @abs(scroll_data.scroll_position.y);
+        const scroll_ratio = if (max_scroll_y > 0) current_scroll_y / max_scroll_y else 0;
+        const scroll_track_space = viewport_h - scroll_bar_height;
+        const scroll_bar_y = scroll_ratio * scroll_track_space;
+
+        const scrollbar_id = clay.ElementId.localIDI("scrollbar-y", element_id.id);
+        const is_hovered = clay.pointerOver(scrollbar_id);
+
+        if (is_hovered and ctx.frame.mouse_pressed) {
+            ctx.frame.active_id = scrollbar_id.id;
+        }
+        const is_dragging = (ctx.frame.active_id == scrollbar_id.id);
+        if (is_dragging) {
+            if (ctx.frame.mouse_down) {
+                if (scroll_track_space > 0) {
+                    const move_ratio = max_scroll_y / scroll_track_space;
+                    scroll_data.scroll_position.y -= ctx.frame.mouse_delta.y * move_ratio;
+                }
+            } else {
+                ctx.frame.active_id = null;
+            }
+        }
+
+        const scrollbar_data = ctx.frameAlloc().create(clay.ElementId) catch @panic("failed to allocate");
+        scrollbar_data.* = scrollbar_id;
+        clay.openElementWithId(scrollbar_id);
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(6), .h = .fixed(scroll_bar_height) } },
+            .floating = .{
+                .attach_to = .to_element_with_id,
+                .parentId = element_id.id,
+                .attach_points = .{ .element = .right_top, .parent = .right_top },
+                .offset = .{ .x = -1, .y = scroll_bar_y },
+                .z_index = std.math.maxInt(i16),
+                .pointer_capture_mode = .passthrough,
+                .clip_to = .to_attached_parent,
+            },
+            .background_color = if (is_dragging or is_hovered)
+                scrollbar_color.toClay()
+            else
+                scrollbar_color.withAlpha(0.55).toClay(),
+            .corner_radius = .all(3),
+        });
+        clay.closeElement();
+    }
+
+    fn renderHorizontalScrollbar(
+        ctx: *UIContext,
+        element_id: clay.ElementId,
+        scroll_data: clay.ScrollContainerData,
+        scrollbar_color: Color,
+    ) void {
+        const viewport_w = scroll_data.scroll_container_dimensions.w;
+        const content_w = scroll_data.content_dimensions.w;
+        var scroll_bar_width = (viewport_w / content_w) * viewport_w;
+        if (scroll_bar_width < 20.0) scroll_bar_width = @min(20.0, viewport_w);
+
+        const max_scroll_x = content_w - viewport_w;
+        const current_scroll_x = @abs(scroll_data.scroll_position.x);
+        const scroll_ratio = if (max_scroll_x > 0) current_scroll_x / max_scroll_x else 0;
+        const scroll_track_space = viewport_w - scroll_bar_width;
+        const scroll_bar_x = scroll_ratio * scroll_track_space;
+
+        const scrollbar_id = clay.ElementId.localIDI("scrollbar-x", element_id.id);
+        const is_hovered = clay.pointerOver(scrollbar_id);
+
+        if (is_hovered and ctx.frame.mouse_pressed) {
+            ctx.frame.active_id = scrollbar_id.id;
+        }
+        const is_dragging = (ctx.frame.active_id == scrollbar_id.id);
+        if (is_dragging) {
+            if (ctx.frame.mouse_down) {
+                if (scroll_track_space > 0) {
+                    const move_ratio = max_scroll_x / scroll_track_space;
+                    scroll_data.scroll_position.x -= ctx.frame.mouse_delta.x * move_ratio;
+                }
+            } else {
+                ctx.frame.active_id = null;
+            }
+        }
+
+        const scrollbar_data = ctx.frameAlloc().create(clay.ElementId) catch @panic("failed to allocate");
+        scrollbar_data.* = scrollbar_id;
+        clay.openElementWithId(scrollbar_id);
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(scroll_bar_width), .h = .fixed(6) } },
+            .floating = .{
+                .attach_to = .to_element_with_id,
+                .parentId = element_id.id,
+                .attach_points = .{ .element = .left_bottom, .parent = .left_bottom },
+                .offset = .{ .x = scroll_bar_x, .y = -1 },
+                .z_index = std.math.maxInt(i16),
+                .pointer_capture_mode = .passthrough,
+                .clip_to = .to_attached_parent,
+            },
+            .background_color = if (is_dragging or is_hovered)
+                scrollbar_color.toClay()
+            else
+                scrollbar_color.withAlpha(0.55).toClay(),
+            .corner_radius = .all(3),
+        });
+        clay.closeElement();
     }
 
     pub fn end(self: *const Self) void {
