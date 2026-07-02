@@ -138,11 +138,17 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             }
         }
 
-        if (ui.hasTimerExpired("save_state_toast").is_some_and(check_timer_result)) toast(ui, "State saved");
-        if (ui.hasTimerExpired("load_state_toast").is_some_and(check_timer_result)) toast(ui, "State loaded");
+        if (ui.hasTimerExpired("save_state_toast").is_some_and(check_timer_result)) toast(ui, .{ .text = "State saved" });
+        if (ui.hasTimerExpired("load_state_toast").is_some_and(check_timer_result)) toast(ui, .{ .text = "State loaded" });
 
-        if (builtin.abi.isAndroid() and app_state.show_android_sidepanel) {
-            drawAndroidSidepanel(ui, app_state, root.id);
+        if (builtin.abi.isAndroid()) {
+            if (ui.hasTimerExpired("gamepad_connected_toast").is_some_and(check_timer_result)) {
+                toast(ui, .{ .text = "Gamepad connected", .icon = .controller });
+            }
+            if (ui.hasTimerExpired("gamepad_disconnected_toast").is_some_and(check_timer_result)) {
+                toast(ui, .{ .text = "Gamepad disconnected", .icon = .controller });
+            }
+            if (app_state.show_android_sidepanel) drawAndroidSidepanel(ui, app_state, root.id);
         }
     }
     root.end();
@@ -158,10 +164,11 @@ fn toastTransition(state_: clay.TransitionData, _: clay.TransitionProperty) call
     return s;
 }
 
-fn toast(ui: *UI, text: []const u8) void {
+fn toast(ui: *UI, params: struct { text: []const u8, icon: ?UI.Icon = null }) void {
+    const attach_point: clay.FloatingAttachPointType = if (builtin.abi.isAndroid()) .center_bottom else .left_bottom;
     const f = ui.float(.{
         .attach_to = .to_root,
-        .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
+        .attach_points = .{ .parent = attach_point, .element = attach_point },
         .z_index = std.math.maxInt(i16),
         .sizing = .fit,
         .offset = .{ .x = 15, .y = -15 },
@@ -180,12 +187,16 @@ fn toast(ui: *UI, text: []const u8) void {
         },
     });
     {
-        const col = ui.column(.{
+        const row = ui.row(.{
             .bg_color = Color.black.withAlpha(0.8),
             .child_alignment = .center,
+            .gap = 10,
         });
-        _ = ui.label(.{ .text = text, .font_size = 25, .color = .white });
-        col.end();
+        if (params.icon) |icon| {
+            _ = ui.icon(.{ .icon = ui.icons.get(icon) });
+        }
+        _ = ui.label(.{ .text = params.text, .font_size = 25, .color = .white });
+        row.end();
     }
     f.end();
 }

@@ -2541,6 +2541,7 @@ pub const UI = struct {
                     if (c.SDL_GetGamepadID(state.handle) == which) return;
                 }
                 self.gamepads.append(self.allocator, GamepadState.init(c.SDL_OpenGamepad(which))) catch @panic("OOM");
+                self.setTimer("gamepad_connected_toast", 2500);
                 return;
             },
             c.SDL_EVENT_GAMEPAD_REMOVED => {
@@ -2549,6 +2550,7 @@ pub const UI = struct {
                     if (c.SDL_GetGamepadID(state.handle) == removed_id) {
                         c.SDL_CloseGamepad(state.handle);
                         _ = self.gamepads.swapRemove(i);
+                        self.setTimer("gamepad_disconnected_toast", 2500);
                         break;
                     }
                 }
