@@ -14,7 +14,6 @@ const Optional = @import("../../utils/misc.zig").Optional;
 const android = @import("../../utils/android.zig");
 const pipeline = @import("../../shaders/pipeline.zig");
 const GamepadButton = @import("../bindings.zig").GamepadButton;
-const ControllerPlayer = @import("../bindings.zig").ControllerPlayer;
 const ControllerAction = @import("../bindings.zig").ControllerAction;
 const ControllerButton = @import("../../controller.zig").ControllerButton;
 
@@ -937,12 +936,15 @@ const GamepadButtonData = struct {
 };
 
 const GamepadState = struct {
-    handle: *c.SDL_Gamepad,
+    handle: ?*c.SDL_Gamepad,
+    name: []const u8,
     buttons: [GAMEPAD_BUTTON_COUNT]GamepadButtonData,
 
-    fn init(handle: *c.SDL_Gamepad) GamepadState {
+    fn init(handle: ?*c.SDL_Gamepad) GamepadState {
+        const name = c.SDL_GetGamepadName(handle);
         return .{
             .handle = handle,
+            .name = if (name == null) "Gamepad" else std.mem.span(name),
             .buttons = [_]GamepadButtonData{GamepadButtonData.default_state} ** GAMEPAD_BUTTON_COUNT,
         };
     }
@@ -2101,10 +2103,8 @@ pub const UI = struct {
         if (gp_ids != null) {
             var i: c_int = 0;
             while (i < gp_count) : (i += 1) {
-                const gp = c.SDL_OpenGamepad(gp_ids[@intCast(i)]);
-                if (gp) |p| {
-                    gui.gamepads.append(allocator, GamepadState.init(p)) catch {};
-                }
+                gui.gamepads.append(allocator, GamepadState.init(c.SDL_OpenGamepad(gp_ids[@intCast(i)]))) catch
+                    @panic("OOM");
             }
             c.SDL_free(gp_ids);
         }
@@ -2440,8 +2440,8 @@ pub const UI = struct {
         return self.on_screen_controller;
     }
 
-    pub fn isGamepadButtonDown(self: *const Self, gamepad_idx: ControllerPlayer, btn: GamepadButton) bool {
-        return switch (self.gamepads.items[gamepad_idx.value()].buttons[@intFromEnum(btn)].event) {
+    pub fn isGamepadButtonDown(self: *const Self, gamepad_idx: usize, btn: GamepadButton) bool {
+        return switch (self.gamepads.items[gamepad_idx].buttons[@intFromEnum(btn)].event) {
             .pressed, .down => true,
             .released, .none => false,
         };
@@ -2478,8 +2478,8 @@ pub const UI = struct {
         }
     }
 
-    pub fn getGamepadAxis(self: *const Self, gamepad_idx: ControllerPlayer, axis: c.SDL_GamepadAxis) i16 {
-        return c.SDL_GetGamepadAxis(self.gamepads.items[gamepad_idx.value()].handle, axis);
+    pub fn getGamepadAxis(self: *const Self, gamepad_idx: usize, axis: c.SDL_GamepadAxis) i16 {
+        return c.SDL_GetGamepadAxis(self.gamepads.items[gamepad_idx].handle, axis);
     }
 
     pub fn getConnectedGamepadName(self: *const Self, index: usize) ?[]const u8 {
@@ -2528,8 +2528,7 @@ pub const UI = struct {
                 for (self.gamepads.items) |*state| {
                     if (c.SDL_GetGamepadID(state.handle) == which) return;
                 }
-                const gp = c.SDL_OpenGamepad(which);
-                if (gp) |p| self.gamepads.append(self.allocator, GamepadState.init(p)) catch {};
+                self.gamepads.append(self.allocator, GamepadState.init(c.SDL_OpenGamepad(which))) catch @panic("OOM");
                 return;
             },
             c.SDL_EVENT_GAMEPAD_REMOVED => {

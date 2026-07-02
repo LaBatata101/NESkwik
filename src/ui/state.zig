@@ -35,10 +35,11 @@ const CURSOR_HIDE_DELAY_MS = 3000;
 const NES_TARGET_FPS: u64 = 60;
 const SPEED_SAMPLE_MS: u64 = 1000;
 
-const ControllerPlayer = bindings.ControllerPlayer;
+const Player = bindings.Player;
 const ControllerAction = bindings.ControllerAction;
 const ControllerKeyBindings = bindings.ControllerKeyBindings;
 const ControllerBindingTarget = bindings.ControllerBindingTarget;
+const InputDevice = bindings.InputDevice;
 const GeneralAction = bindings.GeneralAction;
 const GeneralKeyBindings = bindings.GeneralKeyBindings;
 const GamepadKeyBindings = bindings.GamepadKeyBindings;
@@ -140,6 +141,10 @@ pub const AppState = struct {
     config_dir: ?[]u8 = null,
     controller_img: LoadedImage,
 
+    selected_input_device: [2]InputDevice = .{ .keyboard, .keyboard },
+    tmp_selected_input_device: [2]InputDevice = .{ .keyboard, .keyboard },
+    input_devices: std.ArrayList(InputDevice) = .empty,
+
     emulation_thread: ?std.Thread = null,
     emulation_stop: std.atomic.Value(bool) = .init(false),
     emulation_lock: std.Thread.RwLock = .{},
@@ -238,7 +243,7 @@ pub const AppState = struct {
         vsync: bool = true,
         hide_mouse_on_inactivity: bool = false,
         emulation_speed: EmulationSpeed = .normal,
-        selected_controller_player: ControllerPlayer = .one,
+        selected_player: Player = .one,
         controller_bindings: ControllerKeyBindings = .{},
         capture_binding: ?ControllerBindingTarget = null,
         general_bindings: GeneralKeyBindings = .{},
@@ -268,6 +273,11 @@ pub const AppState = struct {
             .config_dir = config_dir,
             .controller_img = .{ .raw = surface },
         };
+
+        if (!builtin.abi.isAndroid()) {
+            state.input_devices.append(alloc, .keyboard) catch @panic("OOM");
+        }
+
         state.loadSettings();
         state.snapshotSettings() catch @panic("Failed to snapshot loaded settings");
         return state;
@@ -286,6 +296,7 @@ pub const AppState = struct {
         deinitShaderRuntimeState(self.alloc, self);
         deinitEmulatorSettings(self.alloc, &self.settings);
         deinitEmulatorSettings(self.alloc, &self.saved_settings);
+        self.input_devices.deinit(self.alloc);
         c.SDL_DestroySurface(self.controller_img.raw);
 
         if (self.emulation_running) {
@@ -458,6 +469,26 @@ pub const AppState = struct {
         self.handleInput(self.ui);
         self.updateShaderState(self.ui);
 
+        const prev_input_devices: isize = @intCast(self.input_devices.items.len - if (builtin.abi.isAndroid()) 0 else 1);
+        if (@as(isize, @intCast(self.ui.gamepads.items.len)) - prev_input_devices != 0) {
+            self.input_devices.clearRetainingCapacity();
+            if (!builtin.abi.isAndroid()) {
+                self.input_devices.append(self.alloc, .keyboard) catch @panic("OOM");
+            }
+
+            for (self.ui.gamepads.items, 0..) |gamepad, i| {
+                self.input_devices.append(self.alloc, .{ .gamepad = .{ .id = i, .name = gamepad.name } }) catch
+                    @panic("OOM");
+            }
+
+            if (builtin.abi.isAndroid()) {
+                // Switch the input to the first connected gamepad
+                if (self.ui.gamepads.items.len > 0) {
+                    self.selected_input_device[0] = .{ .gamepad = self.input_devices.items[0].gamepad };
+                }
+            }
+        }
+
         if (builtin.abi.isAndroid()) self.pollShaderDownload();
 
         while (true) {
@@ -469,6 +500,10 @@ pub const AppState = struct {
             }
             std.atomic.spinLoopHint();
         }
+    }
+
+    pub fn selectedTmpInputDevice(self: *Self) *InputDevice {
+        return &self.tmp_selected_input_device[self.settings.selected_player.value()];
     }
 
     fn updateShaderState(self: *Self, ui: *UI) void {
@@ -625,41 +660,42 @@ pub const AppState = struct {
         };
     }
 
-    fn pollController(self: *Self, ui: *UI, player: ControllerPlayer) ControllerButton {
+    fn pollController(self: *Self, ui: *UI, player_id: Player) ControllerButton {
         var status: ControllerButton = .{};
-        const key_bindings = self.settings.controller_bindings.forPlayerConst(player);
 
-        inline for (@typeInfo(ControllerAction).@"enum".fields) |field| {
-            const action = @field(ControllerAction, field.name);
-            if (ui.isKeyDown(key_bindings.get(action))) {
-                status.insert(action.button());
+        const input_device = self.selected_input_device[player_id.value()];
+        if (input_device == .gamepad) {
+            self.pollGamepadButtons(ui, player_id, input_device.gamepad.id, &status);
+        } else if (builtin.abi.isAndroid()) {
+            status.insert(ui.onScreenControllerStatus());
+        } else {
+            const key_bindings = self.settings.controller_bindings.forPlayer(player_id);
+            inline for (@typeInfo(ControllerAction).@"enum".fields) |field| {
+                const action = @field(ControllerAction, field.name);
+                if (ui.isKeyDown(key_bindings.get(action))) {
+                    status.insert(action.button());
+                }
             }
         }
-
-        if (ui.getGamepadCount() > player.value()) {
-            self.pollGamepadButtons(ui, player, &status);
-        }
-
-        if (builtin.abi.isAndroid()) status.insert(ui.onScreenControllerStatus());
 
         return status;
     }
 
-    fn pollGamepadButtons(self: *Self, ui: *UI, player: ControllerPlayer, status: *ControllerButton) void {
-        const gamepad_bindings = self.settings.gamepad_bindings.forPlayerConst(player);
+    fn pollGamepadButtons(self: *Self, ui: *UI, player: Player, gamepad_idx: usize, status: *ControllerButton) void {
+        const gamepad_bindings = self.settings.gamepad_bindings.forPlayer(player);
 
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.a)) status.insert(.{ .BUTTON_A = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.b)) status.insert(.{ .BUTTON_B = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.start)) status.insert(.{ .START = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.select)) status.insert(.{ .SELECT = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.up)) status.insert(.{ .UP = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.down)) status.insert(.{ .DOWN = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.left)) status.insert(.{ .LEFT = true });
-        if (ui.isGamepadButtonDown(player, gamepad_bindings.right)) status.insert(.{ .RIGHT = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.a)) status.insert(.{ .BUTTON_A = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.b)) status.insert(.{ .BUTTON_B = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.start)) status.insert(.{ .START = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.select)) status.insert(.{ .SELECT = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.up)) status.insert(.{ .UP = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.down)) status.insert(.{ .DOWN = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.left)) status.insert(.{ .LEFT = true });
+        if (ui.isGamepadButtonDown(gamepad_idx, gamepad_bindings.right)) status.insert(.{ .RIGHT = true });
 
         const threshold: i16 = @intCast(@as(u32, self.settings.gamepad_deadzone) * 32767 / 100);
-        const lx = ui.getGamepadAxis(player, c.SDL_GAMEPAD_AXIS_LEFTX);
-        const ly = ui.getGamepadAxis(player, c.SDL_GAMEPAD_AXIS_LEFTY);
+        const lx = ui.getGamepadAxis(gamepad_idx, c.SDL_GAMEPAD_AXIS_LEFTX);
+        const ly = ui.getGamepadAxis(gamepad_idx, c.SDL_GAMEPAD_AXIS_LEFTY);
         if (lx < -threshold) status.insert(.{ .LEFT = true });
         if (lx > threshold) status.insert(.{ .RIGHT = true });
         if (ly < -threshold) status.insert(.{ .UP = true });
@@ -863,13 +899,14 @@ pub const AppState = struct {
     }
 
     pub fn hasSettingsChanges(self: *const Self) bool {
-        return !isSettingsEqual(self.settings, self.saved_settings);
+        return !isSettingsEqual(self.settings, self.saved_settings) or hasInputDeviceChanged(self.selected_input_device, self.tmp_selected_input_device);
     }
 
     pub fn saveSettings(self: *Self) void {
         self.saveSettingsImpl() catch |err|
             std.log.err("settings save failed: {s}", .{@errorName(err)});
         self.snapshotSettings() catch @panic("Failed to snapshot saved settings");
+        self.selected_input_device = self.tmp_selected_input_device;
     }
 
     pub fn restoreSavedSettings(self: *Self) void {
@@ -881,6 +918,7 @@ pub const AppState = struct {
 
         deinitEmulatorSettings(self.alloc, &self.settings);
         self.settings = restored;
+        self.tmp_selected_input_device = self.selected_input_device;
 
         resetShaderRuntimeState(self);
     }
@@ -1370,6 +1408,10 @@ fn isSettingsEqual(a: AppState.EmulatorSettings, b: AppState.EmulatorSettings) b
     }
 
     return true;
+}
+
+fn hasInputDeviceChanged(a: [2]InputDevice, b: [2]InputDevice) bool {
+    return !(a[0].eql(b[0]) and a[1].eql(b[1]));
 }
 
 fn settingsFieldEqual(a: anytype, b: @TypeOf(a)) bool {

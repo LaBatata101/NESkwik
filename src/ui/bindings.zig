@@ -1,6 +1,28 @@
 const ControllerButton = @import("../controller.zig").ControllerButton;
 const Key = @import("core/ui.zig").Key;
 
+pub const InputDevice = union(enum) {
+    keyboard,
+    gamepad: struct { id: usize, name: []const u8 },
+
+    pub fn label(self: @This()) []const u8 {
+        return switch (self) {
+            .keyboard => "Keyboard",
+            .gamepad => |meta| meta.name,
+        };
+    }
+
+    pub fn eql(self: @This(), other: @This()) bool {
+        return switch (self) {
+            .keyboard => other == .keyboard,
+            .gamepad => |gamepad| switch (other) {
+                .gamepad => |other_gamepad| gamepad.id == other_gamepad.id,
+                .keyboard => false,
+            },
+        };
+    }
+};
+
 pub const GamepadButton = enum {
     south,
     east,
@@ -66,14 +88,7 @@ pub const GamepadKeyBindings = struct {
     player1: GamepadPlayerBindings = .{},
     player2: GamepadPlayerBindings = .{},
 
-    pub fn forPlayer(self: *@This(), player: ControllerPlayer) *GamepadPlayerBindings {
-        return switch (player) {
-            .one => &self.player1,
-            .two => &self.player2,
-        };
-    }
-
-    pub fn forPlayerConst(self: *const @This(), player: ControllerPlayer) *const GamepadPlayerBindings {
+    pub fn forPlayer(self: *@This(), player: Player) *GamepadPlayerBindings {
         return switch (player) {
             .one => &self.player1,
             .two => &self.player2,
@@ -81,7 +96,7 @@ pub const GamepadKeyBindings = struct {
     }
 };
 
-pub const ControllerPlayer = enum {
+pub const Player = enum {
     one,
     two,
 
@@ -93,10 +108,7 @@ pub const ControllerPlayer = enum {
     }
 
     pub fn value(self: @This()) usize {
-        return switch (self) {
-            .one => 0,
-            .two => 1,
-        };
+        return @intFromEnum(self);
     }
 };
 
@@ -147,7 +159,7 @@ pub const ControllerPlayerBindings = struct {
     b: Key,
     a: Key,
 
-    pub fn defaults(player: ControllerPlayer) @This() {
+    pub fn defaults(player: Player) @This() {
         return switch (player) {
             .one => .{
                 .up = .UP,
@@ -189,14 +201,7 @@ pub const ControllerKeyBindings = struct {
     player1: ControllerPlayerBindings = ControllerPlayerBindings.defaults(.one),
     player2: ControllerPlayerBindings = ControllerPlayerBindings.defaults(.two),
 
-    pub fn forPlayer(self: *@This(), player: ControllerPlayer) *ControllerPlayerBindings {
-        return switch (player) {
-            .one => &self.player1,
-            .two => &self.player2,
-        };
-    }
-
-    pub fn forPlayerConst(self: *const @This(), player: ControllerPlayer) *const ControllerPlayerBindings {
+    pub fn forPlayer(self: *@This(), player: Player) *ControllerPlayerBindings {
         return switch (player) {
             .one => &self.player1,
             .two => &self.player2,
@@ -205,7 +210,7 @@ pub const ControllerKeyBindings = struct {
 };
 
 pub const ControllerBindingTarget = struct {
-    player: ControllerPlayer,
+    player: Player,
     action: ControllerAction,
 };
 

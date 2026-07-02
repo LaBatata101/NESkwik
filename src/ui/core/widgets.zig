@@ -1271,8 +1271,9 @@ pub const Padding = struct {
 
 pub fn Combobox(comptime Option: type) type {
     comptime {
-        if (@typeInfo(Option) != .@"enum") {
-            @compileError("Combobox options_type must be an enum");
+        const info = @typeInfo(Option);
+        if (info != .@"enum" and info != .@"union") {
+            @compileError("Combobox options_type must be an enum or a tagged union");
         }
         if (!std.meta.hasFn(Option, "label")) {
             @compileError("Combobox options_type must define `pub fn label(self: @This()) []const u8`");
@@ -1330,14 +1331,24 @@ pub fn Combobox(comptime Option: type) type {
                 break :b element_id;
             } else clay.openElement();
 
-            const option_type_info = @typeInfo(Option).@"enum".fields;
             const options = if (params.filtered_options) |options|
                 options
             else blk: {
-                const buffer = ctx.frameAlloc().alloc(Option, option_type_info.len) catch @panic("OOM");
-                inline for (option_type_info, 0..) |option, i| {
-                    buffer[i] = @field(Option, option.name);
+                const info = @typeInfo(Option);
+                const total_fields = switch (info) {
+                    .@"enum" => |meta| meta.fields.len,
+                    .@"union" => @panic("Combobox tagged-union options need to use filtered_options"),
+                    else => unreachable,
+                };
+
+                const buffer = ctx.frameAlloc().alloc(Option, total_fields) catch @panic("OOM");
+                switch (info) {
+                    .@"enum" => |meta| inline for (meta.fields, 0..) |option, i| {
+                        buffer[i] = @field(Option, option.name);
+                    },
+                    else => unreachable,
                 }
+
                 break :blk buffer;
             };
 

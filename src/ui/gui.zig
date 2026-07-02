@@ -29,11 +29,12 @@ const NES_VISIBLE_HEIGHT = ness.NES_VISIBLE_HEIGHT;
 const OVERSCAN_PIXEL_OFFSET = OVERSCAN_TOP * NES_WIDTH * 4;
 const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 
-const ControllerPlayer = bindings.ControllerPlayer;
+const Player = bindings.Player;
 const ControllerAction = bindings.ControllerAction;
 const ControllerBindingTarget = bindings.ControllerBindingTarget;
 const GeneralAction = bindings.GeneralAction;
 const GamepadButton = bindings.GamepadButton;
+const InputDevice = bindings.InputDevice;
 const ParamTarget = settings.ParamTarget;
 const SettingsCategory = state.SettingsCategory;
 pub const AppState = state.AppState;
@@ -441,7 +442,7 @@ fn androidSidePanelTransitionState(state_: clay.TransitionData, _: clay.Transiti
 fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) void {
     const safe_padding = ui.main_window.safeAreaPadding();
     const dims = clay.getLayoutDimensions();
-    const sidepanel_w = @min(340.0, dims.w * 0.86);
+    const sidepanel_w = @min(340.0, dims.w * 0.60);
     const is_open = app_state.show_android_sidepanel;
     var pointer_over_state_dialog = false;
     const sidepanel_transition = clay.TransitionElementConfig{
@@ -1634,10 +1635,10 @@ fn drawSettingsControlsContent(ui: *UI, app_state: *AppState) void {
         updateGamepadBindingCapture(ui, app_state);
         updateGeneralBindingCapture(ui, app_state);
         drawControllerPlayerSelector(ui, app_state);
-        drawConnectedGamepadRow(ui, app_state);
+        drawInputDeviceSelector(ui, app_state);
         drawControllerBindingOverlay(ui, app_state);
 
-        if (ui.getGamepadCount() > 0) {
+        if (app_state.selectedTmpInputDevice().* == .gamepad) {
             drawContentSectionHeader(ui, "Analog Stick");
             const gamepad_section = drawContentSection(ui, .{});
             drawGamepadDeadzoneRow(ui, app_state);
@@ -1706,25 +1707,55 @@ fn drawGamepadDeadzoneRow(ui: *UI, app_state: *AppState) void {
     }
 }
 
-fn drawConnectedGamepadRow(ui: *UI, app_state: *AppState) void {
+fn drawInputDeviceSelector(ui: *UI, app_state: *AppState) void {
+    if (app_state.input_devices.items.len == 1 and app_state.input_devices.items[0] == .keyboard) return;
+
+    const selected_input_device = app_state.selectedTmpInputDevice();
     const row = ui.row(.{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .{ .y = .center },
         .gap = 8,
     });
     {
-        if (ui.getConnectedGamepadName(app_state.settings.selected_controller_player.value())) |name| {
-            _ = ui.label(.{
-                .text = "Gamepad",
-                .font_size = theme.LABEL_FONT,
-                .color = theme.text_primary,
-            });
-            _ = ui.spacer(.{ .sizing = .grow });
-            _ = ui.label(.{
-                .text = name,
-                .font_size = 15,
-                .color = theme.text_primary,
-            });
+        _ = ui.label(.{
+            .text = "Input Device",
+            .font_size = theme.LABEL_FONT,
+            .color = theme.text_primary,
+        });
+
+        _ = ui.spacer(.{ .sizing = .grow });
+
+        const input_devices = ui.combobox(InputDevice, .{
+            .id = switch (app_state.settings.selected_player) {
+                .one => "player1",
+                .two => "player2",
+            },
+            .filtered_options = app_state.input_devices.items,
+            .selected = selected_input_device.*,
+            .sizing = .{ .w = .fixed(240), .h = .fit },
+            .bg_color = theme.bg_hover,
+            .bg_color_on_hover = theme.bg_hover,
+            .border_color = theme.border_dim,
+            .border_color_on_open = theme.border_open,
+            .border_color_on_hover = theme.border,
+            .text_color = theme.text_primary,
+            .float_panel = .{
+                .bg_color = theme.bg_section,
+                .border_color = theme.border_open,
+            },
+            .item = .{
+                .bg_color_on_hover = theme.bg_hover,
+                .bg_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                .text_color = theme.text_secondary,
+                .text_color_on_hover = theme.text_accent,
+            },
+        });
+
+        const new_selected_input_device = input_devices.selected();
+        if (!selected_input_device.eql(new_selected_input_device)) {
+            selected_input_device.* = new_selected_input_device;
+            app_state.settings.capture_binding = null;
+            app_state.settings.capture_gamepad_binding = null;
         }
     }
     row.end();
@@ -1737,9 +1768,9 @@ fn drawControllerPlayerSelector(ui: *UI, app_state: *AppState) void {
         .child_alignment = .{ .y = .center },
     });
     {
-        inline for (@typeInfo(ControllerPlayer).@"enum".fields) |player_field| {
-            const player = @field(ControllerPlayer, player_field.name);
-            const is_selected = app_state.settings.selected_controller_player == player;
+        inline for (@typeInfo(Player).@"enum".fields) |player_field| {
+            const player = @field(Player, player_field.name);
+            const is_selected = app_state.settings.selected_player == player;
             if (ui.button(.{
                 .text = player.displayName(),
                 .font_size = 14,
@@ -1750,7 +1781,7 @@ fn drawControllerPlayerSelector(ui: *UI, app_state: *AppState) void {
                 .corner_radius = 3,
                 .elevation = 0,
             }).clicked(ui.current_window.ctx)) {
-                app_state.settings.selected_controller_player = player;
+                app_state.settings.selected_player = player;
                 app_state.settings.capture_binding = null;
                 app_state.settings.capture_general_binding = null;
                 app_state.settings.capture_gamepad_binding = null;
@@ -1811,7 +1842,7 @@ fn drawControllerBindingOverlay(ui: *UI, app_state: *AppState) void {
         .h = img_h,
     });
 
-    const player = app_state.settings.selected_controller_player;
+    const player = app_state.settings.selected_player;
     inline for (@typeInfo(ControllerAction).@"enum".fields) |action_field| {
         const action = @field(ControllerAction, action_field.name);
         drawControllerBindingField(ui, app_state, root.id, player, action);
@@ -1824,26 +1855,26 @@ fn drawControllerBindingField(
     ui: *UI,
     app_state: *AppState,
     parent_id: clay.ElementId,
-    player: ControllerPlayer,
+    player: Player,
     action: ControllerAction,
 ) void {
-    const has_gamepad = ui.getGamepadCount() > 0;
+    const uses_gamepad = app_state.selectedTmpInputDevice().* == .gamepad;
 
     const position = controllerBindingPosition(action);
     const target = ControllerBindingTarget{ .player = player, .action = action };
 
-    const is_capturing_kb = !has_gamepad and isControllerBindingTarget(app_state.settings.capture_binding, target);
-    const is_capturing_gp = has_gamepad and isControllerBindingTarget(app_state.settings.capture_gamepad_binding, target);
+    const is_capturing_kb = !uses_gamepad and isControllerBindingTarget(app_state.settings.capture_binding, target);
+    const is_capturing_gp = uses_gamepad and isControllerBindingTarget(app_state.settings.capture_gamepad_binding, target);
     const is_capturing = is_capturing_kb or is_capturing_gp;
 
     const label: []const u8 = if (is_capturing_gp)
         "Press btn"
     else if (is_capturing_kb)
         "Press key"
-    else if (has_gamepad)
-        app_state.settings.gamepad_bindings.forPlayerConst(player).get(action).displayName()
+    else if (uses_gamepad)
+        app_state.settings.gamepad_bindings.forPlayer(player).get(action).displayName()
     else
-        app_state.settings.controller_bindings.forPlayerConst(player).get(action).keyName();
+        app_state.settings.controller_bindings.forPlayer(player).get(action).keyName();
 
     const float = ui.float(.{
         .attach_to = .to_element_with_id,
@@ -1869,7 +1900,7 @@ fn drawControllerBindingField(
                 null,
         });
         if (btn.clicked(ui.current_window.ctx)) {
-            if (has_gamepad) {
+            if (uses_gamepad) {
                 app_state.settings.capture_gamepad_binding = target;
                 app_state.settings.capture_binding = null;
             } else {
