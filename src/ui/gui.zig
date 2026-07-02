@@ -764,6 +764,7 @@ fn nextEmulationSpeed(speed: EmulationSpeed) EmulationSpeed {
 }
 
 fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) void {
+    const has_gamepad_connected = ui.getGamepadCount() > 0;
     const root = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_base,
@@ -780,18 +781,29 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
             if (app_state.emulation_running) {
                 _ = ui.spacer(.{ .sizing = .{ .h = .fixed(@floatFromInt(safe_area_padding.top)) } });
             }
-            const tabs = ui.row(.{
-                .sizing = .{ .w = .grow, .h = .fit },
-                .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
-                .gap = 8,
-                .child_alignment = .{ .x = .left, .y = .center },
+            const scroll = ui.scrollArea(.{
+                .vertical = false,
+                .horizontal = true,
+                .sizing = .{ .h = .fit, .w = .grow },
             });
             {
-                drawAndroidSettingsTab(ui, app_state, .general);
-                drawAndroidSettingsTab(ui, app_state, .video);
-                drawAndroidSettingsTab(ui, app_state, .shader);
+                const tabs = ui.row(.{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
+                    .gap = 8,
+                    .child_alignment = .{ .x = .left, .y = .center },
+                });
+                {
+                    drawAndroidSettingsTab(ui, app_state, .general);
+                    drawAndroidSettingsTab(ui, app_state, .video);
+                    drawAndroidSettingsTab(ui, app_state, .shader);
+                    if (has_gamepad_connected) {
+                        drawAndroidSettingsTab(ui, app_state, .controls);
+                    }
+                }
+                tabs.end();
             }
-            tabs.end();
+            scroll.end();
         }
         col.end();
 
@@ -810,7 +822,13 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
                     .general => drawSettingsGeneralContent(ui, app_state),
                     .shader => drawSettingsShaderContent(ui, app_state),
                     .video => drawSettingsVideoContent(ui, app_state),
-                    else => unreachable,
+                    .controls => {
+                        if (!has_gamepad_connected) {
+                            app_state.selected_category = .general;
+                        }
+                        android.setScreenOrientation(.landscape);
+                        drawSettingsControlsContent(ui, app_state);
+                    },
                 }
             }
             body.end();
@@ -879,6 +897,9 @@ fn drawAndroidSettingsTab(ui: *UI, app_state: *AppState, category: SettingsCateg
         .corner_radius = 6,
         .elevation = 0,
     }).clicked(ui.main_window.ctx)) {
+        if (app_state.selected_category == .controls and category != .controls) {
+            android.setScreenOrientation(.unspecified);
+        }
         app_state.selected_category = category;
     }
 }
@@ -1667,7 +1688,7 @@ fn drawSettingsControlsContent(ui: *UI, app_state: *AppState) void {
         updateGamepadBindingCapture(ui, app_state);
         updateGeneralBindingCapture(ui, app_state);
         drawControllerPlayerSelector(ui, app_state);
-        drawInputDeviceSelector(ui, app_state);
+        if (!builtin.abi.isAndroid()) drawInputDeviceSelector(ui, app_state);
         drawControllerBindingOverlay(ui, app_state);
 
         if (app_state.selectedTmpInputDevice().* == .gamepad) {
@@ -1679,23 +1700,25 @@ fn drawSettingsControlsContent(ui: *UI, app_state: *AppState) void {
     }
     controller_keymap_section.end();
 
-    drawContentSectionHeader(ui, "General");
-    const general_keymap_section = drawContentSection(ui, .{
-        .padding = .{ .left = 14, .right = 5, .top = 12, .bottom = 12 },
-    });
-    {
-        const scroll = ui.scrollArea(.{
-            .sizing = .{ .h = .fixed(200), .w = .grow },
-            .gap = 12,
+    if (!builtin.abi.isAndroid()) {
+        drawContentSectionHeader(ui, "General");
+        const general_keymap_section = drawContentSection(ui, .{
+            .padding = .{ .left = 14, .right = 5, .top = 12, .bottom = 12 },
         });
         {
-            inline for (@typeInfo(GeneralAction).@"enum".fields) |action_field| {
-                drawGeneralBindingRow(ui, app_state, @field(GeneralAction, action_field.name));
+            const scroll = ui.scrollArea(.{
+                .sizing = .{ .h = .fixed(200), .w = .grow },
+                .gap = 12,
+            });
+            {
+                inline for (@typeInfo(GeneralAction).@"enum".fields) |action_field| {
+                    drawGeneralBindingRow(ui, app_state, @field(GeneralAction, action_field.name));
+                }
             }
+            scroll.end();
         }
-        scroll.end();
+        general_keymap_section.end();
     }
-    general_keymap_section.end();
 }
 
 fn drawGamepadDeadzoneRow(ui: *UI, app_state: *AppState) void {
@@ -1863,9 +1886,7 @@ fn drawControllerBindingOverlay(ui: *UI, app_state: *AppState) void {
     const display_w: f32 = @min(500.0, @as(f32, @floatFromInt(img_w)));
     const display_h = display_w * @as(f32, @floatFromInt(img_h)) / @as(f32, @floatFromInt(img_w));
 
-    const root = ui.column(.{
-        .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
-    });
+    const root = ui.column(.{ .sizing = .fit });
     _ = ui.canvas(.{
         .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
         .pixel_format = app_state.controller_img.format(),
@@ -1890,7 +1911,7 @@ fn drawControllerBindingField(
     player: Player,
     action: ControllerAction,
 ) void {
-    const uses_gamepad = app_state.selectedTmpInputDevice().* == .gamepad;
+    const uses_gamepad = if (builtin.abi.isAndroid()) true else app_state.selectedTmpInputDevice().* == .gamepad;
 
     const position = controllerBindingPosition(action);
     const target = ControllerBindingTarget{ .player = player, .action = action };
@@ -1914,6 +1935,7 @@ fn drawControllerBindingField(
         .attach_points = .{ .element = .center_center, .parent = .left_top },
         .offset = .{ .x = position.x, .y = position.y },
         .z_index = 20,
+        .clip_to = .to_attached_parent,
     });
     {
         const btn = ui.button(.{
