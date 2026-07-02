@@ -486,6 +486,7 @@ pub const AppState = struct {
             if (builtin.abi.isAndroid() and self.ui.gamepads.items.len > 0) {
                 // Switch the input to the first connected gamepad
                 self.selected_input_device[0] = .{ .gamepad = self.input_devices.items[0].gamepad };
+                self.tmp_selected_input_device[0] = .{ .gamepad = self.input_devices.items[0].gamepad };
             }
         }
 
