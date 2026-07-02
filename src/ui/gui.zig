@@ -1039,20 +1039,20 @@ fn drawGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.S
             .sizing = .{ .w = .fixed(162), .h = .fixed(162) },
         });
         {
-            const up_button = controllerButton(ui, "U", .{ .w = .fixed(54), .h = .fixed(54) });
+            const up_button = controllerButton(ui, .{ .icon = .dpad_up }, .{ .w = .fixed(54), .h = .fixed(54) });
             if (up_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.up);
 
             const row = ui.row(.{ .gap = 54 });
             {
-                const left_button = controllerButton(ui, "L", .{ .w = .fixed(54), .h = .fixed(54) });
+                const left_button = controllerButton(ui, .{ .icon = .dpad_left }, .{ .w = .fixed(54), .h = .fixed(54) });
                 if (left_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.left);
 
-                const right_button = controllerButton(ui, "R", .{ .w = .fixed(54), .h = .fixed(54) });
+                const right_button = controllerButton(ui, .{ .icon = .dpad_right }, .{ .w = .fixed(54), .h = .fixed(54) });
                 if (right_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.right);
             }
             row.end();
 
-            const down_button = controllerButton(ui, "D", .{ .w = .fixed(54), .h = .fixed(54) });
+            const down_button = controllerButton(ui, .{ .icon = .dpad_down }, .{ .w = .fixed(54), .h = .fixed(54) });
             if (down_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.down);
         }
         col.end();
@@ -1114,10 +1114,10 @@ fn drawGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.S
     {
         const row = ui.row(.{ .sizing = .fit, .gap = 16 });
         {
-            const b_button = controllerButton(ui, "B", .{ .w = .fixed(62), .h = .fixed(62) });
+            const b_button = controllerButton(ui, .{ .text = "B" }, .{ .w = .fixed(62), .h = .fixed(62) });
             if (b_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.b);
 
-            const a_button = controllerButton(ui, "A", .{ .w = .fixed(62), .h = .fixed(62) });
+            const a_button = controllerButton(ui, .{ .text = "A" }, .{ .w = .fixed(62), .h = .fixed(62) });
             if (a_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.a);
         }
         row.end();
@@ -1125,9 +1125,12 @@ fn drawGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.S
     buttons2.end();
 }
 
-fn controllerButton(ui: *UI, text: []const u8, sizing: clay.Sizing) *widgets.Button {
+fn controllerButton(ui: *UI, params: struct { text: ?[]const u8 = null, icon: ?UI.Icon = null }, sizing: clay.Sizing) *widgets.Button {
     return ui.button(.{
-        .text = text,
+        .text = params.text orelse "",
+        .icon = if (params.icon) |icon| .{
+            .icon = ui.icons.get(icon),
+        } else null,
         .font_size = 18,
         .text_color = theme.text_primary,
         .sizing = sizing,

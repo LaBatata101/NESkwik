@@ -1959,6 +1959,12 @@ pub const UI = struct {
         skip_next,
         fast_forward,
         menu,
+        keyboard,
+        controller,
+        dpad_up,
+        dpad_down,
+        dpad_left,
+        dpad_right,
 
         fn data(self: @This()) []const u8 {
             return switch (self) {
@@ -1967,6 +1973,12 @@ pub const UI = struct {
                 .skip_next => @embedFile("skip_next_icon"),
                 .fast_forward => @embedFile("fast_forward_icon"),
                 .menu => @embedFile("menu_icon"),
+                .keyboard => @embedFile("keyboard_icon"),
+                .controller => @embedFile("controller_icon"),
+                .dpad_up => @embedFile("dpad_up_icon"),
+                .dpad_down => @embedFile("dpad_down_icon"),
+                .dpad_left => @embedFile("dpad_left_icon"),
+                .dpad_right => @embedFile("dpad_right_icon"),
             };
         }
     };
@@ -2091,8 +2103,8 @@ pub const UI = struct {
             .shaders_pipeline = .init(allocator),
             .icons = blk: {
                 var arr = std.EnumArray(Icon, ?*c.SDL_GPUTexture).initUndefined();
-                inline for (std.meta.tags(Icon)) |icon| {
-                    arr.set(icon, loadIconTexture(gpu_device, icon.data()));
+                inline for (std.meta.tags(Icon)) |tag| {
+                    arr.set(tag, loadIconTexture(gpu_device, tag.data()));
                 }
                 break :blk arr;
             },
@@ -2130,8 +2142,8 @@ pub const UI = struct {
         }
         self.shaders_pipeline.deinit();
 
-        inline for (std.meta.tags(Icon)) |icon| {
-            c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(icon));
+        inline for (std.meta.tags(Icon)) |tag| {
+            c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(tag));
         }
 
         c.glslang_finalize_process();
@@ -3357,5 +3369,9 @@ pub const UI = struct {
 
     pub fn iconButton(self: *Self, params: widgets.IconButton.Params) *widgets.IconButton {
         return self.current_window.ctx.allocWidget(widgets.IconButton, .start(self.current_window.ctx, params));
+    }
+
+    pub fn icon(self: *Self, params: widgets.Icon.Params) *widgets.Icon {
+        return self.current_window.ctx.allocWidget(widgets.Icon, .start(params));
     }
 };

@@ -242,6 +242,12 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     mod.addAnonymousImport("play_icon", .{ .root_source_file = b.path("resources/icons/play_arrow_32x32.png") });
     mod.addAnonymousImport("stop_icon", .{ .root_source_file = b.path("resources/icons/stop_32x32.png") });
     mod.addAnonymousImport("menu_icon", .{ .root_source_file = b.path("resources/icons/menu_32x32.png") });
+    mod.addAnonymousImport("controller_icon", .{ .root_source_file = b.path("resources/icons/controller_32x32.png") });
+    mod.addAnonymousImport("keyboard_icon", .{ .root_source_file = b.path("resources/icons/keyboard_32x32.png") });
+    mod.addAnonymousImport("dpad_up_icon", .{ .root_source_file = b.path("resources/icons/dpad_up_32x32.png") });
+    mod.addAnonymousImport("dpad_down_icon", .{ .root_source_file = b.path("resources/icons/dpad_down_32x32.png") });
+    mod.addAnonymousImport("dpad_left_icon", .{ .root_source_file = b.path("resources/icons/dpad_left_32x32.png") });
+    mod.addAnonymousImport("dpad_right_icon", .{ .root_source_file = b.path("resources/icons/dpad_right_32x32.png") });
 
     try addBorderShaderImports(b, mod);
 

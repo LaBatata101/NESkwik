@@ -427,7 +427,12 @@ pub const Button = struct {
     pub const Params = struct {
         id: ?[]const u8 = null,
         text: []const u8,
-        on_click: ?*const fn () void = null,
+        icon: ?struct {
+            icon: ?*c.SDL_GPUTexture,
+            size: f32 = 32,
+            overlay_color: Color = Color.transparent,
+            gap: u16 = 0,
+        } = null,
         enabled: bool = true,
         bg_color: Color = Color.blue,
         hover_color: ?Color = null,
@@ -462,7 +467,12 @@ pub const Button = struct {
         const button_color = if (is_hovered) hover_col else params.bg_color;
 
         clay.configureOpenElement(.{
-            .layout = .{ .sizing = params.sizing, .padding = params.padding, .child_alignment = if (params.text_alignment == .left) .{ .x = .left, .y = .center } else .center },
+            .layout = .{
+                .sizing = params.sizing,
+                .padding = params.padding,
+                .child_alignment = if (params.text_alignment == .left) .{ .x = .left, .y = .center } else .center,
+                .child_gap = if (params.icon) |icon| icon.gap else 0,
+            },
             .background_color = button_color.toClay(),
             .corner_radius = .all(params.corner_radius),
             .border = if (params.border) |border|
@@ -478,6 +488,9 @@ pub const Button = struct {
             } else .{ .color = .{ 0, 0, 0, 0 } },
         });
 
+        if (params.icon) |icon| {
+            _ = Icon.start(.{ .icon = icon.icon, .size = icon.size, .overlay_color = icon.overlay_color });
+        }
         _ = Label.start(.{
             .text = params.text,
             .alignment = params.text_alignment,
@@ -578,6 +591,36 @@ pub const Button = struct {
         });
 
         clay.closeElement();
+    }
+};
+
+pub const Icon = struct {
+    id: clay.ElementId,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        icon: ?*c.SDL_GPUTexture,
+        size: f32 = 32,
+        overlay_color: Color = Color.transparent,
+    };
+    const Self = @This();
+
+    pub fn start(params: Params) Self {
+        const element_id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
+
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .{ .w = .fixed(params.size), .h = .fixed(params.size) } },
+            .overlay_color = params.overlay_color.toClay(),
+            .image = .{ .image_data = params.icon },
+        });
+
+        clay.closeElement();
+
+        return .{ .id = element_id };
     }
 };
 
