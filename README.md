@@ -7,8 +7,8 @@ NESkwik is a cross-platform NES (Nintendo Entertainment System) emulator written
 
 | |  |
 |:--:|:--:|
-| ![](media/home.png) | ![](media/game_running.png) |
-|![](media/game_with_shader.png) **RetroArch shader active**|![](media/border_shader.png) **Shader in letterbox area**|
+| ![](media/home.webp) **Home screen** | ![](media/game_running.webp) **Game running** |
+|![](media/game_with_shader.webp) **RetroArch shader active**|![](media/border_shader.webp) **Shader in letterbox area**|
 
 ## Features
 
