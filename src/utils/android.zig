@@ -6,12 +6,13 @@ const jni = if (builtin.abi.isAndroid()) @cImport({
     @cInclude("jni.h");
 }) else struct {};
 
-pub const ScreenOrientation = enum(i32) {
-    unknown = 0,
-    landscape = 1,
-    landscape_flipped = 2,
-    portrait = 3,
-    portrait_flipped = 4,
+pub const ScreenOrientation = enum {
+    unknown,
+    unspecified,
+    landscape,
+    landscape_flipped,
+    portrait,
+    portrait_flipped,
 
     fn fromInt(value: i32) ScreenOrientation {
         return switch (value) {
@@ -20,6 +21,16 @@ pub const ScreenOrientation = enum(i32) {
             3 => .portrait,
             4 => .portrait_flipped,
             else => .unknown,
+        };
+    }
+
+    fn toAndroidRequestedOrientation(self: ScreenOrientation) i32 {
+        return switch (self) {
+            .unspecified, .unknown => -1,
+            .landscape => 0,
+            .portrait => 1,
+            .landscape_flipped => 8,
+            .portrait_flipped => 9,
         };
     }
 };
@@ -119,6 +130,40 @@ pub fn currentScreenOrientation() ?ScreenOrientation {
     }
 
     return ScreenOrientation.fromInt(orientation);
+}
+
+pub fn setScreenOrientation(orientation: ScreenOrientation) void {
+    if (!builtin.abi.isAndroid()) @compileError("Function only available for Android");
+
+    const env_raw = c.SDL_GetAndroidJNIEnv() orelse return;
+    const activity_raw = c.SDL_GetAndroidActivity() orelse return;
+
+    const env: [*c]jni.JNIEnv = @ptrCast(@alignCast(env_raw));
+    const activity: jni.jobject = @ptrCast(activity_raw);
+    const f = &env.*[0];
+    defer deleteLocalRef(env, f, activity);
+
+    const activity_class = f.GetObjectClass.?(env, activity) orelse {
+        clearException(env, f);
+        return;
+    };
+    defer deleteLocalRef(env, f, activity_class);
+
+    const method = f.GetMethodID.?(
+        env,
+        activity_class,
+        "setRequestedOrientation",
+        "(I)V",
+    ) orelse {
+        clearException(env, f);
+        return;
+    };
+
+    var args = [_]jni.jvalue{.{ .i = orientation.toAndroidRequestedOrientation() }};
+    f.CallVoidMethodA.?(env, activity, method, &args);
+    if (hasException(env, f)) {
+        f.ExceptionClear.?(env);
+    }
 }
 
 pub fn getExternalCacheDir(alloc: std.mem.Allocator) !?[]u8 {
