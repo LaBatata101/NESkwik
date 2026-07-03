@@ -3273,7 +3273,9 @@ pub const UI = struct {
 
     fn hasAnyShaderLoaded(self: *const Self, shaders_mode: []const ShaderMode) bool {
         for (shaders_mode) |shader| {
-            if (self.shaders_pipeline.contains(shader.id)) return true;
+            if (self.shaders_pipeline.get(shader.id)) |shader_pipeline| {
+                if (shader_pipeline.isActive()) return true;
+            }
         }
         return false;
     }
