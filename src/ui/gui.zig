@@ -101,12 +101,21 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
                 .composition = .original_on_top,
             });
             const main_shader = ui.shaderMode(.{ .id = "main" });
+            const padding: clay.Padding = if (builtin.abi.isAndroid()) blk: {
+                break :blk switch (orientation) {
+                    .portrait => .{ .top = safe_area_padding.top },
+                    .portrait_flipped => .{ .bottom = safe_area_padding.bottom },
+                    .landscape => .{ .left = safe_area_padding.left },
+                    .landscape_flipped => .{ .right = safe_area_padding.right },
+                    else => unreachable,
+                };
+            } else .{};
             const canvas = ui.canvas(.{
                 .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
                 .pixels = app_state.framePixels(OVERSCAN_PIXEL_OFFSET, NES_VISIBLE_PIXEL_BYTES),
                 .w = NES_WIDTH,
                 .h = NES_VISIBLE_HEIGHT,
-                .padding = if (builtin.abi.isAndroid()) safe_area_padding else .{},
+                .padding = padding,
                 .aspect_ratio = if (is_portrait) .@"4_3" else app_state.settings.aspect_ratio,
                 .viewport_alignment = if (is_portrait) .top else .center,
                 .bg_color = Color.black,
