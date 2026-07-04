@@ -76,22 +76,63 @@ fn measureText(text: []const u8, config: *clay.TextElementConfig, user_data: *co
     return user_data.measure(text, config.font_size);
 }
 
+pub const CursorIcon = enum {
+    default,
+    text,
+    wait,
+    crosshair,
+    progress,
+    nwse_resize,
+    nesw_resize,
+    ew_resize,
+    ns_resize,
+    move,
+    not_allowed,
+    pointer,
+    nw_resize,
+    n_resize,
+    ne_resize,
+    e_resize,
+    se_resize,
+    s_resize,
+    sw_resize,
+    w_resize,
+};
+
+var requested_cursor: CursorIcon = .default;
+var current_cursor: CursorIcon = .default;
+var system_cursors: [@typeInfo(CursorIcon).@"enum".fields.len]?*c.SDL_Cursor = .{null} ** @typeInfo(CursorIcon).@"enum".fields.len;
+
 pub fn setMouseCursorText(value: bool) void {
-    if (value) {
-        const text_cursor = sdlError(c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT));
-        sdlError(c.SDL_SetCursor(text_cursor));
-    } else {
-        sdlError(c.SDL_SetCursor(c.SDL_GetDefaultCursor()));
-    }
+    if (value) setMouseCursor(.text);
 }
 
 pub fn setMouseCursorMove(value: bool) void {
-    if (value) {
-        const move_cursor = sdlError(c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_MOVE));
-        sdlError(c.SDL_SetCursor(move_cursor));
-    } else {
+    if (value) setMouseCursor(.move);
+}
+
+fn resetMouseCursor() void {
+    requested_cursor = .default;
+}
+
+fn applyMouseCursor() void {
+    if (requested_cursor == current_cursor) return;
+
+    if (requested_cursor == .default) {
         sdlError(c.SDL_SetCursor(c.SDL_GetDefaultCursor()));
+    } else {
+        const cursor_id = @intFromEnum(requested_cursor);
+        if (system_cursors[cursor_id] == null) {
+            system_cursors[cursor_id] = sdlError(c.SDL_CreateSystemCursor(cursor_id));
+        }
+        sdlError(c.SDL_SetCursor(system_cursors[cursor_id]));
     }
+
+    current_cursor = requested_cursor;
+}
+
+pub fn setMouseCursor(cursor_id: CursorIcon) void {
+    requested_cursor = cursor_id;
 }
 
 fn setWindowIcon(window: ?*c.SDL_Window) void {
@@ -2356,6 +2397,8 @@ pub const UI = struct {
 
     pub fn beginFrame(self: *Self) void {
         self.main_window.ctx.reset();
+        resetMouseCursor();
+
         for (self.secondary_windows.items) |window| {
             window.inner.ctx.reset();
         }
@@ -2405,6 +2448,7 @@ pub const UI = struct {
         }
 
         clay.setCurrentContext(self.main_window.ctx.clay_ctx);
+        applyMouseCursor();
     }
 
     pub fn isKeyPressed(self: *const Self, key: Key) bool {
