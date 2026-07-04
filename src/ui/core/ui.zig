@@ -2625,13 +2625,6 @@ pub const UI = struct {
                 self.current_window.ctx.frame.mouse_released = true;
                 self.current_window.ctx.frame.mouse_down = self.current_window.ctx.hasFingerDown();
             },
-            c.SDL_EVENT_FINGER_MOTION => {
-                const touch = event.tfinger;
-                const pos = self.current_window.logicalTouchOffset(touch.x, touch.y);
-                const delta = self.current_window.logicalTouchOffset(touch.dx, touch.dy);
-
-                self.current_window.ctx.updatePointerPosition(pos.x, pos.y, delta.x, delta.y);
-            },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     self.current_window.ctx.beginPointerDown();
