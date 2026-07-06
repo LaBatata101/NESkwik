@@ -2,8 +2,12 @@ const std = @import("std");
 
 const bindings = @import("bindings.zig");
 const viewport = @import("core/viewport.zig");
-const EmulatorSettings = @import("state.zig").AppState.EmulatorSettings;
+const AppState = @import("state.zig").AppState;
 pub const BorderShaderOpts = @import("../shaders/builtin.zig").BorderShader;
+
+const EmulatorSettings = AppState.EmulatorSettings;
+const OnScreenController = AppState.OnScreenController;
+const OnScreenControllerLayout = OnScreenController.Layout;
 
 const SETTINGS_FILENAME = "config.json";
 
@@ -61,6 +65,26 @@ pub const SettingsConfig = struct {
     gamepad_deadzone: u8 = 25,
     show_home_screen_snow_effect: bool = true,
     hide_android_onscreen_controller: bool = false,
+    android_onscreen_controller: OnScreenControllerConfig = .{},
+};
+
+const OnScreenControllerConfig = struct {
+    portrait: ?OnScreenControllerLayout = null,
+    landscape: ?OnScreenControllerLayout = null,
+
+    fn fromRuntime(controller: OnScreenController) @This() {
+        return .{
+            .portrait = controller.portrait,
+            .landscape = controller.landscape,
+        };
+    }
+
+    fn toRuntime(self: @This()) OnScreenController {
+        return .{
+            .portrait = if (self.portrait) |portrait| portrait else .{},
+            .landscape = if (self.landscape) |landscape| landscape else .{},
+        };
+    }
 };
 
 pub fn load(alloc: std.mem.Allocator, config_dir: ?[]const u8, settings: *EmulatorSettings) !void {
@@ -129,6 +153,9 @@ fn configFieldValue(comptime T: type, value: anytype) T {
     if (T == []const ShaderParamSetting and @TypeOf(value) == std.ArrayList(ShaderParamSetting)) {
         return value.items;
     }
+    if (T == OnScreenControllerConfig and @TypeOf(value) == OnScreenController) {
+        return OnScreenControllerConfig.fromRuntime(value);
+    }
 
     return value;
 }
@@ -141,6 +168,8 @@ fn applyConfigField(alloc: std.mem.Allocator, dest: anytype, source: anytype) !v
         try replaceOptionalOwnedString(alloc, dest, source);
     } else if (Dest == std.ArrayList(ShaderParamSetting) and Source == []const ShaderParamSetting) {
         try replaceShaderParamSettings(alloc, dest, source);
+    } else if (Dest == OnScreenController and Source == OnScreenControllerConfig) {
+        dest.* = source.toRuntime();
     } else {
         dest.* = source;
     }

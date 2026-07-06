@@ -586,6 +586,7 @@ pub const WidgetState = union(enum) {
     grid: GridState,
     slider: SliderState,
     draggable_panel: DraggablePanelState,
+    resizable_panel: ResizablePanelState,
 
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
@@ -619,6 +620,17 @@ pub const WidgetState = union(enum) {
     pub const DraggablePanelState = struct {
         offset: clay.Vector2,
         dragging: bool = false,
+    };
+    pub const ResizablePanelState = struct {
+        size: ?clay.Dimensions = null,
+        initial_size: ?clay.Dimensions = null,
+        resizing: bool = false,
+        edges: struct {
+            left: bool = false,
+            right: bool = false,
+            top: bool = false,
+            bottom: bool = false,
+        } = .{},
     };
 };
 
@@ -2659,6 +2671,7 @@ pub const UI = struct {
             c.SDL_EVENT_FINGER_DOWN => {
                 const pos = self.current_window.logicalTouchOffset(event.tfinger.x, event.tfinger.y);
 
+                self.current_window.ctx.updatePointerPosition(pos.x, pos.y, 0, 0);
                 self.current_window.ctx.setFingerPos(event.tfinger.fingerID, pos.x, pos.y);
                 self.current_window.ctx.setFingerDown(event.tfinger.fingerID, true);
                 self.current_window.ctx.beginPointerDown();
@@ -3407,6 +3420,14 @@ pub const UI = struct {
 
     pub fn draggablePanel(self: *Self, params: widgets.DraggablePanel.Params) *widgets.DraggablePanel {
         return self.current_window.ctx.allocWidget(widgets.DraggablePanel, .start(self.current_window.ctx, params));
+    }
+
+    pub fn resizablePanel(self: *Self, params: widgets.ResizablePanel.Params) *widgets.ResizablePanel {
+        return self.current_window.ctx.allocWidget(widgets.ResizablePanel, .start(self.current_window.ctx, params));
+    }
+
+    pub fn draggable(self: *Self, params: widgets.Draggable.Params) *widgets.Draggable {
+        return self.current_window.ctx.allocWidget(widgets.Draggable, .start(self.current_window.ctx, params));
     }
 
     pub fn iconButton(self: *Self, params: widgets.IconButton.Params) *widgets.IconButton {

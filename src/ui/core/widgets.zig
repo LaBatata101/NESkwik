@@ -390,6 +390,378 @@ const DragHandle = struct {
     }
 };
 
+pub const Draggable = struct {
+    offset_dt: clay.Vector2,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        parentId: u32 = 0,
+        z_index: i16 = 0,
+        attach_points: clay.FloatingAttachPoints = .{ .element = .left_top, .parent = .left_top },
+        attach_to: clay.FloatingAttachToElement = .to_root,
+        pointer_capture_mode: clay.PointerCaptureMode = .capture,
+        clip_to: clay.FloatingClipToElement = .to_none,
+        offset: clay.Vector2 = .{ .x = 0, .y = 0 },
+        bounds: ?clay.BoundingBox = null,
+    };
+    const Self = @This();
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        const element_id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
+
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .draggable_panel = .{
+            .offset = params.offset,
+        } });
+
+        const is_hovered = clay.pointerOver(element_id);
+        if (is_hovered and ctx.frame.mouse_pressed) state.draggable_panel.dragging = true;
+        if (ctx.frame.mouse_released) state.draggable_panel.dragging = false;
+
+        const is_dragging = state.draggable_panel.dragging and ctx.frame.mouse_down;
+        if (is_dragging) {
+            const dx = ctx.frame.mouse_delta.x;
+            const dy = ctx.frame.mouse_delta.y;
+            const bb = clay.getElementData(element_id).bounding_box;
+            const dimensions = clay.getLayoutDimensions();
+            state.draggable_panel.offset.x += std.math.clamp(dx, -bb.x, dimensions.w - bb.x - bb.width);
+            state.draggable_panel.offset.y += std.math.clamp(dy, -bb.y, dimensions.h - bb.y - bb.height);
+        }
+
+        if (params.bounds) |bounds| {
+            state.draggable_panel.offset = clampOffsetToBoundingBox(
+                state.draggable_panel.offset,
+                params.attach_points,
+                element_id,
+                bounds,
+            );
+        }
+
+        ui.setMouseCursorMove(is_hovered or is_dragging);
+
+        clay.configureOpenElement(.{
+            .layout = .{ .sizing = .fit },
+            .floating = .{
+                .offset = state.draggable_panel.offset,
+                .attach_points = params.attach_points,
+                .attach_to = params.attach_to,
+                .parentId = params.parentId,
+                .z_index = params.z_index,
+                .pointer_capture_mode = params.pointer_capture_mode,
+                .clip_to = params.clip_to,
+            },
+        });
+
+        return .{ .offset_dt = state.draggable_panel.offset };
+    }
+
+    pub fn offset(self: *const Self) clay.Vector2 {
+        return self.offset_dt;
+    }
+
+    pub fn end(_: *const Self) void {
+        clay.closeElement();
+    }
+
+    fn clampOffsetToBoundingBox(
+        value: clay.Vector2,
+        attach_points: clay.FloatingAttachPoints,
+        element_id: clay.ElementId,
+        bounds: clay.BoundingBox,
+    ) clay.Vector2 {
+        const data = clay.getElementData(element_id);
+        std.debug.assert(data.found);
+
+        const bounds_size = clay.Dimensions{ .w = bounds.width, .h = bounds.height };
+        const element_size = clay.Dimensions{ .w = data.bounding_box.width, .h = data.bounding_box.height };
+
+        const parent_anchor = attachPointOffset(attach_points.parent, bounds_size);
+        const element_anchor = attachPointOffset(attach_points.element, element_size);
+        const origin_delta = .{
+            .x = element_anchor.x - parent_anchor.x,
+            .y = element_anchor.y - parent_anchor.y,
+        };
+
+        const min = origin_delta;
+        const max = clay.Vector2{
+            .x = bounds_size.w - element_size.w + origin_delta.x,
+            .y = bounds_size.h - element_size.h + origin_delta.y,
+        };
+
+        return .{
+            .x = std.math.clamp(value.x, min.x, max.x),
+            .y = std.math.clamp(value.y, min.y, max.y),
+        };
+    }
+
+    fn attachPointOffset(point: clay.FloatingAttachPointType, size: clay.Dimensions) clay.Vector2 {
+        return .{
+            .x = switch (point) {
+                .left_top, .left_center, .left_bottom => 0,
+                .center_top, .center_center, .center_bottom => size.w * 0.5,
+                .right_top, .right_center, .right_bottom => size.w,
+            },
+            .y = switch (point) {
+                .left_top, .center_top, .right_top => 0,
+                .left_center, .center_center, .right_center => size.h * 0.5,
+                .left_bottom, .center_bottom, .right_bottom => size.h,
+            },
+        };
+    }
+};
+
+pub const ResizablePanel = struct {
+    id: clay.ElementId,
+    scale_value: f32,
+
+    pub const Params = struct {
+        id: ?[]const u8 = null,
+        initial_size: ?clay.Dimensions = null,
+        min_size: ?clay.Dimensions = null,
+        max_size: ?clay.Dimensions = null,
+        sizing: clay.Sizing = .fit,
+        clip: bool = false,
+        edge_size: f32 = 12,
+        preserve_aspect_ratio: bool = false,
+    };
+    const Self = @This();
+
+    const ResizeEdges = struct {
+        left: bool = false,
+        right: bool = false,
+        top: bool = false,
+        bottom: bool = false,
+
+        fn any(self: @This()) bool {
+            return self.left or self.right or self.top or self.bottom;
+        }
+    };
+
+    pub fn start(ctx: *UIContext, params: Params) Self {
+        std.debug.assert(params.sizing.w.type != .grow and params.sizing.h.type != .grow);
+
+        const element_id = if (params.id) |id| b: {
+            const element_id = clay.ElementId.ID(id);
+            clay.openElementWithId(element_id);
+            break :b element_id;
+        } else clay.openElement();
+
+        const initial_size: ?clay.Dimensions = if (params.initial_size) |size| blk: {
+            break :blk clampSize(size, params.min_size, params.max_size);
+        } else if (params.sizing.h.type == .fixed and params.sizing.w.type == .fixed) blk: {
+            break :blk clampSize(
+                .{ .w = params.sizing.w.size.minmax.min, .h = params.sizing.h.size.minmax.min },
+                params.min_size,
+                params.max_size,
+            );
+        } else null;
+
+        const current_size = if (params.sizing.w.type == .fixed and params.sizing.h.type == .fixed)
+            clampSize(
+                .{ .w = params.sizing.w.size.minmax.min, .h = params.sizing.h.size.minmax.min },
+                params.min_size,
+                params.max_size,
+            )
+        else
+            initial_size;
+
+        const state = ctx.getOrCreateWidgetState(element_id, .{ .resizable_panel = .{
+            .size = current_size,
+            .initial_size = initial_size,
+        } });
+
+        if (state.resizable_panel.initial_size == null) {
+            const data = clay.getElementData(element_id);
+            if (data.found and data.bounding_box.width > 0 and data.bounding_box.height > 0) {
+                state.resizable_panel.initial_size = .{ .w = data.bounding_box.width, .h = data.bounding_box.height };
+            }
+        }
+
+        const hovered_edges = detectHoveredEdges(ctx, element_id, params.edge_size);
+        if (hovered_edges.any() and ctx.frame.mouse_pressed) {
+            if (state.resizable_panel.size == null) {
+                const measured_size = clampSize(measuredSize(element_id), params.min_size, params.max_size);
+                state.resizable_panel.size = measured_size;
+                state.resizable_panel.initial_size = measured_size;
+            }
+            state.resizable_panel.resizing = true;
+            state.resizable_panel.edges = .{
+                .left = hovered_edges.left,
+                .right = hovered_edges.right,
+                .top = hovered_edges.top,
+                .bottom = hovered_edges.bottom,
+            };
+        }
+        if (ctx.frame.mouse_released) {
+            state.resizable_panel.resizing = false;
+            state.resizable_panel.edges = .{};
+        }
+
+        if (state.resizable_panel.resizing and ctx.frame.mouse_down) {
+            applyResize(state, ctx.frame.mouse_delta, params.min_size, params.max_size, params.preserve_aspect_ratio);
+        }
+
+        const cursor_edges: ResizeEdges = if (state.resizable_panel.resizing) .{
+            .left = state.resizable_panel.edges.left,
+            .right = state.resizable_panel.edges.right,
+            .top = state.resizable_panel.edges.top,
+            .bottom = state.resizable_panel.edges.bottom,
+        } else hovered_edges;
+        if (cursor_edges.any()) {
+            ui.setMouseCursor(cursorIcon(cursor_edges));
+        }
+
+        clay.configureOpenElement(.{
+            .layout = .{
+                .sizing = if (state.resizable_panel.size) |size|
+                    .{ .w = .fixed(size.w), .h = .fixed(size.h) }
+                else
+                    params.sizing,
+            },
+            .clip = .{ .horizontal = params.clip, .vertical = params.clip },
+        });
+
+        return .{
+            .id = element_id,
+            .scale_value = scaleRatio(state.resizable_panel.initial_size, state.resizable_panel.size),
+        };
+    }
+
+    pub fn scale(self: *const Self) f32 {
+        return self.scale_value;
+    }
+
+    pub fn end(_: *const Self) void {
+        clay.closeElement();
+    }
+
+    fn detectHoveredEdges(ctx: *UIContext, element_id: clay.ElementId, edge_size: f32) ResizeEdges {
+        const data = clay.getElementData(element_id);
+        std.debug.assert(data.found);
+
+        const bb = data.bounding_box;
+        const x = ctx.mouse_x;
+        const y = ctx.mouse_y;
+
+        return .{
+            .left = @abs(x - bb.x) <= edge_size and y >= bb.y - edge_size and y <= bb.y + bb.height + edge_size,
+            .right = @abs(x - (bb.x + bb.width)) <= edge_size and y >= bb.y - edge_size and y <= bb.y + bb.height + edge_size,
+            .top = @abs(y - bb.y) <= edge_size and x >= bb.x - edge_size and x <= bb.x + bb.width + edge_size,
+            .bottom = @abs(y - (bb.y + bb.height)) <= edge_size and x >= bb.x - edge_size and x <= bb.x + bb.width + edge_size,
+        };
+    }
+
+    fn cursorIcon(edges: ResizeEdges) ui.CursorIcon {
+        if ((edges.left and edges.top) or (edges.right and edges.bottom)) {
+            return .nwse_resize;
+        }
+        if ((edges.right and edges.top) or (edges.left and edges.bottom)) {
+            return .nesw_resize;
+        }
+        if (edges.left or edges.right) {
+            return .ew_resize;
+        }
+        if (edges.top or edges.bottom) {
+            return .ns_resize;
+        }
+        return .default;
+    }
+
+    fn measuredSize(element_id: clay.ElementId) clay.Dimensions {
+        const data = clay.getElementData(element_id);
+        std.debug.assert(data.found);
+        return .{ .w = data.bounding_box.width, .h = data.bounding_box.height };
+    }
+
+    fn applyResize(
+        state: *ui.WidgetState,
+        delta: clay.Vector2,
+        min_size: ?clay.Dimensions,
+        max_size: ?clay.Dimensions,
+        preserve_aspect_ratio: bool,
+    ) void {
+        const edges = state.resizable_panel.edges;
+        const current_size = state.resizable_panel.size orelse return;
+        var next_size = current_size;
+
+        if (edges.right) {
+            const old_w = next_size.w;
+            next_size.w = clampSizeValue(
+                old_w + delta.x,
+                if (min_size) |size| size.w else null,
+                if (max_size) |size| size.w else null,
+            );
+        }
+        if (edges.bottom) {
+            const old_h = next_size.h;
+            next_size.h = clampSizeValue(
+                old_h + delta.y,
+                if (min_size) |size| size.h else null,
+                if (max_size) |size| size.h else null,
+            );
+        }
+        if (edges.left) {
+            const old_w = next_size.w;
+            next_size.w = clampSizeValue(
+                old_w - delta.x,
+                if (min_size) |size| size.w else null,
+                if (max_size) |size| size.w else null,
+            );
+        }
+        if (edges.top) {
+            const old_h = next_size.h;
+            next_size.h = clampSizeValue(
+                old_h - delta.y,
+                if (min_size) |size| size.h else null,
+                if (max_size) |size| size.h else null,
+            );
+        }
+
+        if (preserve_aspect_ratio) {
+            if (state.resizable_panel.initial_size) |initial_size| {
+                if (initial_size.w > 0 and initial_size.h > 0) {
+                    const w_scale = next_size.w / initial_size.w;
+                    const h_scale = next_size.h / initial_size.h;
+                    const target_scale = if ((edges.left or edges.right) and !(edges.top or edges.bottom))
+                        w_scale
+                    else if ((edges.top or edges.bottom) and !(edges.left or edges.right))
+                        h_scale
+                    else
+                        @max(w_scale, h_scale);
+                    next_size = clampSize(.{
+                        .w = initial_size.w * target_scale,
+                        .h = initial_size.h * target_scale,
+                    }, min_size, max_size);
+                }
+            }
+        }
+
+        state.resizable_panel.size = next_size;
+    }
+
+    fn clampSize(size: clay.Dimensions, min_size: ?clay.Dimensions, max_size: ?clay.Dimensions) clay.Dimensions {
+        return .{
+            .w = clampSizeValue(size.w, if (min_size) |min| min.w else null, if (max_size) |max| max.w else null),
+            .h = clampSizeValue(size.h, if (min_size) |min| min.h else null, if (max_size) |max| max.h else null),
+        };
+    }
+
+    fn clampSizeValue(value: f32, min: ?f32, max: ?f32) f32 {
+        const lower = min orelse 1.0;
+        const upper = max orelse std.math.floatMax(f32);
+        return std.math.clamp(value, lower, upper);
+    }
+
+    fn scaleRatio(initial_size: ?clay.Dimensions, current_size: ?clay.Dimensions) f32 {
+        const base = initial_size orelse return 1.0;
+        const current = current_size orelse return 1.0;
+        return @min(current.w / base.w, current.h / base.h);
+    }
+};
+
 pub const Label = struct {
     params: Params,
 

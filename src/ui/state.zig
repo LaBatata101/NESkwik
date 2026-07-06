@@ -20,6 +20,7 @@ const save_state = @import("../save_state.zig");
 const file = @import("../utils/file.zig");
 const android = @import("../utils/android.zig");
 const ness = @import("../root.zig");
+const clay = @import("core/clay.zig");
 const sdlError = ness.sdlError;
 
 const NES_WIDTH = ness.NES_WIDTH;
@@ -134,6 +135,10 @@ pub const AppState = struct {
     shader_file_picker_entries: std.ArrayList(ShaderFilePickerEntry) = .{},
     shader_file_picker_error: ?[]u8 = null,
 
+    // Edit the on-screen controls on Android
+    android_edit_mode: bool = false,
+    android_onscreen_controller: OnScreenController = .{},
+
     show_fps: bool = false,
 
     settings: EmulatorSettings = .{},
@@ -230,6 +235,31 @@ pub const AppState = struct {
         }
     };
 
+    pub const OnScreenController = struct {
+        portrait: Layout = .{},
+        landscape: Layout = .{},
+
+        pub const Layout = struct {
+            dpad: Pos = .{},
+            start_btn: Pos = .{},
+            select_btn: Pos = .{},
+            action_btn_A: Pos = .{},
+            action_btn_B: Pos = .{},
+        };
+
+        pub const Pos = struct {
+            scale: f32 = 1,
+            offset: clay.Vector2 = .{ .x = 0, .y = 0 },
+        };
+
+        pub fn forOrientation(self: *@This(), orientation: android.ScreenOrientation) *Layout {
+            return switch (orientation) {
+                .portrait, .portrait_flipped => &self.portrait,
+                else => &self.landscape,
+            };
+        }
+    };
+
     pub const EmulatorSettings = struct {
         aspect_ratio: viewport.AspectRatio = .@"4_3",
         /// Path to the active shader preset (owned by this struct).
@@ -253,6 +283,7 @@ pub const AppState = struct {
         gamepad_deadzone: u8 = 25,
         show_home_screen_snow_effect: bool = true,
         hide_android_onscreen_controller: bool = false,
+        android_onscreen_controller: OnScreenController = .{},
     };
 
     pub fn init(alloc: std.mem.Allocator, ui: *UI) Self {
@@ -442,6 +473,14 @@ pub const AppState = struct {
     fn handleAndroidBack(self: *Self, ui: *UI) void {
         if (self.show_custom_file_picker) {
             self.closeShaderFilePicker();
+            return;
+        }
+
+        if (self.android_edit_mode) {
+            self.android_onscreen_controller = self.settings.android_onscreen_controller;
+            self.android_edit_mode = false;
+            self.show_android_settings_ui = true;
+            ui.setWindowFullscreen(false);
             return;
         }
 

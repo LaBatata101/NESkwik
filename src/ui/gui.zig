@@ -62,7 +62,7 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
         if (app_state.show_fps) {
             const f = ui.float(.{
                 .attach_to = .to_element_with_id,
-                .z_index = 5,
+                .z_index = 15,
                 .parentId = root.id.id,
                 .attach_points = .{ .parent = .left_top, .element = .left_top },
                 .offset = .{
@@ -84,6 +84,8 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
 
         if (builtin.abi.isAndroid() and app_state.show_android_settings_ui) {
             drawAndroidSettingsUI(ui, app_state, safe_area_padding);
+        } else if (builtin.abi.isAndroid() and app_state.android_edit_mode) {
+            drawAndroidEditMode(ui, app_state, safe_area_padding);
         } else if (app_state.render_home_ui) {
             drawHomeUI(ui, app_state, safe_area_padding);
         } else if (app_state.render_debug_ui and !builtin.abi.isAndroid()) {
@@ -124,7 +126,7 @@ pub fn drawGUI(ui: *UI, app_state: *AppState) void {
             border_shader.end();
 
             if (builtin.abi.isAndroid() and !(app_state.settings.hide_android_onscreen_controller and ui.getGamepadCount() > 0)) {
-                drawOnScreenGamepad(ui, canvas.id, orientation);
+                drawOnScreenGamepad(ui, app_state, canvas.id, orientation);
             }
 
             if (app_state.paused) {
@@ -777,12 +779,108 @@ fn nextEmulationSpeed(speed: EmulationSpeed) EmulationSpeed {
     };
 }
 
-fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) void {
-    const has_gamepad_connected = ui.getGamepadCount() > 0;
+fn drawAndroidEditMode(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) void {
+    const orientation = android.currentScreenOrientation().?;
+    const is_portrait = orientation == .portrait or orientation == .portrait_flipped;
+
     const root = ui.column(.{
         .sizing = .grow,
         .bg_color = theme.bg_base,
-        .child_alignment = .{ .x = .left, .y = .top },
+    });
+    {
+        const padding: clay.Padding = switch (orientation) {
+            .portrait => .{ .top = safe_area_padding.top },
+            .portrait_flipped => .{ .bottom = safe_area_padding.bottom },
+            .landscape => .{ .left = safe_area_padding.left },
+            .landscape_flipped => .{ .right = safe_area_padding.right },
+            else => unreachable,
+        };
+        drawAndroidEditModeHeader(ui, app_state, orientation, padding);
+        const canvas = ui.canvas(.{
+            .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
+            .pixels = createStoppedPreviewPlaceholder(ui.current_window.ctx.frameAlloc()),
+            .w = NES_WIDTH,
+            .h = NES_VISIBLE_HEIGHT,
+            .padding = .{ .left = padding.left, .right = padding.right },
+            .aspect_ratio = if (is_portrait) .@"4_3" else app_state.settings.aspect_ratio,
+            .viewport_alignment = if (is_portrait) .top else .center,
+            .bg_color = Color.black,
+        });
+
+        drawOnScreenGamepadEditMode(ui, app_state, canvas.id, orientation);
+    }
+    root.end();
+}
+
+fn drawAndroidEditModeHeader(ui: *UI, app_state: *AppState, orientation: android.ScreenOrientation, safe_area_padding: clay.Padding) void {
+    const root = ui.column(.{
+        .sizing = .{ .w = .grow, .h = .fit },
+        .bg_color = theme.bg_panel,
+        .padding = .all(8),
+    });
+    _ = ui.spacer(.{ .sizing = .{ .h = .fixed(@floatFromInt(safe_area_padding.top)) } });
+    {
+        const row = ui.row(.{});
+        {
+            if (ui.button(.{
+                .text = "Cancel",
+                .font_size = 15,
+                .text_color = theme.text_primary,
+                .bg_color = theme.bg_hover,
+                .hover_color = theme.border,
+                .padding = .{ .left = 14, .right = 14, .top = 8, .bottom = 8 },
+                .corner_radius = 5,
+                .elevation = 0,
+            }).clicked(ui.current_window.ctx)) {
+                closeAndroidEditMode(ui, app_state, false);
+            }
+            _ = ui.spacer(.{ .sizing = .grow });
+
+            const text = switch (orientation) {
+                .portrait, .portrait_flipped => "Portrait Layout",
+                .landscape, .landscape_flipped => "Landscape Layout",
+                else => unreachable,
+            };
+
+            _ = ui.label(.{ .text = text, .color = .white, .font_size = 15 });
+
+            _ = ui.spacer(.{ .sizing = .grow });
+
+            if (ui.button(.{
+                .text = "Save",
+                .font_size = 15,
+                .text_color = .white,
+                .bg_color = theme.accent_blue,
+                .hover_color = theme.accent_blue.lighten(0.12),
+                .padding = .{ .left = 16, .right = 16, .top = 8, .bottom = 8 },
+                .corner_radius = 5,
+                .elevation = 0,
+            }).clicked(ui.current_window.ctx)) {
+                closeAndroidEditMode(ui, app_state, true);
+            }
+        }
+        row.end();
+    }
+    root.end();
+}
+
+fn closeAndroidEditMode(ui: *UI, app_state: *AppState, save: bool) void {
+    if (save) {
+        app_state.settings.android_onscreen_controller = app_state.android_onscreen_controller;
+        app_state.saveSettings();
+    } else {
+        app_state.android_onscreen_controller = app_state.settings.android_onscreen_controller;
+    }
+
+    ui.setWindowFullscreen(false);
+    app_state.android_edit_mode = false;
+    app_state.show_android_settings_ui = true;
+}
+
+fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.Padding) void {
+    const has_gamepad_connected = ui.getGamepadCount() > 0;
+    const root = ui.column(.{
+        .bg_color = theme.bg_base,
         .padding = .{
             .bottom = safe_area_padding.bottom,
             .left = safe_area_padding.left,
@@ -790,58 +888,36 @@ fn drawAndroidSettingsUI(ui: *UI, app_state: *AppState, safe_area_padding: clay.
         },
     });
     {
-        const col = ui.column(.{ .bg_color = theme.bg_panel, .sizing = .{ .w = .grow, .h = .fit } });
+        const scroll = ui.scrollArea(.{});
         {
-            if (app_state.emulation_running) {
-                _ = ui.spacer(.{ .sizing = .{ .h = .fixed(@floatFromInt(safe_area_padding.top)) } });
-            }
-            const scroll = ui.scrollArea(.{
-                .vertical = false,
-                .horizontal = true,
-                .sizing = .{ .h = .fit, .w = .grow },
+            const body = ui.column(.{
+                .sizing = .{ .w = .grow, .h = .fit },
+                .gap = 8,
             });
             {
                 const tabs = ui.row(.{
-                    .sizing = .{ .w = .fit, .h = .fit },
+                    .sizing = .{ .w = .grow, .h = .fit },
                     .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
                     .gap = 8,
-                    .child_alignment = .{ .x = .left, .y = .center },
+                    .bg_color = theme.bg_panel,
                 });
                 {
                     drawAndroidSettingsTab(ui, app_state, .general);
                     drawAndroidSettingsTab(ui, app_state, .video);
                     drawAndroidSettingsTab(ui, app_state, .shader);
-                    if (has_gamepad_connected) {
-                        drawAndroidSettingsTab(ui, app_state, .controls);
-                    }
+                    drawAndroidSettingsTab(ui, app_state, .controls);
                 }
                 tabs.end();
-            }
-            scroll.end();
-        }
-        col.end();
 
-        const scroll = ui.scrollArea(.{
-            .padding = .{ .left = 10, .right = 10, .top = 10, .bottom = 10 },
-            .gap = 8,
-        });
-        {
-            const body = ui.column(.{
-                .sizing = .{ .w = .grow, .h = .fit },
-                .gap = 8,
-                .child_alignment = .{ .x = .left, .y = .top },
-            });
-            {
                 switch (app_state.selected_category) {
                     .general => drawSettingsGeneralContent(ui, app_state),
                     .shader => drawSettingsShaderContent(ui, app_state),
                     .video => drawSettingsVideoContent(ui, app_state),
                     .controls => {
-                        if (!has_gamepad_connected) {
-                            app_state.selected_category = .general;
+                        if (has_gamepad_connected) {
+                            android.setScreenOrientation(.landscape);
                         }
-                        android.setScreenOrientation(.landscape);
-                        drawSettingsControlsContent(ui, app_state);
+                        drawSettingsControlsContent(ui, app_state, has_gamepad_connected);
                     },
                 }
             }
@@ -903,11 +979,12 @@ fn drawAndroidSettingsTab(ui: *UI, app_state: *AppState, category: SettingsCateg
     const is_active = app_state.selected_category == category;
     if (ui.button(.{
         .text = category.displayName(),
+        .sizing = .{ .w = .grow, .h = .fit },
         .font_size = 15,
         .text_color = if (is_active) Color.white else theme.text_secondary,
         .bg_color = if (is_active) theme.accent_blue else theme.bg_hover,
         .hover_color = if (is_active) theme.accent_blue.lighten(0.1) else theme.border,
-        .padding = .{ .left = 16, .right = 16, .top = 9, .bottom = 9 },
+        .padding = .{ .left = 12, .right = 12, .top = 9, .bottom = 9 },
         .corner_radius = 6,
         .elevation = 0,
     }).clicked(ui.main_window.ctx)) {
@@ -1070,114 +1147,455 @@ fn drawAndroidShaderFilePickerBody(ui: *UI, app_state: *AppState) void {
     scroll.end();
 }
 
-fn drawOnScreenGamepad(ui: *UI, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
-    const bottom_offset = -22;
-    const arrows = ui.float(.{
-        .attach_to = .to_element_with_id,
-        .parentId = parent_id.id,
-        .z_index = 1,
-        .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
-        .offset = .{ .x = 18, .y = bottom_offset - 6 },
-    });
-    {
-        const col = ui.column(.{
-            .child_alignment = .center,
-            .sizing = .{ .w = .fixed(162), .h = .fixed(162) },
+const TouchControl = enum {
+    dpad,
+    start,
+    select,
+    b,
+    a,
+};
+
+const TouchControlLayout = struct {
+    attach_points: clay.FloatingAttachPoints,
+    initial_size: clay.Dimensions,
+    min_size: clay.Dimensions,
+    max_size: clay.Dimensions,
+};
+
+const DraggableResizable = struct {
+    ui: *UI,
+    draggable: *widgets.Draggable,
+    resizable: *widgets.ResizablePanel,
+    box: *widgets.Container,
+
+    const Params = struct {
+        drag_id: []const u8,
+        resize_id: []const u8,
+        initial_size: clay.Dimensions,
+        current_size: clay.Dimensions,
+        min_size: clay.Dimensions,
+        max_size: clay.Dimensions,
+        parentId: u32 = 0,
+        z_index: i16 = 0,
+        attach_points: clay.FloatingAttachPoints = .{ .element = .left_top, .parent = .left_top },
+        attach_to: clay.FloatingAttachToElement = .to_root,
+        offset: clay.Vector2 = .{ .x = 0, .y = 0 },
+        bounds: ?clay.BoundingBox = null,
+    };
+    const Self = @This();
+
+    fn start(ui: *UI, params: Params) Self {
+        const draggable = ui.draggable(.{
+            .id = params.drag_id,
+            .parentId = params.parentId,
+            .z_index = params.z_index,
+            .attach_points = params.attach_points,
+            .attach_to = params.attach_to,
+            .offset = params.offset,
+            .bounds = params.bounds,
         });
-        {
-            const up_button = controllerButton(ui, .{ .icon = .dpad_up }, .{ .w = .fixed(54), .h = .fixed(54) });
-            if (up_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.up);
+        const resizable = ui.resizablePanel(.{
+            .id = params.resize_id,
+            .initial_size = params.initial_size,
+            .sizing = .{ .w = .fixed(params.current_size.w), .h = .fixed(params.current_size.h) },
+            .max_size = params.max_size,
+            .min_size = params.min_size,
+            .preserve_aspect_ratio = true,
+        });
+        const box = ui.column(.{
+            .sizing = .grow,
+            .bg_color = theme.accent_blue.withAlpha(0.08),
+            .border_color = theme.accent_blue.withAlpha(0.82),
+            .border_width = 1,
+            .corner_radius = 10,
+            .child_alignment = .center,
+        });
 
-            const row = ui.row(.{ .gap = 54 });
-            {
-                const left_button = controllerButton(ui, .{ .icon = .dpad_left }, .{ .w = .fixed(54), .h = .fixed(54) });
-                if (left_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.left);
-
-                const right_button = controllerButton(ui, .{ .icon = .dpad_right }, .{ .w = .fixed(54), .h = .fixed(54) });
-                if (right_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.right);
-            }
-            row.end();
-
-            const down_button = controllerButton(ui, .{ .icon = .dpad_down }, .{ .w = .fixed(54), .h = .fixed(54) });
-            if (down_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.down);
-        }
-        col.end();
+        return .{ .ui = ui, .draggable = draggable, .resizable = resizable, .box = box };
     }
-    arrows.end();
 
-    const buttons1 = ui.float(.{
-        .attach_to = .to_element_with_id,
-        .parentId = parent_id.id,
-        .z_index = 1,
-        .attach_points = .{ .parent = .center_bottom, .element = .center_bottom },
-        .offset = .{ .x = 0, .y = if (screen_orientation == .portrait or screen_orientation == .portrait_flipped)
-            bottom_offset - 182
-        else
-            bottom_offset },
-    });
-    {
-        const row = ui.row(.{ .sizing = .fit, .gap = 10 });
-        {
-            const start_button = ui.button(.{
-                .text = "START",
-                .font_size = 13,
-                .text_color = theme.text_primary,
-                .bg_color = Color.black.withAlpha(0.58),
-                .hover_color = theme.bg_hover.withAlpha(0.82),
-                .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 },
-                .corner_radius = 7,
-                .elevation = 0,
-                .border_width = 1,
-                .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
-            });
-            if (start_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.start);
-
-            const select_button = ui.button(.{
-                .text = "SELECT",
-                .font_size = 13,
-                .text_color = theme.text_primary,
-                .bg_color = Color.black.withAlpha(0.58),
-                .hover_color = theme.bg_hover.withAlpha(0.82),
-                .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 },
-                .corner_radius = 7,
-                .elevation = 0,
-                .border_width = 1,
-                .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
-            });
-            if (select_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.select);
-        }
-        row.end();
+    fn scale(self: *const Self) f32 {
+        return self.resizable.scale();
     }
-    buttons1.end();
 
-    const buttons2 = ui.float(.{
-        .attach_to = .to_element_with_id,
-        .parentId = parent_id.id,
-        .z_index = 1,
-        .attach_points = .{ .parent = .right_bottom, .element = .right_bottom },
-        .offset = .{ .x = -18, .y = bottom_offset - 4 },
-    });
-    {
-        const row = ui.row(.{ .sizing = .fit, .gap = 16 });
-        {
-            const b_button = controllerButton(ui, .{ .text = "B" }, .{ .w = .fixed(62), .h = .fixed(62) });
-            if (b_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.b);
-
-            const a_button = controllerButton(ui, .{ .text = "A" }, .{ .w = .fixed(62), .h = .fixed(62) });
-            if (a_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.a);
-        }
-        row.end();
+    fn offset(self: *const Self) clay.Vector2 {
+        return self.draggable.offset();
     }
-    buttons2.end();
+
+    fn end(self: *const Self) void {
+        drawResizeHandles(self.ui, self.box.id);
+        self.box.end();
+        self.resizable.end();
+        self.draggable.end();
+    }
+};
+
+fn drawOnScreenGamepad(ui: *UI, app_state: *AppState, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
+    const controller = app_state.settings.android_onscreen_controller.forOrientation(screen_orientation);
+    drawOnScreenTouchControl(ui, parent_id, screen_orientation, .dpad, controller.dpad, true);
+    drawOnScreenTouchControl(ui, parent_id, screen_orientation, .start, controller.start_btn, true);
+    drawOnScreenTouchControl(ui, parent_id, screen_orientation, .select, controller.select_btn, true);
+    drawOnScreenTouchControl(ui, parent_id, screen_orientation, .b, controller.action_btn_B, true);
+    drawOnScreenTouchControl(ui, parent_id, screen_orientation, .a, controller.action_btn_A, true);
 }
 
-fn controllerButton(ui: *UI, params: struct { text: ?[]const u8 = null, icon: ?UI.Icon = null }, sizing: clay.Sizing) *widgets.Button {
+fn drawOnScreenGamepadEditMode(ui: *UI, app_state: *AppState, parent_id: clay.ElementId, screen_orientation: android.ScreenOrientation) void {
+    drawEditableTouchControl(ui, app_state, parent_id, screen_orientation, .dpad);
+    drawEditableTouchControl(ui, app_state, parent_id, screen_orientation, .start);
+    drawEditableTouchControl(ui, app_state, parent_id, screen_orientation, .select);
+    drawEditableTouchControl(ui, app_state, parent_id, screen_orientation, .b);
+    drawEditableTouchControl(ui, app_state, parent_id, screen_orientation, .a);
+}
+
+fn drawOnScreenTouchControl(
+    ui: *UI,
+    parent_id: clay.ElementId,
+    screen_orientation: android.ScreenOrientation,
+    control: TouchControl,
+    pos: AppState.OnScreenController.Pos,
+    interactive: bool,
+) void {
+    const layout = touchControlLayout(control);
+    const float = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .z_index = 1,
+        .attach_points = layout.attach_points,
+        .offset = addVec(touchControlBaseOffset(control, screen_orientation), pos.offset),
+    });
+    {
+        drawTouchControlVisual(ui, control, pos.scale, interactive);
+    }
+    float.end();
+}
+
+fn drawEditableTouchControl(
+    ui: *UI,
+    app_state: *AppState,
+    parent_id: clay.ElementId,
+    screen_orientation: android.ScreenOrientation,
+    control: TouchControl,
+) void {
+    const layout = touchControlLayout(control);
+    const ids = touchControlWidgetIds(control, screen_orientation);
+    const controller = app_state.android_onscreen_controller.forOrientation(screen_orientation);
+    const pos = touchControlPos(controller, control);
+    const base_offset = touchControlBaseOffset(control, screen_orientation);
+    const current_size = clampSize(scaleSize(layout.initial_size, pos.scale), layout.min_size, layout.max_size);
+    const parent_data = clay.getElementData(parent_id);
+    std.debug.assert(parent_data.found);
+    const drag = DraggableResizable.start(ui, .{
+        .drag_id = ids.drag_id,
+        .resize_id = ids.resize_id,
+        .parentId = parent_id.id,
+        .z_index = 4,
+        .attach_to = .to_element_with_id,
+        .attach_points = layout.attach_points,
+        .offset = addVec(base_offset, pos.offset),
+        // Clay can report the previous frame's canvas bounds during orientation changes.
+        // Skip clamping for that transient frame so stale landscape/portrait dimensions
+        // do not overwrite the saved control offsets.
+        .bounds = if (validTouchControlBounds(parent_data.bounding_box, screen_orientation))
+            parent_data.bounding_box
+        else
+            null,
+        .initial_size = layout.initial_size,
+        .current_size = current_size,
+        .min_size = layout.min_size,
+        .max_size = layout.max_size,
+    });
+    {
+        pos.scale = drag.scale();
+        pos.offset = subVec(drag.offset(), base_offset);
+        drawTouchControlVisual(ui, control, pos.scale, false);
+    }
+    drag.end();
+}
+
+fn touchControlLayout(control: TouchControl) TouchControlLayout {
+    return switch (control) {
+        .dpad => .{
+            .attach_points = .{ .parent = .left_bottom, .element = .left_bottom },
+            .initial_size = .{ .w = 162, .h = 162 },
+            .min_size = .{ .w = 114, .h = 114 },
+            .max_size = .{ .w = 308, .h = 308 },
+        },
+        .start => .{
+            .attach_points = .{ .parent = .center_bottom, .element = .center_bottom },
+            .initial_size = .{ .w = 78, .h = 38 },
+            .min_size = .{ .w = 59, .h = 29 },
+            .max_size = .{ .w = 148, .h = 72 },
+        },
+        .select => .{
+            .attach_points = .{ .parent = .center_bottom, .element = .center_bottom },
+            .initial_size = .{ .w = 86, .h = 38 },
+            .min_size = .{ .w = 65, .h = 29 },
+            .max_size = .{ .w = 163, .h = 72 },
+        },
+        .b => .{
+            .attach_points = .{ .parent = .right_bottom, .element = .right_bottom },
+            .initial_size = .{ .w = 62, .h = 62 },
+            .min_size = .{ .w = 44, .h = 44 },
+            .max_size = .{ .w = 118, .h = 118 },
+        },
+        .a => .{
+            .attach_points = .{ .parent = .right_bottom, .element = .right_bottom },
+            .initial_size = .{ .w = 62, .h = 62 },
+            .min_size = .{ .w = 44, .h = 44 },
+            .max_size = .{ .w = 118, .h = 118 },
+        },
+    };
+}
+
+fn touchControlWidgetIds(control: TouchControl, screen_orientation: android.ScreenOrientation) struct {
+    drag_id: []const u8,
+    resize_id: []const u8,
+} {
+    const is_portrait = screen_orientation == .portrait or screen_orientation == .portrait_flipped;
+    return switch (control) {
+        .dpad => if (is_portrait)
+            .{ .drag_id = "android_touch_portrait_dpad_drag", .resize_id = "android_touch_portrait_dpad_resize" }
+        else
+            .{ .drag_id = "android_touch_landscape_dpad_drag", .resize_id = "android_touch_landscape_dpad_resize" },
+        .start => if (is_portrait)
+            .{ .drag_id = "android_touch_portrait_start_drag", .resize_id = "android_touch_portrait_start_resize" }
+        else
+            .{ .drag_id = "android_touch_landscape_start_drag", .resize_id = "android_touch_landscape_start_resize" },
+        .select => if (is_portrait)
+            .{ .drag_id = "android_touch_portrait_select_drag", .resize_id = "android_touch_portrait_select_resize" }
+        else
+            .{ .drag_id = "android_touch_landscape_select_drag", .resize_id = "android_touch_landscape_select_resize" },
+        .b => if (is_portrait)
+            .{ .drag_id = "android_touch_portrait_b_drag", .resize_id = "android_touch_portrait_b_resize" }
+        else
+            .{ .drag_id = "android_touch_landscape_b_drag", .resize_id = "android_touch_landscape_b_resize" },
+        .a => if (is_portrait)
+            .{ .drag_id = "android_touch_portrait_a_drag", .resize_id = "android_touch_portrait_a_resize" }
+        else
+            .{ .drag_id = "android_touch_landscape_a_drag", .resize_id = "android_touch_landscape_a_resize" },
+    };
+}
+
+fn touchControlBaseOffset(control: TouchControl, screen_orientation: android.ScreenOrientation) clay.Vector2 {
+    const bottom_offset: f32 = -22;
+    const is_portrait = screen_orientation == .portrait or screen_orientation == .portrait_flipped;
+    const center_button_y = if (is_portrait) bottom_offset - 182 else bottom_offset;
+
+    return switch (control) {
+        .dpad => .{ .x = 18, .y = bottom_offset - 6 },
+        .start => .{ .x = -48, .y = center_button_y },
+        .select => .{ .x = 44, .y = center_button_y },
+        .b => .{ .x = -96, .y = bottom_offset - 4 },
+        .a => .{ .x = -18, .y = bottom_offset - 4 },
+    };
+}
+
+fn validTouchControlBounds(bounds: clay.BoundingBox, screen_orientation: android.ScreenOrientation) bool {
+    if (bounds.width <= 0 or bounds.height <= 0) return false;
+
+    return switch (screen_orientation) {
+        .portrait, .portrait_flipped => bounds.height >= bounds.width,
+        .landscape, .landscape_flipped => bounds.width >= bounds.height,
+        .unknown, .unspecified => true,
+    };
+}
+
+fn touchControlPos(
+    controller: *AppState.OnScreenController.Layout,
+    control: TouchControl,
+) *AppState.OnScreenController.Pos {
+    return switch (control) {
+        .dpad => &controller.dpad,
+        .start => &controller.start_btn,
+        .select => &controller.select_btn,
+        .b => &controller.action_btn_B,
+        .a => &controller.action_btn_A,
+    };
+}
+
+fn drawTouchControlVisual(ui: *UI, control: TouchControl, resize_scale: f32, interactive: bool) void {
+    switch (control) {
+        .dpad => drawAndroidOnScreenDpad(ui, resize_scale, interactive),
+        .start => drawAndroidOnScreenStartBtn(ui, resize_scale, interactive),
+        .select => drawAndroidOnScreenSelectBtn(ui, resize_scale, interactive),
+        .b => {
+            const button = controllerButton(
+                ui,
+                .{ .text = "B", .font_size = scaledFontSize(18, resize_scale) },
+                scaleSizing(.{ .w = 62, .h = 62 }, resize_scale),
+            );
+            if (interactive and button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.b);
+        },
+        .a => {
+            const button = controllerButton(
+                ui,
+                .{ .text = "A", .font_size = scaledFontSize(18, resize_scale) },
+                scaleSizing(.{ .w = 62, .h = 62 }, resize_scale),
+            );
+            if (interactive and button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.a);
+        },
+    }
+}
+
+fn drawResizeHandles(ui: *UI, parent_id: clay.ElementId) void {
+    drawResizeHandle(ui, parent_id, .left_top, .{ .w = 10, .h = 10 }, .{ .x = -1, .y = -1 });
+    drawResizeHandle(ui, parent_id, .right_top, .{ .w = 10, .h = 10 }, .{ .x = 1, .y = -1 });
+    drawResizeHandle(ui, parent_id, .left_bottom, .{ .w = 10, .h = 10 }, .{ .x = -1, .y = 1 });
+    drawResizeHandle(ui, parent_id, .right_bottom, .{ .w = 10, .h = 10 }, .{ .x = 1, .y = 1 });
+    drawResizeHandle(ui, parent_id, .center_top, .{ .w = 28, .h = 4 }, .{ .x = 0, .y = -1 });
+    drawResizeHandle(ui, parent_id, .center_bottom, .{ .w = 28, .h = 4 }, .{ .x = 0, .y = 1 });
+    drawResizeHandle(ui, parent_id, .left_center, .{ .w = 4, .h = 28 }, .{ .x = -1, .y = 0 });
+    drawResizeHandle(ui, parent_id, .right_center, .{ .w = 4, .h = 28 }, .{ .x = 1, .y = 0 });
+}
+
+fn drawResizeHandle(
+    ui: *UI,
+    parent_id: clay.ElementId,
+    attach_point: clay.FloatingAttachPointType,
+    size: clay.Dimensions,
+    offset: clay.Vector2,
+) void {
+    const handle = ui.float(.{
+        .attach_to = .to_element_with_id,
+        .parentId = parent_id.id,
+        .z_index = 5,
+        .attach_points = .{ .parent = attach_point, .element = attach_point },
+        .offset = offset,
+        .pointer_capture_mode = .passthrough,
+        .sizing = .{ .w = .fixed(size.w), .h = .fixed(size.h) },
+    });
+    {
+        const body = ui.column(.{
+            .sizing = .grow,
+            .bg_color = theme.accent_blue.withAlpha(0.92),
+            .border_color = Color.white.withAlpha(0.5),
+            .border_width = 1,
+            .corner_radius = 3,
+        });
+        body.end();
+    }
+    handle.end();
+}
+
+fn addVec(a: clay.Vector2, b: clay.Vector2) clay.Vector2 {
+    return .{ .x = a.x + b.x, .y = a.y + b.y };
+}
+
+fn subVec(a: clay.Vector2, b: clay.Vector2) clay.Vector2 {
+    return .{ .x = a.x - b.x, .y = a.y - b.y };
+}
+
+fn scaleSize(size: clay.Dimensions, scale: f32) clay.Dimensions {
+    return .{ .w = size.w * scale, .h = size.h * scale };
+}
+
+fn clampSize(size: clay.Dimensions, min_size: clay.Dimensions, max_size: clay.Dimensions) clay.Dimensions {
+    return .{
+        .w = std.math.clamp(size.w, min_size.w, max_size.w),
+        .h = std.math.clamp(size.h, min_size.h, max_size.h),
+    };
+}
+
+fn scaleSizing(size: clay.Dimensions, scale: f32) clay.Sizing {
+    const scaled = scaleSize(size, scale);
+    return .{ .w = .fixed(scaled.w), .h = .fixed(scaled.h) };
+}
+
+fn scaledFontSize(base: u16, scale: f32) u16 {
+    return @intFromFloat(@max(1.0, @as(f32, @floatFromInt(base)) * scale));
+}
+
+fn drawAndroidOnScreenDpad(ui: *UI, resize_scale: f32, interactive: bool) void {
+    const col = ui.column(.{
+        .child_alignment = .center,
+        .sizing = .{ .w = .fixed(162 * resize_scale), .h = .fixed(162 * resize_scale) },
+    });
+    {
+        const up_button = controllerButton(
+            ui,
+            .{ .icon = .{ .icon = .dpad_up, .size = 32 * resize_scale } },
+            .{ .w = .fixed(54 * resize_scale), .h = .fixed(54 * resize_scale) },
+        );
+        if (interactive and up_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.up);
+
+        const row = ui.row(.{ .gap = @intFromFloat(54 * resize_scale) });
+        {
+            const left_button = controllerButton(
+                ui,
+                .{ .icon = .{ .icon = .dpad_left, .size = 32 * resize_scale } },
+                .{ .w = .fixed(54 * resize_scale), .h = .fixed(54 * resize_scale) },
+            );
+            if (interactive and left_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.left);
+
+            const right_button = controllerButton(
+                ui,
+                .{ .icon = .{ .icon = .dpad_right, .size = 32 * resize_scale } },
+                .{ .w = .fixed(54 * resize_scale), .h = .fixed(54 * resize_scale) },
+            );
+            if (interactive and right_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.right);
+        }
+        row.end();
+
+        const down_button = controllerButton(
+            ui,
+            .{ .icon = .{ .icon = .dpad_down, .size = 32 * resize_scale } },
+            .{ .w = .fixed(54 * resize_scale), .h = .fixed(54 * resize_scale) },
+        );
+        if (interactive and down_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.down);
+    }
+    col.end();
+}
+
+fn drawAndroidOnScreenStartBtn(ui: *UI, resize_scale: f32, interactive: bool) void {
+    const start_button = ui.button(.{
+        .text = "START",
+        .font_size = scaledFontSize(13, resize_scale),
+        .text_color = theme.text_primary,
+        .sizing = scaleSizing(.{ .w = 78, .h = 38 }, resize_scale),
+        .bg_color = Color.black.withAlpha(0.58),
+        .hover_color = theme.bg_hover.withAlpha(0.82),
+        .padding = .all(0),
+        .corner_radius = 10,
+        .elevation = 0,
+        .border_width = 1,
+        .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
+    });
+    if (interactive and start_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.start);
+}
+
+fn drawAndroidOnScreenSelectBtn(ui: *UI, resize_scale: f32, interactive: bool) void {
+    const select_button = ui.button(.{
+        .text = "SELECT",
+        .font_size = scaledFontSize(13, resize_scale),
+        .text_color = theme.text_primary,
+        .sizing = scaleSizing(.{ .w = 86, .h = 38 }, resize_scale),
+        .bg_color = Color.black.withAlpha(0.58),
+        .hover_color = theme.bg_hover.withAlpha(0.82),
+        .padding = .all(0),
+        .corner_radius = 10,
+        .elevation = 0,
+        .border_width = 1,
+        .border = .{ .color = Color.white.withAlpha(0.28).toClay(), .width = .outside(1) },
+    });
+    if (interactive and select_button.clickedOrHold(ui.main_window.ctx)) ui.pressOnScreenControllerButton(.select);
+}
+
+fn controllerButton(
+    ui: *UI,
+    params: struct {
+        text: ?[]const u8 = null,
+        icon: ?struct { icon: UI.Icon, size: f32 = 32 } = null,
+        font_size: u16 = 18,
+    },
+    sizing: clay.Sizing,
+) *widgets.Button {
     return ui.button(.{
         .text = params.text orelse "",
         .icon = if (params.icon) |icon| .{
-            .icon = ui.icons.get(icon),
+            .icon = ui.icons.get(icon.icon),
+            .size = icon.size,
         } else null,
-        .font_size = 18,
+        .font_size = params.font_size,
         .text_color = theme.text_primary,
         .sizing = sizing,
         .bg_color = Color.black.withAlpha(0.52),
@@ -1575,7 +1993,7 @@ fn drawSettingsContent(ui: *UI, app_state: *AppState) void {
                 .general => drawSettingsGeneralContent(ui, app_state),
                 .video => drawSettingsVideoContent(ui, app_state),
                 .shader => drawSettingsShaderContent(ui, app_state),
-                .controls => drawSettingsControlsContent(ui, app_state),
+                .controls => drawSettingsControlsContent(ui, app_state, true),
             }
         }
 
@@ -1672,47 +2090,33 @@ fn drawSettingsGeneralContent(ui: *UI, app_state: *AppState) void {
                 .value();
         }
         row2.end();
-
-        if (builtin.abi.isAndroid()) {
-            const row3 = ui.row(.{
-                .sizing = .{ .w = .grow, .h = .fit },
-            });
-            {
-                _ = ui.label(.{
-                    .text = "Hide on-screen controller when gamepad is connected",
-                    .font_size = theme.LABEL_FONT,
-                    .color = theme.text_primary,
-                });
-                _ = ui.spacer(.{ .sizing = .grow });
-                app_state.settings.hide_android_onscreen_controller = ui
-                    .toggle(.{ .value = app_state.settings.hide_android_onscreen_controller, .size = 22 })
-                    .value();
-            }
-            row3.end();
-        }
     }
     section.end();
 }
 
-fn drawSettingsControlsContent(ui: *UI, app_state: *AppState) void {
-    drawContentSectionHeader(ui, "Controls");
-    const controller_keymap_section = drawContentSection(ui, .{});
-    {
-        updateControllerBindingCapture(ui, app_state);
-        updateGamepadBindingCapture(ui, app_state);
-        updateGeneralBindingCapture(ui, app_state);
-        drawControllerPlayerSelector(ui, app_state);
-        if (!builtin.abi.isAndroid()) drawInputDeviceSelector(ui, app_state);
-        drawControllerBindingOverlay(ui, app_state);
+fn drawSettingsControlsContent(ui: *UI, app_state: *AppState, draw_gamepad_section: bool) void {
+    if (builtin.abi.isAndroid()) drawTouchControlsSettingSection(ui, app_state);
 
-        if (app_state.selectedTmpInputDevice().* == .gamepad) {
-            drawContentSectionHeader(ui, "Analog Stick");
-            const gamepad_section = drawContentSection(ui, .{});
-            drawGamepadDeadzoneRow(ui, app_state);
-            gamepad_section.end();
+    if (draw_gamepad_section) {
+        drawContentSectionHeader(ui, if (builtin.abi.isAndroid()) "Gamepad" else "Controls");
+        const controller_keymap_section = drawContentSection(ui, .{});
+        {
+            updateControllerBindingCapture(ui, app_state);
+            updateGamepadBindingCapture(ui, app_state);
+            updateGeneralBindingCapture(ui, app_state);
+            drawControllerPlayerSelector(ui, app_state);
+            if (!builtin.abi.isAndroid()) drawInputDeviceSelector(ui, app_state);
+            drawControllerBindingOverlay(ui, app_state);
+
+            if (app_state.selectedTmpInputDevice().* == .gamepad) {
+                drawContentSectionHeader(ui, "Analog Stick");
+                const gamepad_section = drawContentSection(ui, .{});
+                drawGamepadDeadzoneRow(ui, app_state);
+                gamepad_section.end();
+            }
         }
+        controller_keymap_section.end();
     }
-    controller_keymap_section.end();
 
     if (!builtin.abi.isAndroid()) {
         drawContentSectionHeader(ui, "General");
@@ -1733,6 +2137,59 @@ fn drawSettingsControlsContent(ui: *UI, app_state: *AppState) void {
         }
         general_keymap_section.end();
     }
+}
+
+fn drawTouchControlsSettingSection(ui: *UI, app_state: *AppState) void {
+    drawContentSectionHeader(ui, "Touch Controls");
+    const general_section = drawContentSection(ui, .{});
+    {
+        const row = ui.row(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .child_alignment = .{ .y = .center },
+        });
+        {
+            _ = ui.label(.{
+                .text = "Hide touch controls when gamepad is connected",
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_primary,
+            });
+            _ = ui.spacer(.{ .sizing = .grow });
+            app_state.settings.hide_android_onscreen_controller = ui
+                .toggle(.{ .value = app_state.settings.hide_android_onscreen_controller, .size = 22 })
+                .value();
+        }
+        row.end();
+
+        const edit_row = ui.row(.{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .child_alignment = .{ .y = .center },
+        });
+        {
+            _ = ui.label(.{
+                .text = "Touch Controls Layout",
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_primary,
+            });
+            _ = ui.spacer(.{ .sizing = .grow });
+            if (ui.button(.{
+                .text = "Edit",
+                .font_size = 15,
+                .text_color = Color.white,
+                .bg_color = theme.accent_blue,
+                .hover_color = theme.accent_blue.lighten(0.12),
+                .padding = .{ .left = 18, .right = 18, .top = 9, .bottom = 9 },
+                .corner_radius = 6,
+                .elevation = 0,
+            }).clicked(ui.current_window.ctx)) {
+                app_state.android_onscreen_controller = app_state.settings.android_onscreen_controller;
+                ui.setWindowFullscreen(true);
+                app_state.android_edit_mode = true;
+                app_state.show_android_settings_ui = false;
+            }
+        }
+        edit_row.end();
+    }
+    general_section.end();
 }
 
 fn drawGamepadDeadzoneRow(ui: *UI, app_state: *AppState) void {
@@ -1900,21 +2357,22 @@ fn drawControllerBindingOverlay(ui: *UI, app_state: *AppState) void {
     const display_w: f32 = @min(500.0, @as(f32, @floatFromInt(img_w)));
     const display_h = display_w * @as(f32, @floatFromInt(img_h)) / @as(f32, @floatFromInt(img_w));
 
-    const root = ui.column(.{ .sizing = .fit });
-    _ = ui.canvas(.{
-        .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
-        .pixel_format = app_state.controller_img.format(),
-        .pixels = app_state.controller_img.pixels(),
-        .w = img_w,
-        .h = img_h,
-    });
+    const root = ui.column(.{ .child_alignment = .center });
+    {
+        _ = ui.canvas(.{
+            .sizing = .{ .w = .fixed(display_w), .h = .fixed(display_h) },
+            .pixel_format = app_state.controller_img.format(),
+            .pixels = app_state.controller_img.pixels(),
+            .w = img_w,
+            .h = img_h,
+        });
 
-    const player = app_state.settings.selected_player;
-    inline for (@typeInfo(ControllerAction).@"enum".fields) |action_field| {
-        const action = @field(ControllerAction, action_field.name);
-        drawControllerBindingField(ui, app_state, root.id, player, action);
+        const player = app_state.settings.selected_player;
+        inline for (@typeInfo(ControllerAction).@"enum".fields) |action_field| {
+            const action = @field(ControllerAction, action_field.name);
+            drawControllerBindingField(ui, app_state, root.id, player, action);
+        }
     }
-
     root.end();
 }
 
@@ -1987,16 +2445,29 @@ fn isControllerBindingTarget(current: ?ControllerBindingTarget, target: Controll
 }
 
 fn controllerBindingPosition(action: ControllerAction) clay.Vector2 {
-    return switch (action) {
-        .up => .{ .x = 95, .y = 45 },
-        .down => .{ .x = 95, .y = 195 },
-        .left => .{ .x = 10, .y = 120 },
-        .right => .{ .x = 180, .y = 120 },
-        .select => .{ .x = 205, .y = 180 },
-        .start => .{ .x = 275, .y = 180 },
-        .b => .{ .x = 360, .y = 210 },
-        .a => .{ .x = 430, .y = 210 },
-    };
+    if (builtin.abi.isAndroid()) {
+        return switch (action) {
+            .up => .{ .x = 220, .y = 45 },
+            .down => .{ .x = 220, .y = 195 },
+            .left => .{ .x = 140, .y = 120 },
+            .right => .{ .x = 310, .y = 120 },
+            .select => .{ .x = 335, .y = 180 },
+            .start => .{ .x = 400, .y = 180 },
+            .b => .{ .x = 485, .y = 210 },
+            .a => .{ .x = 560, .y = 210 },
+        };
+    } else {
+        return switch (action) {
+            .up => .{ .x = 95, .y = 45 },
+            .down => .{ .x = 95, .y = 195 },
+            .left => .{ .x = 10, .y = 120 },
+            .right => .{ .x = 180, .y = 120 },
+            .select => .{ .x = 205, .y = 180 },
+            .start => .{ .x = 275, .y = 180 },
+            .b => .{ .x = 360, .y = 210 },
+            .a => .{ .x = 430, .y = 210 },
+        };
+    }
 }
 
 fn drawGeneralBindingRow(ui: *UI, app_state: *AppState, action: GeneralAction) void {
