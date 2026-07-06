@@ -514,6 +514,11 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                     app_state.show_android_settings_ui = false;
                     app_state.render_home_ui = true;
                     app_state.show_android_sidepanel = false;
+
+                    if (app_state.emulation_running) {
+                        ui.setWindowFullscreen(false);
+                        app_state.unloadCurrentRom();
+                    }
                 }
                 if (drawAndroidDrawerAction(ui, "Open ROM", true).clicked(ui.main_window.ctx)) {
                     app_state.show_android_sidepanel = false;
