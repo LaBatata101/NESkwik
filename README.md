@@ -10,6 +10,13 @@ NESkwik is a cross-platform (Linux, Windows, MacOS and Android) NES (Nintendo En
 | ![](media/home.webp) **Home screen** | ![](media/game_running.webp) **Game running** |
 |![](media/game_with_shader.webp) **RetroArch shader active**|![](media/border_shader.webp) **Shader in letterbox area**|
 
+### Running on Android
+| |  |
+|:--:|:--:|
+|![](media/mobile_home.jpg)|![](media/mobile_home2.jpg)|
+
+![](media/mobile_game.jpg)
+
 ## Features
 
 - 6502 CPU, PPU, and APU emulation.
