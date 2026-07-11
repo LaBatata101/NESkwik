@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const raster = @import("font_raster");
 
 const c = @import("../../root.zig").c;
 const clay = @import("clay.zig");
@@ -25,7 +26,7 @@ fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
 }
 
 const FontUserData = struct {
-    font: *c.TTF_Font,
+    font_cache: *FontCache,
     scale: *const f32,
     measure_cache: *std.AutoArrayHashMap(u64, clay.Dimensions),
 
@@ -43,24 +44,17 @@ const FontUserData = struct {
         return hasher.final();
     }
 
-    fn setLogicalSize(self: *const @This(), font_size: u16) void {
-        sdlError(c.TTF_SetFontSize(self.font, @as(f32, @floatFromInt(font_size)) * self.effectiveScale()));
-    }
-
     fn measure(self: *const @This(), text: []const u8, font_size: u16) clay.Dimensions {
         const key = self.measureCacheKey(text, font_size);
         if (self.measure_cache.get(key)) |dims| return dims;
 
-        self.setLogicalSize(font_size);
-
-        var w: c_int = 0;
-        var h: c_int = 0;
-        sdlError(c.TTF_GetStringSize(self.font, text.ptr, text.len, &w, &h));
+        self.font_cache.setLogicalSize(font_size, self.effectiveScale()) catch @panic("Failed to resize UI font");
+        const measured = self.font_cache.face.measureString(text) catch @panic("Failed to measure UI text");
 
         const scale = self.effectiveScale();
         const dims: clay.Dimensions = .{
-            .w = @as(f32, @floatFromInt(w)) / scale,
-            .h = @as(f32, @floatFromInt(h)) / scale,
+            .w = @floatCast(measured.width / scale),
+            .h = @floatCast(measured.height / scale),
         };
 
         if (self.measure_cache.count() >= MEASURE_CACHE_MAX_ENTRIES) {
@@ -69,6 +63,217 @@ const FontUserData = struct {
 
         self.measure_cache.put(key, dims) catch @panic("OOM");
         return dims;
+    }
+};
+
+const GlyphKey = struct {
+    size_bits: u32,
+    glyph_index: u32,
+};
+
+const LayoutGlyph = struct {
+    glyph: raster.Glyph,
+    pen_x: f32,
+    baseline_y: f32,
+};
+
+const TextLayout = struct {
+    glyphs: []LayoutGlyph,
+};
+
+const FontCache = struct {
+    allocator: std.mem.Allocator,
+    library: raster.Library,
+    face: raster.Face,
+    atlas: raster.Atlas,
+    glyphs: std.AutoHashMap(GlyphKey, raster.Glyph),
+    layouts: std.AutoHashMap(u64, TextLayout),
+    texture: ?*c.SDL_GPUTexture = null,
+    texture_size: u32 = 0,
+    current_size_bits: u32,
+    uploaded_generation: usize = 0,
+
+    const Self = @This();
+    const INITIAL_ATLAS_SIZE: u32 = 1024;
+    const MAX_LAYOUTS: usize = 4096;
+    const COMMON_FONT_SIZES = [_]u16{ 12, 13, 14, 15, 16, 18, 19, 20, 25, 42 };
+
+    fn init(allocator: std.mem.Allocator, device: ?*c.SDL_GPUDevice, initial_scale: f32) !*Self {
+        const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
+
+        var library = try raster.Library.init(allocator);
+        errdefer library.deinit();
+        var face = try raster.Face.initMemory(library, PIXELOID_FONT, 0, .{
+            .size = desiredSize(16, initial_scale),
+        });
+        errdefer face.deinit();
+        var atlas = try raster.Atlas.init(allocator, INITIAL_ATLAS_SIZE, .grayscale);
+        errdefer atlas.deinit(allocator);
+
+        self.* = .{
+            .allocator = allocator,
+            .library = library,
+            .face = face,
+            .atlas = atlas,
+            .glyphs = .init(allocator),
+            .layouts = .init(allocator),
+            .current_size_bits = @bitCast(desiredSize(16, initial_scale).points),
+        };
+        errdefer self.glyphs.deinit();
+        errdefer self.layouts.deinit();
+        errdefer if (self.texture) |texture| c.SDL_ReleaseGPUTexture(device, texture);
+
+        try self.prewarm(initial_scale);
+        try self.recreateAtlasTextureIfChanged(device);
+        return self;
+    }
+
+    fn deinit(self: *Self, device: ?*c.SDL_GPUDevice) void {
+        if (self.texture) |texture| c.SDL_ReleaseGPUTexture(device, texture);
+        self.clearLayouts();
+        self.layouts.deinit();
+        self.glyphs.deinit();
+        self.atlas.deinit(self.allocator);
+        self.face.deinit();
+        self.library.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn desiredSize(font_size: u16, scale: f32) raster.DesiredSize {
+        return .{
+            .points = @as(f32, @floatFromInt(font_size)) * scale,
+            .xdpi = 72,
+            .ydpi = 72,
+        };
+    }
+
+    fn setLogicalSize(self: *Self, font_size: u16, scale: f32) !void {
+        const size = desiredSize(font_size, scale);
+        const size_bits: u32 = @bitCast(size.points);
+        if (size_bits == self.current_size_bits) return;
+        try self.face.setSize(size);
+        self.current_size_bits = size_bits;
+    }
+
+    fn prewarm(self: *Self, scale: f32) !void {
+        for (COMMON_FONT_SIZES) |font_size| {
+            var codepoint: u32 = 0x20;
+            while (codepoint <= 0x7e) : (codepoint += 1) {
+                _ = try self.cacheGlyph(font_size, scale, codepoint);
+            }
+        }
+    }
+
+    fn layoutKey(font_size: u16, scale: f32, text: []const u8) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(text);
+        std.hash.autoHash(&hasher, @as(u32, @bitCast(desiredSize(font_size, scale).points)));
+        return hasher.final();
+    }
+
+    fn getLayout(self: *const Self, font_size: u16, scale: f32, text: []const u8) ?*const TextLayout {
+        return self.layouts.getPtr(layoutKey(font_size, scale, text));
+    }
+
+    fn cacheTextLayout(self: *Self, font_size: u16, scale: f32, text: []const u8) !*const TextLayout {
+        const key = layoutKey(font_size, scale, text);
+        if (self.layouts.getPtr(key)) |layout| return layout;
+
+        if (self.layouts.count() >= MAX_LAYOUTS) self.clearLayouts();
+        try self.setLogicalSize(font_size, scale);
+
+        const metrics = self.face.metrics();
+        const view = try std.unicode.Utf8View.init(text);
+        var glyphs: std.ArrayList(LayoutGlyph) = .empty;
+        defer glyphs.deinit(self.allocator);
+        try glyphs.ensureTotalCapacity(self.allocator, text.len);
+
+        var pen_x: f32 = 0;
+        var baseline_y: f32 = @floatCast(metrics.ascent);
+        var iterator = view.iterator();
+        while (iterator.nextCodepoint()) |codepoint| {
+            switch (codepoint) {
+                '\n' => {
+                    pen_x = 0;
+                    baseline_y += @floatCast(metrics.lineHeight());
+                    continue;
+                },
+                '\r' => continue,
+                else => {},
+            }
+            const glyph = try self.cacheGlyph(font_size, scale, codepoint);
+            try glyphs.append(self.allocator, .{ .glyph = glyph, .pen_x = pen_x, .baseline_y = baseline_y });
+            pen_x += @floatCast(glyph.advance_x);
+        }
+
+        try self.layouts.put(key, .{ .glyphs = try glyphs.toOwnedSlice(self.allocator) });
+        return self.layouts.getPtr(key).?;
+    }
+
+    fn clearLayouts(self: *Self) void {
+        var iterator = self.layouts.valueIterator();
+        while (iterator.next()) |layout| self.allocator.free(layout.glyphs);
+        self.layouts.clearRetainingCapacity();
+    }
+
+    fn cacheGlyph(self: *Self, font_size: u16, scale: f32, codepoint: u32) !raster.Glyph {
+        try self.setLogicalSize(font_size, scale);
+        const glyph_index = self.face.glyphIndex(codepoint) orelse 0;
+        const key: GlyphKey = .{ .size_bits = self.current_size_bits, .glyph_index = glyph_index };
+        if (self.glyphs.get(key)) |glyph| return glyph;
+
+        const glyph = while (true) {
+            break self.face.renderGlyph(self.allocator, &self.atlas, glyph_index) catch |err| switch (err) {
+                error.AtlasFull => {
+                    try self.atlas.grow(self.allocator, self.atlas.size * 2);
+                    continue;
+                },
+                else => return err,
+            };
+        };
+        try self.glyphs.put(key, glyph);
+        return glyph;
+    }
+
+    fn recreateAtlasTextureIfChanged(self: *Self, device: ?*c.SDL_GPUDevice) !void {
+        const generation = self.atlas.modified.load(.monotonic);
+        if (self.texture != null and self.texture_size == self.atlas.size and self.uploaded_generation == generation) return;
+
+        if (self.texture_size != self.atlas.size) {
+            if (self.texture) |texture| c.SDL_ReleaseGPUTexture(device, texture);
+            self.texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
+                .type = c.SDL_GPU_TEXTURETYPE_2D,
+                .format = c.SDL_GPU_TEXTUREFORMAT_A8_UNORM,
+                .width = self.atlas.size,
+                .height = self.atlas.size,
+                .layer_count_or_depth = 1,
+                .num_levels = 1,
+                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+            }));
+            self.texture_size = self.atlas.size;
+        }
+
+        const transfer_buffer = sdlError(c.SDL_CreateGPUTransferBuffer(device, &.{
+            .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            .size = @intCast(self.atlas.data.len),
+        }));
+        defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
+        const map: [*]u8 = @ptrCast(@alignCast(sdlError(c.SDL_MapGPUTransferBuffer(device, transfer_buffer, false))));
+        @memcpy(map[0..self.atlas.data.len], self.atlas.data);
+        c.SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+
+        const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(device));
+        const copy_pass = sdlError(c.SDL_BeginGPUCopyPass(cmd));
+        c.SDL_UploadToGPUTexture(
+            copy_pass,
+            &.{ .transfer_buffer = transfer_buffer, .pixels_per_row = self.atlas.size, .rows_per_layer = self.atlas.size },
+            &.{ .texture = self.texture, .w = self.atlas.size, .h = self.atlas.size, .d = 1 },
+            false,
+        );
+        c.SDL_EndGPUCopyPass(copy_pass);
+        sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
+        self.uploaded_generation = generation;
     }
 };
 
@@ -175,12 +380,6 @@ pub const ShaderModeScope = struct {
     }
 };
 
-const TextCacheItem = struct {
-    texture: ?*c.SDL_GPUTexture,
-    width: f32,
-    height: f32,
-};
-
 const CanvasCacheItem = struct {
     texture: ?*c.SDL_GPUTexture,
     width: u32,
@@ -209,7 +408,6 @@ pub const UIContext = struct {
     // Persistent widget state (survives across frames)
     widgets: WidgetStateMap,
 
-    text_cache: std.AutoArrayHashMap(u32, TextCacheItem),
     text_measure_cache: std.AutoArrayHashMap(u64, clay.Dimensions),
     canvas_cache: std.AutoArrayHashMap(u32, CanvasCacheItem),
 
@@ -252,7 +450,6 @@ pub const UIContext = struct {
 
         ctx.dt = 0;
         ctx.widgets = WidgetStateMap.init(persistent_arena_alloc);
-        ctx.text_cache = std.AutoArrayHashMap(u32, TextCacheItem).init(persistent_arena_alloc);
         ctx.text_measure_cache = std.AutoArrayHashMap(u64, clay.Dimensions).init(persistent_arena_alloc);
         ctx.canvas_cache = std.AutoArrayHashMap(u32, CanvasCacheItem).init(persistent_arena_alloc);
 
@@ -263,11 +460,6 @@ pub const UIContext = struct {
     }
 
     pub fn deinit(self: *Self, allocator: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
-        var iterator = self.text_cache.iterator();
-        while (iterator.next()) |cached_text| {
-            c.SDL_ReleaseGPUTexture(device, cached_text.value_ptr.texture);
-        }
-        self.text_cache.deinit();
         self.text_measure_cache.deinit();
 
         var canvas_iter = self.canvas_cache.iterator();
@@ -283,11 +475,6 @@ pub const UIContext = struct {
     }
 
     fn releaseCachedTextures(self: *Self, device: ?*c.SDL_GPUDevice) void {
-        var text_iter = self.text_cache.iterator();
-        while (text_iter.next()) |cached_text| {
-            c.SDL_ReleaseGPUTexture(device, cached_text.value_ptr.texture);
-        }
-        self.text_cache.clearRetainingCapacity();
         self.text_measure_cache.clearRetainingCapacity();
 
         var canvas_iter = self.canvas_cache.iterator();
@@ -639,7 +826,10 @@ const DrawCall = struct {
     index_offset: u32,
     index_count: u32,
     clip_rect: ?c.SDL_Rect,
+    kind: DrawKind,
 };
+
+const DrawKind = enum { ui, text };
 
 const TextureUpload = struct {
     texture: ?*c.SDL_GPUTexture,
@@ -1204,14 +1394,27 @@ const UIVertex = extern struct {
     }
 };
 
+const TextVertex = extern struct {
+    position: c.SDL_FPoint,
+    color: c.SDL_FColor,
+    tex_coord: c.SDL_FPoint,
+
+    fn init(position: c.SDL_FPoint, color: c.SDL_FColor, tex_coord: c.SDL_FPoint) TextVertex {
+        return .{ .position = position, .color = color, .tex_coord = tex_coord };
+    }
+};
+
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     device: ?*c.SDL_GPUDevice,
     pipeline: ?*c.SDL_GPUGraphicsPipeline,
+    text_pipeline: ?*c.SDL_GPUGraphicsPipeline,
     sampler: ?*c.SDL_GPUSampler,
 
     vertices: std.ArrayList(UIVertex),
     indices: std.ArrayList(u32),
+    text_vertices: std.ArrayList(TextVertex),
+    text_indices: std.ArrayList(u32),
     draw_calls: std.ArrayList(DrawCall),
     clip_stack: std.ArrayList(?c.SDL_Rect),
     overlay_stack: std.ArrayList(c.SDL_FColor),
@@ -1219,12 +1422,17 @@ pub const Renderer = struct {
 
     vertex_buffer: ?*c.SDL_GPUBuffer = null,
     index_buffer: ?*c.SDL_GPUBuffer = null,
+    text_vertex_buffer: ?*c.SDL_GPUBuffer = null,
+    text_index_buffer: ?*c.SDL_GPUBuffer = null,
     vertex_buffer_capacity: u32 = 0,
     index_buffer_capacity: u32 = 0,
+    text_vertex_buffer_capacity: u32 = 0,
+    text_index_buffer_capacity: u32 = 0,
     frame_transfer_buffer: ?*c.SDL_GPUTransferBuffer = null,
     frame_transfer_buffer_capacity: u32 = 0,
 
     current_texture: ?*c.SDL_GPUTexture = null,
+    current_kind: DrawKind = .ui,
     current_clip: ?c.SDL_Rect = null,
     current_overlay_color: c.SDL_FColor = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
 
@@ -1291,6 +1499,28 @@ pub const Renderer = struct {
             c.SDL_ReleaseGPUShader(device, frag);
         }
 
+        var text_shader_compiler = try shaders.ShaderCompiler.init(allocator);
+        defer text_shader_compiler.deinit();
+        try text_shader_compiler.addShader(shaders.TEXT_VERT, .Vertex);
+        try text_shader_compiler.addShader(shaders.TEXT_FRAG, .Fragment);
+        const text_result = try text_shader_compiler.compile(vk_version);
+        defer {
+            for (text_result) |spirv| allocator.free(spirv.bytes);
+            allocator.free(text_result);
+        }
+        var text_vert_spirv: []const u8 = undefined;
+        var text_frag_spirv: []const u8 = undefined;
+        for (text_result) |spirv| switch (spirv.stage) {
+            .Vertex => text_vert_spirv = spirv.bytes,
+            .Fragment => text_frag_spirv = spirv.bytes,
+        };
+        const text_vert = try createSDLShaderFromSpirv(device, text_vert_spirv, c.SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+        const text_frag = try createSDLShaderFromSpirv(device, text_frag_spirv, c.SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+        defer {
+            c.SDL_ReleaseGPUShader(device, text_vert);
+            c.SDL_ReleaseGPUShader(device, text_frag);
+        }
+
         const color_desc = c.SDL_GPUColorTargetDescription{
             .format = c.SDL_GetGPUSwapchainTextureFormat(device, window),
             .blend_state = .{
@@ -1327,6 +1557,17 @@ pub const Renderer = struct {
             .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX,
             .instance_step_rate = 0,
         }};
+        var text_vertex_attrs = [_]c.SDL_GPUVertexAttribute{
+            .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(TextVertex, "position") },
+            .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(TextVertex, "color") },
+            .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(TextVertex, "tex_coord") },
+        };
+        const text_vertex_bindings = [_]c.SDL_GPUVertexBufferDescription{.{
+            .slot = 0,
+            .pitch = @sizeOf(TextVertex),
+            .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX,
+            .instance_step_rate = 0,
+        }};
         const white_texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
             .type = c.SDL_GPU_TEXTURETYPE_2D,
             .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
@@ -1342,6 +1583,8 @@ pub const Renderer = struct {
             .device = device,
             .vertices = .empty,
             .indices = .empty,
+            .text_vertices = .empty,
+            .text_indices = .empty,
             .draw_calls = .empty,
             .clip_stack = .empty,
             .overlay_stack = .empty,
@@ -1356,6 +1599,18 @@ pub const Renderer = struct {
                     .num_vertex_buffers = 1,
                     .vertex_attributes = &vertex_attrs,
                     .num_vertex_attributes = vertex_attrs.len,
+                },
+                .primitive_type = c.SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+                .target_info = .{ .color_target_descriptions = &color_desc, .num_color_targets = 1 },
+            })),
+            .text_pipeline = sdlError(c.SDL_CreateGPUGraphicsPipeline(device, &.{
+                .vertex_shader = text_vert,
+                .fragment_shader = text_frag,
+                .vertex_input_state = .{
+                    .vertex_buffer_descriptions = &text_vertex_bindings,
+                    .num_vertex_buffers = 1,
+                    .vertex_attributes = &text_vertex_attrs,
+                    .num_vertex_attributes = text_vertex_attrs.len,
                 },
                 .primitive_type = c.SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
                 .target_info = .{ .color_target_descriptions = &color_desc, .num_color_targets = 1 },
@@ -1376,6 +1631,14 @@ pub const Renderer = struct {
                 device,
                 &.{ .usage = c.SDL_GPU_BUFFERUSAGE_INDEX, .size = 4 },
             )),
+            .text_vertex_buffer = sdlError(c.SDL_CreateGPUBuffer(
+                device,
+                &.{ .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX, .size = 4 },
+            )),
+            .text_index_buffer = sdlError(c.SDL_CreateGPUBuffer(
+                device,
+                &.{ .usage = c.SDL_GPU_BUFFERUSAGE_INDEX, .size = 4 },
+            )),
         };
 
         const cmd_buf = sdlError(c.SDL_AcquireGPUCommandBuffer(device));
@@ -1393,12 +1656,17 @@ pub const Renderer = struct {
     fn deinit(self: *Self) void {
         c.SDL_ReleaseGPUBuffer(self.device, self.vertex_buffer);
         c.SDL_ReleaseGPUBuffer(self.device, self.index_buffer);
+        c.SDL_ReleaseGPUBuffer(self.device, self.text_vertex_buffer);
+        c.SDL_ReleaseGPUBuffer(self.device, self.text_index_buffer);
         c.SDL_ReleaseGPUTransferBuffer(self.device, self.frame_transfer_buffer);
         c.SDL_ReleaseGPUTexture(self.device, self.white_texture);
         c.SDL_ReleaseGPUSampler(self.device, self.sampler);
         c.SDL_ReleaseGPUGraphicsPipeline(self.device, self.pipeline);
+        c.SDL_ReleaseGPUGraphicsPipeline(self.device, self.text_pipeline);
         self.vertices.deinit(self.allocator);
         self.indices.deinit(self.allocator);
+        self.text_vertices.deinit(self.allocator);
+        self.text_indices.deinit(self.allocator);
         self.draw_calls.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
         self.overlay_stack.deinit(self.allocator);
@@ -1409,11 +1677,14 @@ pub const Renderer = struct {
     fn reset(self: *Self) void {
         self.vertices.clearRetainingCapacity();
         self.indices.clearRetainingCapacity();
+        self.text_vertices.clearRetainingCapacity();
+        self.text_indices.clearRetainingCapacity();
         self.draw_calls.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
         self.overlay_stack.clearRetainingCapacity();
         self.textures.clearRetainingCapacity();
         self.current_texture = self.white_texture;
+        self.current_kind = .ui;
         self.current_clip = null;
         self.current_overlay_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 };
 
@@ -1422,12 +1693,15 @@ pub const Renderer = struct {
             .index_offset = 0,
             .index_count = 0,
             .clip_rect = null,
+            .kind = .ui,
         }) catch @panic("Failed to allocate");
     }
 
     fn releaseMemory(self: *Self) void {
         self.vertices.clearAndFree(self.allocator);
         self.indices.clearAndFree(self.allocator);
+        self.text_vertices.clearAndFree(self.allocator);
+        self.text_indices.clearAndFree(self.allocator);
         self.draw_calls.clearAndFree(self.allocator);
         self.clip_stack.clearAndFree(self.allocator);
         self.overlay_stack.clearAndFree(self.allocator);
@@ -1467,34 +1741,52 @@ pub const Renderer = struct {
             break :blk true;
         };
 
-        if (last.texture != self.current_texture or clip_changed) {
+        if (last.texture != self.current_texture or last.kind != self.current_kind or clip_changed) {
             if (last.index_count == 0) {
                 last.texture = self.current_texture;
                 last.clip_rect = self.current_clip;
+                last.kind = self.current_kind;
+                last.index_offset = self.currentIndexCount();
             } else {
                 self.draw_calls.append(self.allocator, .{
                     .texture = self.current_texture,
-                    .index_offset = @intCast(self.indices.items.len),
+                    .index_offset = self.currentIndexCount(),
                     .index_count = 0,
                     .clip_rect = self.current_clip,
+                    .kind = self.current_kind,
                 }) catch @panic("Failed to allocate");
             }
         }
+    }
+
+    fn currentIndexCount(self: *const Self) u32 {
+        return @intCast(switch (self.current_kind) {
+            .ui => self.indices.items.len,
+            .text => self.text_indices.items.len,
+        });
     }
 
     fn forceDrawCallBreak(self: *Self) usize {
         const split_index = self.draw_calls.items.len;
         self.draw_calls.append(self.allocator, .{
             .texture = self.current_texture,
-            .index_offset = @intCast(self.indices.items.len),
+            .index_offset = self.currentIndexCount(),
             .index_count = 0,
             .clip_rect = self.current_clip,
+            .kind = self.current_kind,
         }) catch @panic("Failed to allocate");
         return split_index;
     }
 
     fn setTexture(self: *Self, texture: ?*c.SDL_GPUTexture) void {
+        self.current_kind = .ui;
         self.current_texture = texture orelse self.white_texture;
+        self.flush();
+    }
+
+    fn setTextTexture(self: *Self, texture: ?*c.SDL_GPUTexture) void {
+        self.current_kind = .text;
+        self.current_texture = texture;
         self.flush();
     }
 
@@ -1512,9 +1804,14 @@ pub const Renderer = struct {
         self.current_overlay_color = self.overlay_stack.pop().?;
     }
 
-    fn ensureGeometryCapacity(self: *Self, vertex_count: usize, index_count: usize) void {
+    fn reserveGeometry(self: *Self, vertex_count: usize, index_count: usize) void {
         self.vertices.ensureUnusedCapacity(self.allocator, vertex_count) catch @panic("Failed to allocate");
         self.indices.ensureUnusedCapacity(self.allocator, index_count) catch @panic("Failed to allocate");
+    }
+
+    fn reserveTextGeometry(self: *Self, vertex_count: usize, index_count: usize) void {
+        self.text_vertices.ensureUnusedCapacity(self.allocator, vertex_count) catch @panic("Failed to allocate");
+        self.text_indices.ensureUnusedCapacity(self.allocator, index_count) catch @panic("Failed to allocate");
     }
 
     fn pushClipRect(self: *Self, rect: c.SDL_Rect) void {
@@ -1545,13 +1842,30 @@ pub const Renderer = struct {
     }
 
     fn pushRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, uv: ?c.SDL_FRect) void {
+        self.pushTexturedRect(rect, color, uv);
+    }
+
+    fn pushTextRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, uv: c.SDL_FRect) void {
+        const base_idx: u32 = @intCast(self.text_vertices.items.len);
+        self.reserveTextGeometry(4, 6);
+        self.text_vertices.appendSliceAssumeCapacity(&.{
+            TextVertex.init(.{ .x = rect.x, .y = rect.y }, color, .{ .x = uv.x, .y = uv.y }),
+            TextVertex.init(.{ .x = rect.x + rect.w, .y = rect.y }, color, .{ .x = uv.x + uv.w, .y = uv.y }),
+            TextVertex.init(.{ .x = rect.x + rect.w, .y = rect.y + rect.h }, color, .{ .x = uv.x + uv.w, .y = uv.y + uv.h }),
+            TextVertex.init(.{ .x = rect.x, .y = rect.y + rect.h }, color, .{ .x = uv.x, .y = uv.y + uv.h }),
+        });
+        self.text_indices.appendSliceAssumeCapacity(&.{ base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3 });
+        self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 6;
+    }
+
+    fn pushTexturedRect(self: *Self, rect: c.SDL_FRect, color: c.SDL_FColor, uv: ?c.SDL_FRect) void {
         const x = rect.x;
         const y = rect.y;
         const w = rect.w;
         const h = rect.h;
         const base_idx: u32 = @intCast(self.vertices.items.len);
         const uvs = uv orelse c.SDL_FRect{ .x = 0, .y = 0, .w = 1, .h = 1 };
-        self.ensureGeometryCapacity(4, 6);
+        self.reserveGeometry(4, 6);
 
         // 4 vertices (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
         self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
@@ -1618,7 +1932,7 @@ pub const Renderer = struct {
         const w = rect.w + pad * 2.0;
         const h = rect.h + pad * 2.0;
         const base_idx: u32 = @intCast(self.vertices.items.len);
-        self.ensureGeometryCapacity(4, 6);
+        self.reserveGeometry(4, 6);
 
         self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
             UIVertex.rounded(.{ .x = x, .y = y }, color, texCoordForPoint(rect, uv, x, y), rect, radius, self.current_overlay_color),
@@ -1680,7 +1994,7 @@ pub const Renderer = struct {
         const step_length: f32 = 90.0 / @as(f32, @floatFromInt(segments));
         const deg2rad = std.math.pi / 180.0;
         const angles = [_]f32{ 180.0, 270.0, 0.0, 90.0 };
-        self.ensureGeometryCapacity(4 * (segments + 1) * 2, ((4 * (segments + 1)) - 1) * 6 + 6);
+        self.reserveGeometry(4 * (segments + 1) * 2, ((4 * (segments + 1)) - 1) * 6 + 6);
 
         // Save initial vertex index to close the loop later
         const start_v_count: u32 = @intCast(self.vertices.items.len);
@@ -1747,7 +2061,7 @@ pub const Renderer = struct {
 
     fn pushTriangle(self: *Self, p1: clay.Vector2, p2: clay.Vector2, p3: clay.Vector2, color: c.SDL_FColor) void {
         const base_idx: u32 = @intCast(self.vertices.items.len);
-        self.ensureGeometryCapacity(3, 3);
+        self.reserveGeometry(3, 3);
         self.vertices.appendSliceAssumeCapacity(&[_]UIVertex{
             UIVertex.init(.{ .x = p1.x, .y = p1.y }, color, .{ .x = 0, .y = 0 }, self.current_overlay_color),
             UIVertex.init(.{ .x = p2.x, .y = p2.y }, color, .{ .x = 0, .y = 0 }, self.current_overlay_color),
@@ -1759,9 +2073,11 @@ pub const Renderer = struct {
         self.draw_calls.items[self.draw_calls.items.len - 1].index_count += 3;
     }
 
-    fn resizeGPUBuffers(self: *Self, vertex_count: u32, index_count: u32) void {
+    fn resizeGPUBuffers(self: *Self, vertex_count: u32, index_count: u32, text_vertex_count: u32, text_index_count: u32) void {
         const vertex_size_needed = vertex_count * @sizeOf(UIVertex);
         const index_size_needed = index_count * @sizeOf(u32);
+        const text_vertex_size_needed = text_vertex_count * @sizeOf(TextVertex);
+        const text_index_size_needed = text_index_count * @sizeOf(u32);
 
         if (vertex_size_needed > self.vertex_buffer_capacity) {
             if (self.vertex_buffer) |b| c.SDL_ReleaseGPUBuffer(self.device, b);
@@ -1779,6 +2095,24 @@ pub const Renderer = struct {
                 &.{ .usage = c.SDL_GPU_BUFFERUSAGE_INDEX, .size = index_size_needed },
             );
             self.index_buffer_capacity = index_size_needed;
+        }
+
+        if (text_vertex_size_needed > self.text_vertex_buffer_capacity) {
+            if (self.text_vertex_buffer) |b| c.SDL_ReleaseGPUBuffer(self.device, b);
+            self.text_vertex_buffer = c.SDL_CreateGPUBuffer(
+                self.device,
+                &.{ .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX, .size = text_vertex_size_needed },
+            );
+            self.text_vertex_buffer_capacity = text_vertex_size_needed;
+        }
+
+        if (text_index_size_needed > self.text_index_buffer_capacity) {
+            if (self.text_index_buffer) |b| c.SDL_ReleaseGPUBuffer(self.device, b);
+            self.text_index_buffer = c.SDL_CreateGPUBuffer(
+                self.device,
+                &.{ .usage = c.SDL_GPU_BUFFERUSAGE_INDEX, .size = text_index_size_needed },
+            );
+            self.text_index_buffer_capacity = text_index_size_needed;
         }
     }
 };
@@ -1991,7 +2325,7 @@ pub const UI = struct {
     /// The current window in focus.
     current_window: *Window,
     gpu_device: ?*c.SDL_GPUDevice,
-    font: *c.TTF_Font,
+    font_cache: *FontCache,
 
     quit: bool = false,
     pending_close_window: ?*Window = null,
@@ -2045,7 +2379,6 @@ pub const UI = struct {
     pub fn init(allocator: std.mem.Allocator, title: []const u8, width: i32, height: i32) !*Self {
         sdlError(c.SDL_SetAppMetadata("NESkwik", "1.0.0", "com.labatata.neskwik"));
         sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD));
-        sdlError(c.TTF_Init());
 
         if (c.glslang_initialize_process() != 1) {
             return error.GLSlangFailedToInitialize;
@@ -2093,12 +2426,6 @@ pub const UI = struct {
 
         const gpu_device = sdlError(c.SDL_CreateGPUDeviceWithProperties(props));
 
-        const font_bytes = c.SDL_IOFromConstMem(PIXELOID_FONT, PIXELOID_FONT.len);
-        const font = c.TTF_OpenFontIO(font_bytes, true, 16) orelse {
-            std.log.err("Could not load font: {s}\n", .{c.SDL_GetError()});
-            return error.FontLoadFailed;
-        };
-
         const ui_ctx = try UIContext.init(
             allocator,
             .{ .w = @floatFromInt(width), .h = @floatFromInt(height) },
@@ -2117,6 +2444,7 @@ pub const UI = struct {
             height,
             c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
         ));
+        const font_cache = try FontCache.init(allocator, gpu_device, Window.currentDisplayScale(win_ptr));
         main_window.* = .{
             .ptr = win_ptr,
             .logical_height = @floatFromInt(height),
@@ -2131,7 +2459,7 @@ pub const UI = struct {
             .ctx = ui_ctx,
             .renderer = try Renderer.init(allocator, gpu_device, win_ptr, vk_version),
             .font_user_data = .{
-                .font = font,
+                .font_cache = font_cache,
                 .scale = &main_window.display_scale,
                 .measure_cache = &ui_ctx.text_measure_cache,
             },
@@ -2151,7 +2479,7 @@ pub const UI = struct {
             .secondary_windows = .empty,
             .current_window = main_window,
             .gpu_device = gpu_device,
-            .font = font,
+            .font_cache = font_cache,
             .fps_manager = FPSManager.init(),
             .vk_version = vk_version,
             .shaders_pipeline = .init(allocator),
@@ -2200,11 +2528,9 @@ pub const UI = struct {
             c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(tag));
         }
 
+        self.font_cache.deinit(self.gpu_device);
         c.glslang_finalize_process();
         c.SDL_DestroyGPUDevice(self.gpu_device);
-        c.TTF_CloseFont(self.font);
-
-        c.TTF_Quit();
         c.SDL_Quit();
 
         self.allocator.destroy(self);
@@ -2375,7 +2701,7 @@ pub const UI = struct {
                 vulkan.detect_vulkan_version(),
             ) catch @panic("OOM"),
             .font_user_data = .{
-                .font = self.font,
+                .font_cache = self.font_cache,
                 .scale = &window.display_scale,
                 .measure_cache = &window.ctx.text_measure_cache,
             },
@@ -2736,6 +3062,7 @@ pub const UI = struct {
 
     fn renderCommands(self: *Self, window: *Window, commands: []clay.RenderCommand) void {
         window.renderer.reset();
+        self.font_cache.recreateAtlasTextureIfChanged(self.gpu_device) catch @panic("Failed to upload UI font atlas");
 
         const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(self.gpu_device));
         for (commands) |clay_cmd| {
@@ -2788,15 +3115,19 @@ pub const UI = struct {
 
         const vertices_len: u32 = @intCast(window.renderer.vertices.items.len);
         const indices_len: u32 = @intCast(window.renderer.indices.items.len);
+        const text_vertices_len: u32 = @intCast(window.renderer.text_vertices.items.len);
+        const text_indices_len: u32 = @intCast(window.renderer.text_indices.items.len);
         const vertices_size = vertices_len * @sizeOf(UIVertex);
         const indices_size = indices_len * @sizeOf(u32);
-        window.renderer.resizeGPUBuffers(vertices_len, indices_len);
+        const text_vertices_size = text_vertices_len * @sizeOf(TextVertex);
+        const text_indices_size = text_indices_len * @sizeOf(u32);
+        window.renderer.resizeGPUBuffers(vertices_len, indices_len, text_vertices_len, text_indices_len);
 
         var texture_uploads_size: u32 = 0;
         for (window.renderer.textures.items) |upload| {
             texture_uploads_size += upload.byteSize();
         }
-        const total_upload_size = texture_uploads_size + vertices_size + indices_size;
+        const total_upload_size = texture_uploads_size + vertices_size + indices_size + text_vertices_size + text_indices_size;
         if (total_upload_size > 0) {
             const transfer_buffer = window.renderer.createFrameTransferBuffer(total_upload_size).?;
             const ptr: [*]u8 = @ptrCast(@alignCast(sdlError(c.SDL_MapGPUTransferBuffer(
@@ -2815,6 +3146,12 @@ pub const UI = struct {
                 @memcpy(ptr[copy_offset .. copy_offset + vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
                 copy_offset += vertices_size;
                 @memcpy(ptr[copy_offset .. copy_offset + indices_size], std.mem.sliceAsBytes(window.renderer.indices.items));
+                copy_offset += indices_size;
+            }
+            if (text_vertices_size > 0) {
+                @memcpy(ptr[copy_offset .. copy_offset + text_vertices_size], std.mem.sliceAsBytes(window.renderer.text_vertices.items));
+                copy_offset += text_vertices_size;
+                @memcpy(ptr[copy_offset .. copy_offset + text_indices_size], std.mem.sliceAsBytes(window.renderer.text_indices.items));
             }
             c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buffer);
 
@@ -2845,6 +3182,24 @@ pub const UI = struct {
                     copy_pass,
                     &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
                     &.{ .buffer = window.renderer.index_buffer.?, .offset = 0, .size = indices_size },
+                    false,
+                );
+                copy_offset += indices_size;
+            }
+
+            if (text_vertices_size > 0) {
+                c.SDL_UploadToGPUBuffer(
+                    copy_pass,
+                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                    &.{ .buffer = window.renderer.text_vertex_buffer.?, .offset = 0, .size = text_vertices_size },
+                    false,
+                );
+                copy_offset += text_vertices_size;
+
+                c.SDL_UploadToGPUBuffer(
+                    copy_pass,
+                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                    &.{ .buffer = window.renderer.text_index_buffer.?, .offset = 0, .size = text_indices_size },
                     false,
                 );
             }
@@ -2888,17 +3243,26 @@ pub const UI = struct {
             .store_op = c.SDL_GPU_STOREOP_STORE,
         };
         const render_pass = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
-        c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
         c.SDL_PushGPUVertexUniformData(cmd, 0, mvp, @sizeOf(@TypeOf(mvp.*)));
-        c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
-        c.SDL_BindGPUIndexBuffer(
-            render_pass,
-            &.{ .buffer = window.renderer.index_buffer, .offset = 0 },
-            c.SDL_GPU_INDEXELEMENTSIZE_32BIT,
-        );
 
+        var bound_kind: ?DrawKind = null;
         for (window.renderer.draw_calls.items) |call| {
             if (call.index_count == 0) continue;
+            if (bound_kind != call.kind) {
+                switch (call.kind) {
+                    .ui => {
+                        c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.pipeline);
+                        c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.vertex_buffer, .offset = 0 }, 1);
+                        c.SDL_BindGPUIndexBuffer(render_pass, &.{ .buffer = window.renderer.index_buffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    },
+                    .text => {
+                        c.SDL_BindGPUGraphicsPipeline(render_pass, window.renderer.text_pipeline);
+                        c.SDL_BindGPUVertexBuffers(render_pass, 0, &.{ .buffer = window.renderer.text_vertex_buffer, .offset = 0 }, 1);
+                        c.SDL_BindGPUIndexBuffer(render_pass, &.{ .buffer = window.renderer.text_index_buffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    },
+                }
+                bound_kind = call.kind;
+            }
             c.SDL_BindGPUFragmentSamplers(
                 render_pass,
                 0,
@@ -3225,100 +3589,43 @@ pub const UI = struct {
         const text_data = cmd.render_data.text;
         const color = text_data.text_color;
         const text_slice = text_data.string_contents;
-        if (text_slice.length == 0) {
-            return;
-        }
+        if (text_slice.length == 0) return;
 
-        window.font_user_data.setLogicalSize(text_data.font_size);
+        const text = text_slice.chars[0..@intCast(text_slice.length)];
+        const scale = window.font_user_data.effectiveScale();
 
-        var hasher = std.hash.XxHash32.init(0);
-        hasher.update(text_slice.chars[0..@intCast(text_slice.length)]);
-        std.hash.autoHash(&hasher, [_]u32{
-            @bitCast(color[0]),
-            @bitCast(color[1]),
-            @bitCast(color[2]),
-            @bitCast(color[3]),
-            text_data.font_size,
-            @bitCast(window.font_user_data.effectiveScale()),
-        });
-        const key = hasher.final();
-        const font_item = blk: {
-            if (window.ctx.text_cache.get(key)) |item| {
-                break :blk item;
-            } else {
-                const sdl_color = c.SDL_Color{
-                    .r = @intFromFloat(color[0]),
-                    .g = @intFromFloat(color[1]),
-                    .b = @intFromFloat(color[2]),
-                    .a = @intFromFloat(color[3]),
-                };
-                const surface = sdlError(c.TTF_RenderText_Blended(self.font, text_slice.chars, @intCast(text_slice.length), sdl_color));
-                defer c.SDL_DestroySurface(surface);
-                const format_details = c.SDL_GetPixelFormatDetails(surface.*.format);
+        _ = self.font_cache.cacheTextLayout(text_data.font_size, scale, text) catch @panic("Failed to rasterize UI text");
 
-                const texture = sdlError(c.SDL_CreateGPUTexture(self.gpu_device, &.{
-                    .type = c.SDL_GPU_TEXTURETYPE_2D,
-                    .format = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format),
-                    .width = @intCast(surface.*.w),
-                    .height = @intCast(surface.*.h),
-                    .layer_count_or_depth = 1,
-                    .num_levels = 1,
-                    .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                }));
+        const layout = self.font_cache.getLayout(text_data.font_size, scale, text) orelse return;
+        const atlas_size: f32 = @floatFromInt(self.font_cache.atlas.size);
+        var draw_color = c.SDL_FColor{
+            .r = color[0] / 255.0,
+            .g = color[1] / 255.0,
+            .b = color[2] / 255.0,
+            .a = color[3] / 255.0,
+        };
+        const overlay = window.renderer.current_overlay_color;
+        draw_color.r = draw_color.r * (1.0 - overlay.a) + overlay.r * overlay.a;
+        draw_color.g = draw_color.g * (1.0 - overlay.a) + overlay.g * overlay.a;
+        draw_color.b = draw_color.b * (1.0 - overlay.a) + overlay.b * overlay.a;
 
-                const buffer_size: u32 = @intCast(surface.*.pitch * surface.*.h);
-                var tb_info = c.SDL_GPUTransferBufferCreateInfo{ .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = buffer_size };
-                const tb = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &tb_info);
-
-                const map = c.SDL_MapGPUTransferBuffer(self.gpu_device, tb, false);
-                const surface_pixels = @as([*]u8, @ptrCast(surface.*.pixels));
-                @memcpy(@as([*]u8, @ptrCast(map))[0..buffer_size], surface_pixels[0..buffer_size]);
-                c.SDL_UnmapGPUTransferBuffer(self.gpu_device, tb);
-
-                const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device);
-                const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf);
-
-                var src = c.SDL_GPUTextureTransferInfo{
-                    .transfer_buffer = tb,
-                    .offset = 0,
-                    .pixels_per_row = @intCast(@divExact(surface.*.pitch, format_details.*.bytes_per_pixel)),
-                    .rows_per_layer = @intCast(surface.*.h),
-                };
-                var dst = c.SDL_GPUTextureRegion{
-                    .texture = texture,
-                    .w = @intCast(surface.*.w),
-                    .h = @intCast(surface.*.h),
-                    .d = 1,
-                };
-                c.SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
-
-                c.SDL_EndGPUCopyPass(copy_pass);
-                _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-                c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, tb);
-
-                const item: TextCacheItem = .{
-                    .texture = texture,
-                    .width = @as(f32, @floatFromInt(surface.*.w)) / window.font_user_data.effectiveScale(),
-                    .height = @as(f32, @floatFromInt(surface.*.h)) / window.font_user_data.effectiveScale(),
-                };
-
-                window.ctx.text_cache.put(key, item) catch @panic("Failed to allocate memory!");
-                break :blk item;
+        window.renderer.setTextTexture(self.font_cache.texture);
+        for (layout.glyphs) |positioned| {
+            const glyph = positioned.glyph;
+            if (glyph.width > 0 and glyph.height > 0) {
+                window.renderer.pushTextRect(.{
+                    .x = cmd.bounding_box.x + (positioned.pen_x + @as(f32, @floatFromInt(glyph.offset_x))) / scale,
+                    .y = cmd.bounding_box.y + (positioned.baseline_y - @as(f32, @floatFromInt(glyph.offset_y))) / scale,
+                    .w = @as(f32, @floatFromInt(glyph.width)) / scale,
+                    .h = @as(f32, @floatFromInt(glyph.height)) / scale,
+                }, draw_color, .{
+                    .x = @as(f32, @floatFromInt(glyph.atlas_x)) / atlas_size,
+                    .y = @as(f32, @floatFromInt(glyph.atlas_y)) / atlas_size,
+                    .w = @as(f32, @floatFromInt(glyph.width)) / atlas_size,
+                    .h = @as(f32, @floatFromInt(glyph.height)) / atlas_size,
+                });
             }
-        };
-
-        const dest = c.SDL_FRect{
-            .x = cmd.bounding_box.x,
-            .y = cmd.bounding_box.y,
-            .w = font_item.width,
-            .h = font_item.height,
-        };
-        window.renderer.setTexture(font_item.texture);
-        window.renderer.pushRect(
-            dest,
-            .{ .r = color[0] / 255.0, .g = color[1] / 255.0, .b = color[2] / 255.0, .a = color[3] / 255.0 },
-            null,
-        );
+        }
     }
 
     fn hasAnyShaderLoaded(self: *const Self, shaders_mode: []const ShaderMode) bool {

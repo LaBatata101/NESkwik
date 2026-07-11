@@ -71,6 +71,34 @@ pub const VERT =
     \\}
 ;
 
+pub const TEXT_FRAG =
+    \\#version 450
+    \\layout(location = 0) in vec4 v_Color;
+    \\layout(location = 1) in vec2 v_UV;
+    \\layout(location = 0) out vec4 Target0;
+    \\layout(set = 2, binding = 0) uniform sampler2D u_Texture;
+    \\void main() {
+    \\    Target0 = vec4(v_Color.rgb, texture(u_Texture, v_UV).a * v_Color.a);
+    \\}
+;
+
+pub const TEXT_VERT =
+    \\#version 450
+    \\layout(location = 0) in vec2 a_Position;
+    \\layout(location = 1) in vec4 a_Color;
+    \\layout(location = 2) in vec2 a_UV;
+    \\layout(location = 0) out vec4 v_Color;
+    \\layout(location = 1) out vec2 v_UV;
+    \\layout(set = 1, binding = 0) uniform UniformBlock {
+    \\    mat4 u_Projection;
+    \\};
+    \\void main() {
+    \\    v_Color = a_Color;
+    \\    v_UV = a_UV;
+    \\    gl_Position = u_Projection * vec4(a_Position, 0.0, 1.0);
+    \\}
+;
+
 pub const Shader = struct {
     code: []const u8,
     stage: Stage,

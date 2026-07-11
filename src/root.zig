@@ -30,7 +30,6 @@ pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_system.h");
     @cInclude("blip_buf.h");
-    @cInclude("SDL3_ttf/SDL_ttf.h");
     @cInclude("glslang/Include/glslang_c_interface.h");
     @cInclude("glslang/Public/resource_limits_c.h");
     @cInclude("vulkan/vulkan.h");

@@ -2,13 +2,14 @@
     .name = ._8bit_emulator,
     .version = "0.0.0",
     .fingerprint = 0xb9ac7bd716c04420, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .sdl = .{
             .path = "third-party/SDL/",
         },
-        .sdl_ttf = .{
-            .path = "third-party/SDL_ttf",
+        .font_raster = .{
+            .url = "git+https://github.com/LaBatata101/zig-font-raster.git#e81222a22b5784ee89bad9693ac6901c4e6b92fe",
+            .hash = "zig_font_raster-0.1.0-UGqisuknDwBrotXkkwSpQ3UQjJqDOlmu3wajYhukoFkX",
         },
         .spirv_cross = .{
             .url = "git+https://github.com/LaBatata101/SPIRV-Cross_zig.git#ad0bb016f3ddc68f666e7e2a955889b171d8f2a9",

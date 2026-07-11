@@ -154,7 +154,7 @@ const NessDeps = struct {
     sdl_lib: *std.Build.Step.Compile,
     blip_buf_lib: *std.Build.Step.Compile,
     clay_lib: *std.Build.Step.Compile,
-    sdl_ttf_lib: *std.Build.Step.Compile,
+    font_raster_lib: *std.Build.Step.Compile,
     glslang_lib: *std.Build.Step.Compile,
     spirv_cross_lib: *std.Build.Step.Compile,
 };
@@ -203,13 +203,23 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     clay_lib.addCSourceFile(.{ .file = b.path("third-party/clay/clay_impl.c") });
     mod.linkLibrary(clay_lib);
 
-    const sdl_ttf_dep = b.dependency("sdl_ttf", .{
+    const font_raster_dep = b.dependency("font_raster", .{
         .target = target,
         .optimize = optimize,
-        .preferred_link_mode = preferred_linkage,
+        .@"enable-harfbuzz" = false,
+        .@"enable-libpng" = false,
     });
-    const sdl_ttf_lib = sdl_ttf_dep.artifact("SDL3_ttf");
-    mod.linkLibrary(sdl_ttf_lib);
+    const font_raster_mod = font_raster_dep.module("font_raster");
+    mod.addImport("font_raster", font_raster_mod);
+    const font_raster_lib = blk: {
+        for (font_raster_mod.link_objects.items) |link_object| {
+            switch (link_object) {
+                .other_step => |compile| break :blk compile,
+                else => {},
+            }
+        }
+        @panic("font_raster module did not link its FreeType artifact");
+    };
 
     const glslang_dep = b.dependency("glslang", .{
         .target = target,
@@ -256,7 +266,7 @@ fn createNessModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
         .sdl_lib = sdl_lib,
         .blip_buf_lib = blip_buf_lib,
         .clay_lib = clay_lib,
-        .sdl_ttf_lib = sdl_ttf_lib,
+        .font_raster_lib = font_raster_lib,
         .glslang_lib = glslang_lib,
         .spirv_cross_lib = spirv_cross_lib,
     };
@@ -402,7 +412,7 @@ fn linkAppLibraries(compile: *std.Build.Step.Compile, deps: NessDeps) void {
     compile.linkLibrary(deps.sdl_lib);
     compile.linkLibrary(deps.blip_buf_lib);
     compile.linkLibrary(deps.clay_lib);
-    compile.linkLibrary(deps.sdl_ttf_lib);
+    compile.linkLibrary(deps.font_raster_lib);
     compile.linkLibrary(deps.glslang_lib);
     compile.linkLibrary(deps.spirv_cross_lib);
 }
