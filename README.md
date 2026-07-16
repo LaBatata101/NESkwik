@@ -22,6 +22,7 @@ NESkwik is a cross-platform (Linux, Windows, MacOS and Android) NES (Nintendo En
 - 6502 CPU, PPU, and APU emulation.
 - SDL3-based desktop UI with Vulkan rendering.
 - Keyboard and gamepad input for two players.
+- Host-authoritative two-player desktop multiplayer.
 - Configurable controls, aspect ratio, VSync, emulation speed.
 - Pause, reset, stop, fullscreen, and step/debug controls.
 - RetroArch `.slangp` shader preset loading
@@ -40,7 +41,13 @@ That totals to around **1900** supported games of the NES library.
 ## Build - Requirements
 
 - Zig 0.15.2.
+- Rust 1.91 or newer (desktop multiplayer transport).
 - Vulkan runtime and development headers/library available on your system.
+
+Cross-compiling a desktop build to Windows also requires
+[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild). The required
+Rust target and installation commands are covered in
+[Cross-compilation](#cross-compilation).
 
 ### Android
 
@@ -69,6 +76,40 @@ zig build --release=fast
 ```
 
 The executable is located at `zig-out/bin/neskwik`.
+
+Desktop builds use the vendored `third-party/iroh-ffi` dependency, which
+compiles and statically links its Rust archive into `neskwik`. Builds use
+`cargo build` automatically except for Windows GNU, which always uses
+`cargo zigbuild` so the Rust and Zig ABIs match even on a Windows host.
+
+### Cross-compilation
+
+To cross-compile the x86-64 Windows GNU build, install the Rust target and
+`cargo-zigbuild` once:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+cargo install --locked cargo-zigbuild
+```
+
+Then build the Windows executable directly through Zig:
+
+```sh
+zig build -Dtarget=x86_64-windows --release=fast
+```
+
+The build script invokes `cargo zigbuild` for `iroh-ffi`. The executable is
+written to `zig-out/bin/neskwik.exe`.
+
+Other non-native desktop targets require a compatible prebuilt `iroh-ffi`
+static archive. Pass the directory containing that archive with:
+
+```sh
+zig build -Dtarget=<zig-target> -Diroh-lib-dir=/absolute/path/to/iroh/library
+```
+
+The archive must match the requested CPU, operating system, and ABI. Android
+builds do not build or package iroh and remain offline-only.
 
 ### Android
 
@@ -163,6 +204,12 @@ Run the unit test suite:
 
 ```sh
 zig build test
+```
+
+Run the explicitly gated, relay-free multiplayer loopback test:
+
+```sh
+NESKWIK_NETPLAY_LOOPBACK_TEST=1 zig build test -Dtest-filter="local loopback session"
 ```
 
 Run ROM-based tests:

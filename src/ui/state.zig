@@ -17,6 +17,7 @@ const settings = @import("settings.zig");
 const paths = @import("../utils/paths.zig");
 const shader_download = @import("../shader_download.zig");
 const save_state = @import("../save_state.zig");
+const netplay_protocol = @import("../netplay/protocol.zig");
 const file = @import("../utils/file.zig");
 const android = @import("../utils/android.zig");
 const ness = @import("../root.zig");
@@ -35,6 +36,9 @@ const NO_FRAME: u8 = std.math.maxInt(u8);
 const CURSOR_HIDE_DELAY_MS = 3000;
 const NES_TARGET_FPS: u64 = 60;
 const SPEED_SAMPLE_MS: u64 = 1000;
+/// Keep the SDL event loop responsive when the transport delivers a burst of
+/// authoritative frames (for example after a checkpoint or scheduler stall).
+const MAX_NETPLAY_FRAMES_PER_UPDATE: usize = 4;
 
 const Player = bindings.Player;
 const ControllerAction = bindings.ControllerAction;
@@ -86,6 +90,28 @@ pub const AppState = struct {
     show_android_save_state_dialog: bool = false,
     show_android_load_state_dialog: bool = false,
     emulation_running: bool = false,
+    session_manager: ness.netplay_session.SessionManager,
+    session_code: ?[]u8 = null,
+    session_error: ?[]u8 = null,
+    session_preview_name: ?[]u8 = null,
+    session_preview_size: u32 = 0,
+    session_preview_hash: ?netplay_protocol.Digest = null,
+    session_preview_frame: [NES_PIXEL_BYTES]u8 = [_]u8{0} ** NES_PIXEL_BYTES,
+    session_peer: ?[32]u8 = null,
+    session_window_id: ?c.SDL_WindowID = null,
+    active_session_role: ness.netplay_session.Role = .none,
+    network_rom: bool = false,
+    netplay_epoch: u32 = 0,
+    netplay_frame: u64 = 0,
+    netplay_last_ack: u64 = 0,
+    netplay_remote_player2: std.atomic.Value(u8) = .init(0),
+    netplay_checkpoint_frame: u64 = 0,
+    netplay_checkpoint_digest: ?[32]u8 = null,
+    netplay_resyncing: bool = false,
+    netplay_ready: bool = false,
+    netplay_lead_paused: bool = false,
+    netplay_rebase_times: [3]i64 = .{ 0, 0, 0 },
+    client_saved_speed: ?EmulationSpeed = null,
 
     step_mode: bool = false,
 
@@ -160,6 +186,7 @@ pub const AppState = struct {
     ui_frame_idx: std.atomic.Value(u8) = .init(0),
     writing_frame_idx: std.atomic.Value(u8) = .init(NO_FRAME),
     render_frame_idx: u8 = 0,
+    emulation_speed_frame_count: std.atomic.Value(u64) = .init(0),
     emulation_speed_percent: std.atomic.Value(u64) = .init(0),
     /// Currently selected category in the settings sidebar.
     selected_category: SettingsCategory = .general,
@@ -301,6 +328,7 @@ pub const AppState = struct {
         var state = Self{
             .alloc = alloc,
             .ui = ui,
+            .session_manager = ness.netplay_session.SessionManager.init(alloc),
             .history = hist,
             .config_dir = config_dir,
             .controller_img = .{ .raw = surface },
@@ -316,7 +344,9 @@ pub const AppState = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.session_manager.cancel();
         self.stopEmulationThread();
+        self.session_manager.deinit();
 
         // Save before freeing the system.
         if (self.emulation_running) self.saveCurrentGame();
@@ -325,6 +355,9 @@ pub const AppState = struct {
         if (self.config_dir) |path| self.alloc.free(path);
         if (self.current_rom_path) |p| self.alloc.free(p);
         if (self.rom_bytes) |rom_bytes| self.alloc.free(rom_bytes);
+        if (self.session_code) |value| self.alloc.free(value);
+        if (self.session_error) |value| self.alloc.free(value);
+        if (self.session_preview_name) |value| self.alloc.free(value);
         deinitShaderRuntimeState(self.alloc, self);
         deinitEmulatorSettings(self.alloc, &self.settings);
         deinitEmulatorSettings(self.alloc, &self.saved_settings);
@@ -340,6 +373,8 @@ pub const AppState = struct {
     fn startEmulationThread(self: *Self) !void {
         self.stopEmulationThread();
         self.emulation_stop.store(false, .release);
+        self.emulation_speed_frame_count.store(0, .release);
+        self.emulation_speed_percent.store(0, .release);
         self.emulation_thread = try std.Thread.spawn(.{}, emulationThreadMain, .{self});
     }
 
@@ -354,16 +389,21 @@ pub const AppState = struct {
 
     fn emulationThreadMain(self: *Self) void {
         var frame_acc: f32 = 0.0;
-        var speed_frame_count: u64 = 0;
         var speed_window_start: u64 = c.SDL_GetTicks();
 
         while (!self.emulation_stop.load(.acquire)) {
             self.emulation_lock.lock();
+            const authoritative_client = if (builtin.abi.isAndroid())
+                false
+            else
+                self.active_session_role == .client and self.network_rom;
             const can_run = self.emulation_running and
                 self.system != null and
                 !self.lifecycle_suspended.load(.acquire) and
                 !self.paused and
-                !self.step_mode;
+                !self.step_mode and
+                !self.netplay_resyncing and
+                !authoritative_client;
             if (can_run) {
                 const speed = self.settings.emulation_speed;
                 const multiplier = speed.multiplier();
@@ -373,20 +413,55 @@ pub const AppState = struct {
 
                 self.system.?.apu.device.setSpeed(multiplier);
                 for (0..frames_to_run) |_| {
-                    self.system.?.applyControllerSnapshot(self.controllerSnapshot());
+                    var controllers = self.controllerSnapshot();
+                    const connected_host = if (builtin.abi.isAndroid()) false else self.isConnectedHost();
+                    if (connected_host) {
+                        const frame_lead = self.netplay_frame -| self.netplay_last_ack;
+                        if (frame_lead >= 12) {
+                            if (!self.netplay_lead_paused) {
+                                std.log.warn("netplay: host reached lead limit; pausing emulation (epoch={d}, frame={d}, last_ack={d}, lead={d})", .{
+                                    self.netplay_epoch,
+                                    self.netplay_frame,
+                                    self.netplay_last_ack,
+                                    frame_lead,
+                                });
+                                self.netplay_lead_paused = true;
+                            }
+                            self.system.?.setAudioPaused(true);
+                            break;
+                        }
+                        if (self.netplay_lead_paused) {
+                            // Use hysteresis so normal acknowledgement jitter does not
+                            // alternate pause/resume for every individual frame.
+                            if (frame_lead > 6) {
+                                self.system.?.setAudioPaused(true);
+                                break;
+                            }
+                            std.log.info("netplay: client caught up; host resuming emulation (epoch={d}, frame={d}, last_ack={d})", .{
+                                self.netplay_epoch,
+                                self.netplay_frame,
+                                self.netplay_last_ack,
+                            });
+                            self.netplay_lead_paused = false;
+                        }
+                        self.system.?.setAudioPaused(false);
+                        controllers.player2 = @bitCast(self.netplay_remote_player2.load(.acquire));
+                    }
+                    self.system.?.applyControllerSnapshot(controllers);
                     self.system.?.run_frame();
                     self.publishFrame(self.system.?.frame_buffer());
-                    speed_frame_count += 1;
+                    if (connected_host) self.publishAuthoritativeFrame(controllers);
+                    _ = self.emulation_speed_frame_count.fetchAdd(1, .monotonic);
                 }
+            }
 
-                const now = c.SDL_GetTicks();
-                const diff = now -% speed_window_start;
-                if (diff >= SPEED_SAMPLE_MS) {
-                    const percent = @divFloor(speed_frame_count * c.SDL_MS_PER_SECOND * 100, diff * NES_TARGET_FPS);
-                    self.emulation_speed_percent.store(percent, .release);
-                    speed_frame_count = 0;
-                    speed_window_start = now;
-                }
+            const now = c.SDL_GetTicks();
+            const diff = now -% speed_window_start;
+            if (diff >= SPEED_SAMPLE_MS) {
+                const speed_frame_count = self.emulation_speed_frame_count.swap(0, .acq_rel);
+                const percent = @divFloor(speed_frame_count * c.SDL_MS_PER_SECOND * 100, diff * NES_TARGET_FPS);
+                self.emulation_speed_percent.store(percent, .release);
+                speed_window_start = now;
             }
             self.emulation_lock.unlock();
 
@@ -424,16 +499,16 @@ pub const AppState = struct {
 
         if (self.emulation_running) {
             const main_window_active = ui.current_window == ui.main_window;
+            if (main_window_active or (!builtin.abi.isAndroid() and self.sessionActive())) self.syncControllers(ui);
             if (main_window_active) {
-                self.syncControllers(ui);
-
-                if (ui.isKeyPressed(self.generalBinding(.quick_save))) self.saveStateSlot(0);
-                if (ui.isKeyPressed(self.generalBinding(.quick_load))) self.loadStateSlot(0);
+                const client_restricted = if (builtin.abi.isAndroid()) false else self.isConnectedClient();
+                if (!client_restricted and ui.isKeyPressed(self.generalBinding(.quick_save))) self.saveStateSlot(0);
+                if (!client_restricted and ui.isKeyPressed(self.generalBinding(.quick_load))) self.loadStateSlot(0);
                 if (ui.isKeyPressed(self.generalBinding(.quit))) ui.quit = true;
-                if (ui.isKeyPressed(self.generalBinding(.toggle_step_mode))) self.toggleDebug();
-                if (ui.isKeyPressed(self.generalBinding(.restart))) self.resetSystem();
-                if (ui.isKeyPressed(self.generalBinding(.toggle_pause))) self.togglePause();
-                if (ui.isKeyPressed(self.generalBinding(.stop))) {
+                if (!client_restricted and !self.sessionActive() and ui.isKeyPressed(self.generalBinding(.toggle_step_mode))) self.toggleDebug();
+                if (!client_restricted and ui.isKeyPressed(self.generalBinding(.restart))) self.resetSystem();
+                if (!client_restricted and ui.isKeyPressed(self.generalBinding(.toggle_pause))) self.togglePause();
+                if (!client_restricted and ui.isKeyPressed(self.generalBinding(.stop))) {
                     self.unloadCurrentRom();
                     ui.setWindowFullscreen(false);
                 }
@@ -507,6 +582,7 @@ pub const AppState = struct {
 
     pub fn update(self: *Self) void {
         self.handleInput(self.ui);
+        if (!builtin.abi.isAndroid()) self.updateNetplay();
         self.updateShaderState(self.ui);
 
         // Track connected/disconnected gamepads
@@ -743,9 +819,17 @@ pub const AppState = struct {
     }
 
     pub fn resetSystem(self: *Self) void {
+        if (!builtin.abi.isAndroid() and self.isConnectedClient()) return;
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.system.?.reset();
+        if (!builtin.abi.isAndroid() and self.isConnectedHost()) {
+            std.log.info("netplay: host reset system; scheduling authoritative rebase", .{});
+            self.sendRebaseLocked() catch |err| {
+                std.log.err("netplay: failed to send reset rebase: {s}", .{@errorName(err)});
+                self.session_manager.disconnect();
+            };
+        }
     }
 
     pub fn runSystemTick(self: *Self) void {
@@ -761,12 +845,21 @@ pub const AppState = struct {
     }
 
     pub fn setEmulationSpeed(self: *Self, speed: EmulationSpeed) void {
+        if (!builtin.abi.isAndroid() and self.isConnectedClient()) return;
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.settings.emulation_speed = speed;
+        if (!builtin.abi.isAndroid() and self.isConnectedHost()) {
+            std.log.info("netplay: host changed emulation speed to {s}", .{@tagName(speed)});
+            self.session_manager.send(.{ .control = .{ .speed = @intFromEnum(speed) } }) catch |err| {
+                std.log.err("netplay: failed to send speed control: {s}", .{@errorName(err)});
+                self.session_manager.disconnect();
+            };
+        }
     }
 
     pub fn saveStateSlot(self: *Self, slot: usize) void {
+        if (!builtin.abi.isAndroid() and self.isConnectedClient()) return;
         std.debug.assert(self.current_rom_path != null);
         std.debug.assert(slot < save_state.SLOT_COUNT);
 
@@ -791,6 +884,7 @@ pub const AppState = struct {
     }
 
     pub fn loadStateSlot(self: *Self, slot: usize) void {
+        if (!builtin.abi.isAndroid() and self.isConnectedClient()) return;
         std.debug.assert(self.current_rom_path != null);
 
         const name = if (builtin.abi.isAndroid())
@@ -807,6 +901,13 @@ pub const AppState = struct {
         save_state.loadSlot(self.alloc, name, &self.system.?, slot) catch |err| {
             std.log.err("load state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
         };
+        if (!builtin.abi.isAndroid() and self.isConnectedHost()) {
+            std.log.info("netplay: host loaded save state slot {d}; scheduling authoritative rebase", .{slot + 1});
+            self.sendRebaseLocked() catch |err| {
+                std.log.err("netplay: failed to send load-state rebase: {s}", .{@errorName(err)});
+                self.session_manager.disconnect();
+            };
+        }
         self.ui.setTimer("load_state_toast", 1000);
     }
 
@@ -816,6 +917,7 @@ pub const AppState = struct {
     }
 
     pub fn loadRom(self: *Self, path: []const u8) !void {
+        if (!builtin.abi.isAndroid() and self.sessionActive()) self.session_manager.disconnect();
         // Save previous game's progress before replacing it.
         if (self.emulation_running) {
             self.stopEmulationThread();
@@ -844,6 +946,7 @@ pub const AppState = struct {
         self.system.?.reset();
         self.publishFrame(self.system.?.frame_buffer());
         self.emulation_running = true;
+        self.network_rom = false;
         self.render_home_ui = false;
         self.render_debug_ui = false;
         self.show_android_settings_ui = false;
@@ -857,9 +960,15 @@ pub const AppState = struct {
     }
 
     pub fn unloadCurrentRom(self: *Self) void {
+        if (!builtin.abi.isAndroid() and self.sessionActive()) self.session_manager.disconnect();
+        self.unloadCurrentRomInternal();
+    }
+
+    fn unloadCurrentRomInternal(self: *Self) void {
+        if (!self.emulation_running) return;
         self.clearControllerState();
         self.stopEmulationThread();
-        self.saveCurrentGame();
+        if (!self.network_rom) self.saveCurrentGame();
 
         self.rom.?.deinit();
         self.system.?.deinit();
@@ -871,6 +980,7 @@ pub const AppState = struct {
         self.rom_bytes = null;
         self.current_rom_path = null;
         self.emulation_running = false;
+        self.network_rom = false;
         self.render_home_ui = true;
         self.render_debug_ui = false;
 
@@ -880,6 +990,7 @@ pub const AppState = struct {
     }
 
     fn saveCurrentGame(self: *Self) void {
+        if (self.network_rom) return;
         const path = self.current_rom_path orelse return;
         var android_name: ?[]u8 = null;
         defer if (android_name) |name| self.alloc.free(name);
@@ -1269,9 +1380,17 @@ pub const AppState = struct {
     }
 
     pub fn togglePause(self: *Self) void {
+        if (!builtin.abi.isAndroid() and self.isConnectedClient()) return;
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.paused = !self.paused;
+        if (!builtin.abi.isAndroid() and self.isConnectedHost()) {
+            std.log.info("netplay: host changed pause state to {any}", .{self.paused});
+            self.session_manager.send(.{ .control = .{ .paused = self.paused } }) catch |err| {
+                std.log.err("netplay: failed to send pause control: {s}", .{@errorName(err)});
+                self.session_manager.disconnect();
+            };
+        }
     }
 
     pub fn setLifecycleSuspended(self: *Self, suspended: bool) void {
@@ -1287,6 +1406,7 @@ pub const AppState = struct {
     }
 
     pub fn toggleDebug(self: *Self) void {
+        if (!builtin.abi.isAndroid() and self.sessionActive()) return;
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.step_mode = !self.step_mode;
@@ -1294,9 +1414,605 @@ pub const AppState = struct {
     }
 
     pub fn toggleStepMode(self: *Self) void {
+        if (!builtin.abi.isAndroid() and self.sessionActive()) return;
         self.emulation_lock.lock();
         defer self.emulation_lock.unlock();
         self.step_mode = !self.step_mode;
+    }
+
+    pub fn sessionActive(self: *Self) bool {
+        if (builtin.abi.isAndroid()) return false;
+        return self.session_manager.isActive();
+    }
+
+    pub fn sessionRole(self: *Self) ness.netplay_session.Role {
+        if (builtin.abi.isAndroid()) return .none;
+        return self.active_session_role;
+    }
+
+    pub fn sessionState(self: *Self) ness.netplay_session.State {
+        return self.session_manager.getState();
+    }
+
+    pub fn isConnectedClient(self: *Self) bool {
+        if (builtin.abi.isAndroid()) return false;
+        return self.active_session_role == .client and self.session_manager.getState() == .connected;
+    }
+
+    pub fn isConnectedHost(self: *Self) bool {
+        if (builtin.abi.isAndroid()) return false;
+        return self.active_session_role == .host and self.netplay_ready and self.session_manager.getState() == .connected;
+    }
+
+    pub fn startHostSession(self: *Self) !void {
+        if (builtin.abi.isAndroid()) return error.NetplayUnavailable;
+        if (!self.emulation_running or self.rom_bytes == null or self.current_rom_path == null) return error.NoGameRunning;
+        if (self.rom_bytes.?.len > netplay_protocol.max_rom_size) return error.RomTooLarge;
+        self.clearSessionPresentation();
+
+        var framebuffer: [netplay_protocol.framebuffer_size]u8 = undefined;
+        self.emulation_lock.lockShared();
+        @memcpy(&framebuffer, self.system.?.frame_buffer());
+        self.emulation_lock.unlockShared();
+
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.Blake3.hash(self.rom_bytes.?, &hash, .{});
+        const basename = std.fs.path.basename(self.current_rom_path.?);
+        var name_len = @min(basename.len, netplay_protocol.max_display_name);
+        while (name_len > 0 and !std.unicode.utf8ValidateSlice(basename[0..name_len])) name_len -= 1;
+        const name = if (name_len == 0) "game.nes" else basename[0..name_len];
+
+        std.log.info("netplay: preparing host session for '{s}' (rom={d} bytes, hash={x})", .{
+            name,
+            self.rom_bytes.?.len,
+            hash[0..8],
+        });
+
+        try self.session_manager.startHost(.{
+            .name = @constCast(name),
+            .rom_size = @intCast(self.rom_bytes.?.len),
+            .rom_hash = hash,
+            .framebuffer = framebuffer,
+        });
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.active_session_role = .host;
+        self.netplay_epoch = 0;
+        self.netplay_frame = 0;
+        self.netplay_last_ack = 0;
+        self.netplay_ready = false;
+        self.netplay_lead_paused = false;
+        std.log.info("netplay: host session startup accepted", .{});
+    }
+
+    pub fn connectSession(self: *Self, code: []const u8) !void {
+        if (builtin.abi.isAndroid()) return error.NetplayUnavailable;
+        std.log.info("netplay: preparing client connection (code_length={d})", .{std.mem.trim(u8, code, " \t\r\n").len});
+        self.clearSessionPresentation();
+        try self.session_manager.connect(code);
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.active_session_role = .client;
+        std.log.info("netplay: client connection startup accepted", .{});
+    }
+
+    pub fn joinSession(self: *Self) !void {
+        if (builtin.abi.isAndroid()) return error.NetplayUnavailable;
+        std.log.info("netplay: join confirmed from preview UI", .{});
+        try self.session_manager.acceptPreview();
+    }
+
+    pub fn leaveSession(self: *Self) void {
+        if (builtin.abi.isAndroid()) return;
+        std.log.info("netplay: leave session requested from UI", .{});
+        self.session_manager.disconnect();
+    }
+
+    pub fn sessionWindowClosed(self: *Self) void {
+        self.session_window_id = null;
+        const current = self.session_manager.getState();
+        if (self.active_session_role == .client and
+            (current == .connecting or current == .preview or current == .joining))
+        {
+            std.log.info("netplay: pending client setup cancelled because connection window closed (state={s})", .{@tagName(current)});
+            if (current == .preview) {
+                self.session_manager.disconnect();
+            } else {
+                self.session_manager.cancel();
+            }
+        }
+    }
+
+    fn clearSessionPresentation(self: *Self) void {
+        if (self.session_code) |value| self.alloc.free(value);
+        self.session_code = null;
+        if (self.session_error) |value| self.alloc.free(value);
+        self.session_error = null;
+        if (self.session_preview_name) |value| self.alloc.free(value);
+        self.session_preview_name = null;
+        self.session_preview_size = 0;
+        self.session_preview_hash = null;
+        self.session_peer = null;
+    }
+
+    fn updateNetplay(self: *Self) void {
+        var authoritative_frames_processed: usize = 0;
+        while (self.session_manager.pollEvent()) |event_value| {
+            var event = event_value;
+            defer event.deinit(self.alloc);
+            switch (event) {
+                .state => |state| std.log.debug("netplay: application observed state {s}", .{@tagName(state)}),
+                .session_code => |value| {
+                    std.log.info("netplay: host session code is ready (length={d})", .{value.len});
+                    if (self.session_code) |old| self.alloc.free(old);
+                    self.session_code = self.alloc.dupe(u8, value) catch null;
+                },
+                .preview => |preview| {
+                    std.log.info("netplay: application received preview (name='{s}', rom_size={d}, hash={x})", .{
+                        preview.name,
+                        preview.rom_size,
+                        preview.rom_hash[0..8],
+                    });
+                    if (self.session_preview_name) |old| self.alloc.free(old);
+                    self.session_preview_name = self.alloc.dupe(u8, preview.name) catch null;
+                    self.session_preview_size = preview.rom_size;
+                    self.session_preview_hash = preview.rom_hash;
+                    @memcpy(&self.session_preview_frame, &preview.framebuffer);
+                },
+                .peer => |peer| {
+                    std.log.info("netplay: application registered peer {x}", .{peer[0..8]});
+                    self.session_peer = peer;
+                },
+                .join_requested => self.provideJoinData() catch |err| {
+                    std.log.err("netplay: failed to prepare join data: {s}", .{@errorName(err)});
+                    self.setSessionError(@errorName(err));
+                },
+                .message => |*message| {
+                    const process_authoritative_frame = self.session_manager.isActive() and
+                        self.active_session_role == .client and message.* == .frame;
+                    if (!self.session_manager.isActive()) {
+                        std.log.debug("netplay: discarding queued {s} message after transport closed", .{@tagName(message.*)});
+                    } else {
+                        self.handleNetplayMessage(message) catch |err| {
+                            if (err == error.SessionClosed) {
+                                std.log.debug("netplay: {s} message processing was interrupted by session shutdown", .{@tagName(message.*)});
+                            } else {
+                                std.log.err("netplay: failed to handle {s} message: {s}", .{ @tagName(message.*), @errorName(err) });
+                                self.setSessionError(@errorName(err));
+                                self.session_manager.disconnect();
+                            }
+                        };
+                    }
+                    if (process_authoritative_frame) {
+                        authoritative_frames_processed += 1;
+                        if (authoritative_frames_processed >= MAX_NETPLAY_FRAMES_PER_UPDATE) return;
+                    }
+                },
+                .failed => |message| {
+                    std.log.err("netplay: session manager reported failure: {s}", .{message});
+                    self.setSessionError(message);
+                },
+                .disconnected => {
+                    std.log.info("netplay: application received session-ended event", .{});
+                    self.handleSessionEnded();
+                },
+            }
+        }
+    }
+
+    fn setSessionError(self: *Self, message: []const u8) void {
+        std.log.err("netplay: session error shown to user: {s}", .{message});
+        if (self.session_error) |old| self.alloc.free(old);
+        self.session_error = self.alloc.dupe(u8, message) catch null;
+    }
+
+    fn provideJoinData(self: *Self) !void {
+        if (self.active_session_role != .host or self.rom_bytes == null) return error.InvalidSessionState;
+        std.log.info("netplay: capturing host state at frame boundary for client join", .{});
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.netplay_resyncing = true;
+        self.netplay_ready = false;
+        self.netplay_lead_paused = false;
+        if (self.system) |*system| system.setAudioPaused(true);
+        std.log.info("netplay: host emulation paused at join snapshot boundary until client is ready", .{});
+        errdefer {
+            self.netplay_resyncing = false;
+            if (self.system) |*system| system.setAudioPaused(self.paused);
+        }
+        var snapshot = try save_state.capture(self.alloc, &self.system.?);
+        defer snapshot.deinit(self.alloc);
+        self.system.?.apu.resetOutputBuffers();
+        const encoded = try save_state.encodeNetwork(self.alloc, &snapshot);
+        defer self.alloc.free(encoded);
+        var rom_hash: [32]u8 = undefined;
+        std.crypto.hash.Blake3.hash(self.rom_bytes.?, &rom_hash, .{});
+        self.netplay_epoch +%= 1;
+        self.netplay_frame = 0;
+        self.netplay_last_ack = 0;
+        const name = std.fs.path.basename(self.current_rom_path.?);
+        var name_len = @min(name.len, netplay_protocol.max_display_name);
+        while (name_len > 0 and !std.unicode.utf8ValidateSlice(name[0..name_len])) name_len -= 1;
+        const safe_name = if (name_len == 0) "game.nes" else name[0..name_len];
+        std.log.info("netplay: sending initial state (name='{s}', rom={d} bytes, snapshot={d} bytes, epoch={d}, frame={d}, speed={s})", .{
+            safe_name,
+            self.rom_bytes.?.len,
+            encoded.len,
+            self.netplay_epoch,
+            self.netplay_frame,
+            @tagName(self.settings.emulation_speed),
+        });
+        try self.session_manager.send(.{ .join_data = .{
+            .name = @constCast(safe_name),
+            .rom = self.rom_bytes.?,
+            .rom_hash = rom_hash,
+            .snapshot = encoded,
+            .speed = @intFromEnum(self.settings.emulation_speed),
+            .epoch = self.netplay_epoch,
+            .frame = self.netplay_frame,
+        } });
+    }
+
+    fn handleNetplayMessage(self: *Self, message: *netplay_protocol.Message) !void {
+        const incoming_role: netplay_protocol.IncomingRole = switch (self.active_session_role) {
+            .host => .host,
+            .client => .client,
+            .none => return error.UnexpectedSessionMessage,
+        };
+        try netplay_protocol.validateIncomingMessage(incoming_role, std.meta.activeTag(message.*));
+        switch (message.*) {
+            .join_data => |*data| {
+                if (self.network_rom) return error.UnexpectedSessionMessage;
+                try self.installNetworkGame(data);
+            },
+            .ready => |ready| {
+                self.emulation_lock.lock();
+                defer self.emulation_lock.unlock();
+                try netplay_protocol.validateReady(
+                    self.netplay_epoch,
+                    self.netplay_frame,
+                    self.netplay_resyncing and !self.netplay_ready,
+                    ready,
+                );
+                self.netplay_last_ack = ready.frame;
+                self.netplay_remote_player2.store(ready.player2, .release);
+                self.netplay_resyncing = false;
+                self.netplay_ready = true;
+                self.netplay_lead_paused = false;
+                if (self.system) |*system| system.setAudioPaused(self.paused);
+                std.log.info("netplay: peer is ready; authoritative play active (epoch={d}, frame={d}, player2=0x{x})", .{
+                    ready.epoch,
+                    ready.frame,
+                    ready.player2,
+                });
+                self.session_manager.markConnected();
+            },
+            .ack => |ack| {
+                self.emulation_lock.lock();
+                defer self.emulation_lock.unlock();
+                switch (try netplay_protocol.validateAcknowledgement(
+                    self.netplay_epoch,
+                    self.netplay_frame,
+                    ack.epoch,
+                    ack.frame,
+                )) {
+                    .stale => {
+                        std.log.debug("netplay: discarded stale acknowledgement after rebase (ack_epoch={d}, ack_frame={d}, current_epoch={d})", .{
+                            ack.epoch,
+                            ack.frame,
+                            self.netplay_epoch,
+                        });
+                        return;
+                    },
+                    .current => {},
+                }
+                self.netplay_last_ack = @max(self.netplay_last_ack, ack.frame);
+                self.netplay_remote_player2.store(ack.player2, .release);
+                if (ack.digest) |actual| {
+                    if (ack.frame == self.netplay_checkpoint_frame) {
+                        if (self.netplay_checkpoint_digest) |expected| {
+                            if (!std.mem.eql(u8, &actual, &expected)) {
+                                std.log.err("netplay: state digest mismatch (epoch={d}, frame={d}, expected={x}, actual={x})", .{
+                                    ack.epoch,
+                                    ack.frame,
+                                    expected[0..8],
+                                    actual[0..8],
+                                });
+                                try self.recoverDesyncLocked();
+                            } else {
+                                std.log.debug("netplay: checkpoint verified (epoch={d}, frame={d}, digest={x})", .{
+                                    ack.epoch,
+                                    ack.frame,
+                                    actual[0..8],
+                                });
+                            }
+                        }
+                    }
+                }
+            },
+            .frame => |frame| try self.applyAuthoritativeFrame(frame),
+            .control => |control| switch (control) {
+                .paused => |paused| {
+                    std.log.info("netplay: applying host pause state {any}", .{paused});
+                    self.paused = paused;
+                    if (self.system) |*system| system.setAudioPaused(paused);
+                },
+                .speed => |value| {
+                    const speed = std.meta.intToEnum(EmulationSpeed, value) catch return error.InvalidEmulationSpeed;
+                    std.log.info("netplay: applying host emulation speed {s}", .{@tagName(speed)});
+                    self.settings.emulation_speed = speed;
+                    if (self.system) |*system| system.apu.device.setSpeed(speed.multiplier());
+                },
+            },
+            .rebase => |rebase| try self.applyRebase(rebase),
+            else => return error.UnexpectedSessionMessage,
+        }
+    }
+
+    fn installNetworkGame(self: *Self, data: *netplay_protocol.JoinData) !void {
+        std.log.info("netplay: validating network game (name='{s}', rom={d} bytes, snapshot={d} bytes, hash={x}, epoch={d}, frame={d})", .{
+            data.name,
+            data.rom.len,
+            data.snapshot.len,
+            data.rom_hash[0..8],
+            data.epoch,
+            data.frame,
+        });
+        const speed = std.enums.fromInt(EmulationSpeed, data.speed) orelse return error.InvalidEmulationSpeed;
+        const preview_hash = self.session_preview_hash orelse return error.MissingSessionPreview;
+        if (data.rom.len != self.session_preview_size) {
+            std.log.err("netplay: transferred ROM size differs from approved preview (preview={d}, transfer={d})", .{
+                self.session_preview_size,
+                data.rom.len,
+            });
+            return error.PreviewRomMismatch;
+        }
+        var actual_hash: [32]u8 = undefined;
+        std.crypto.hash.Blake3.hash(data.rom, &actual_hash, .{});
+        if (!std.mem.eql(u8, &actual_hash, &data.rom_hash)) {
+            std.log.err("netplay: transferred ROM hash mismatch (expected={x}, actual={x})", .{
+                data.rom_hash[0..8],
+                actual_hash[0..8],
+            });
+            return error.RomHashMismatch;
+        }
+        if (!std.mem.eql(u8, &actual_hash, &preview_hash)) {
+            std.log.err("netplay: transferred ROM hash differs from approved preview (preview={x}, transfer={x})", .{
+                preview_hash[0..8],
+                actual_hash[0..8],
+            });
+            return error.PreviewRomMismatch;
+        }
+        std.log.debug("netplay: transferred ROM hash verified", .{});
+        var snapshot = try save_state.decodeNetwork(self.alloc, data.snapshot);
+        std.log.debug("netplay: network snapshot decoded successfully", .{});
+        defer snapshot.deinit(self.alloc);
+        const owned_rom = try self.alloc.dupe(u8, data.rom);
+        var committed = false;
+        errdefer if (!committed) self.alloc.free(owned_rom);
+        var new_rom = try Rom.initNetwork(self.alloc, data.name, owned_rom);
+        errdefer if (!committed) new_rom.deinit();
+        var new_system = try System.init(self.alloc, &new_rom, .{});
+        errdefer if (!committed) new_system.deinit();
+        try save_state.apply(&new_system, &snapshot);
+        std.log.debug("netplay: network snapshot applied to new system", .{});
+        const new_path = try self.alloc.dupe(u8, data.name);
+        errdefer if (!committed) self.alloc.free(new_path);
+
+        if (self.emulation_running) {
+            self.stopEmulationThread();
+            if (!self.network_rom) self.saveCurrentGame();
+            self.rom.?.deinit();
+            self.system.?.deinit();
+            self.alloc.free(self.current_rom_path.?);
+            self.alloc.free(self.rom_bytes.?);
+        }
+        self.rom_bytes = owned_rom;
+        self.rom = new_rom;
+        new_system.bus.rom = &self.rom.?;
+        new_system.ppu.rom = &self.rom.?;
+        new_system.apu.dmc.rom = &self.rom.?;
+        self.system = new_system;
+        self.current_rom_path = new_path;
+        committed = true;
+        self.network_rom = true;
+        self.emulation_running = true;
+        self.render_home_ui = false;
+        self.render_debug_ui = false;
+        self.paused = false;
+        self.client_saved_speed = self.settings.emulation_speed;
+        self.settings.emulation_speed = speed;
+        self.system.?.apu.device.setSpeed(speed.multiplier());
+        self.system.?.apu.device.setProducerBlocking(false);
+        std.log.debug("netplay: authoritative client audio backpressure disabled", .{});
+        self.netplay_epoch = data.epoch;
+        self.netplay_frame = data.frame;
+        self.netplay_lead_paused = false;
+        self.publishFrame(self.system.?.frame_buffer());
+        try self.startEmulationThread();
+        const player2: u8 = @bitCast(self.controllerSnapshot().player2);
+        std.log.info("netplay: network game installed; sending ready (speed={s}, epoch={d}, frame={d})", .{
+            @tagName(speed),
+            data.epoch,
+            data.frame,
+        });
+        try self.session_manager.send(.{ .ready = .{ .epoch = data.epoch, .frame = data.frame, .player2 = player2 } });
+    }
+
+    fn applyAuthoritativeFrame(self: *Self, frame: netplay_protocol.Frame) !void {
+        if (self.active_session_role != .client or !self.network_rom) return error.InvalidSessionState;
+        try netplay_protocol.validateNext(self.netplay_epoch, self.netplay_frame + 1, frame.epoch, frame.frame);
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        self.system.?.applyControllerSnapshot(.{ .player1 = @bitCast(frame.player1), .player2 = @bitCast(frame.player2) });
+        self.system.?.run_frame();
+        _ = self.emulation_speed_frame_count.fetchAdd(1, .monotonic);
+        self.publishFrame(self.system.?.frame_buffer());
+        self.netplay_frame = frame.frame;
+        var digest_value: ?[32]u8 = null;
+        if (frame.digest != null) {
+            var snapshot = try save_state.capture(self.alloc, &self.system.?);
+            defer snapshot.deinit(self.alloc);
+            digest_value = try save_state.digest(&snapshot);
+            std.log.debug("netplay: client computed checkpoint digest (epoch={d}, frame={d}, digest={x})", .{
+                self.netplay_epoch,
+                self.netplay_frame,
+                digest_value.?[0..8],
+            });
+            logCheckpointComponents("client", self.netplay_epoch, self.netplay_frame, &snapshot);
+        }
+        const local_player2: u8 = @bitCast(self.controllerSnapshot().player2);
+        try self.session_manager.send(.{ .ack = .{
+            .epoch = self.netplay_epoch,
+            .frame = self.netplay_frame,
+            .player2 = local_player2,
+            .digest = digest_value,
+        } });
+    }
+
+    fn publishAuthoritativeFrame(self: *Self, controllers: System.ControllerSnapshot) void {
+        self.netplay_frame +%= 1;
+        var digest_value: ?[32]u8 = null;
+        if (self.netplay_frame % 60 == 0) {
+            var snapshot = save_state.capture(self.alloc, &self.system.?) catch |err| {
+                std.log.err("netplay: failed to capture host checkpoint at frame {d}: {s}", .{ self.netplay_frame, @errorName(err) });
+                self.session_manager.disconnect();
+                return;
+            };
+            defer snapshot.deinit(self.alloc);
+            digest_value = save_state.digest(&snapshot) catch |err| {
+                std.log.err("netplay: failed to hash host checkpoint at frame {d}: {s}", .{ self.netplay_frame, @errorName(err) });
+                self.session_manager.disconnect();
+                return;
+            };
+            self.netplay_checkpoint_frame = self.netplay_frame;
+            self.netplay_checkpoint_digest = digest_value;
+            std.log.debug("netplay: host created checkpoint (epoch={d}, frame={d}, digest={x})", .{
+                self.netplay_epoch,
+                self.netplay_frame,
+                digest_value.?[0..8],
+            });
+            logCheckpointComponents("host", self.netplay_epoch, self.netplay_frame, &snapshot);
+        }
+        self.session_manager.send(.{ .frame = .{
+            .epoch = self.netplay_epoch,
+            .frame = self.netplay_frame,
+            .player1 = @bitCast(controllers.player1),
+            .player2 = @bitCast(controllers.player2),
+            .digest = digest_value,
+        } }) catch |err| {
+            std.log.err("netplay: failed to queue authoritative frame (epoch={d}, frame={d}): {s}", .{
+                self.netplay_epoch,
+                self.netplay_frame,
+                @errorName(err),
+            });
+            self.session_manager.disconnect();
+        };
+    }
+
+    fn logCheckpointComponents(side: []const u8, epoch: u32, frame: u64, snapshot: *const save_state.NetworkSnapshot) void {
+        const components = save_state.componentDigests(snapshot) catch |err| {
+            std.log.warn("netplay: failed to compute {s} checkpoint component diagnostics: {s}", .{ side, @errorName(err) });
+            return;
+        };
+        std.log.debug("netplay: {s} checkpoint components (epoch={d}, frame={d}, cpu={x}, bus={x}, ppu={x}, apu={x})", .{
+            side,
+            epoch,
+            frame,
+            components.cpu[0..8],
+            components.bus[0..8],
+            components.ppu[0..8],
+            components.apu[0..8],
+        });
+    }
+
+    fn sendRebaseLocked(self: *Self) !void {
+        const previous_epoch = self.netplay_epoch;
+        std.log.info("netplay: capturing authoritative rebase (previous_epoch={d}, frame={d})", .{
+            previous_epoch,
+            self.netplay_frame,
+        });
+        var snapshot = try save_state.capture(self.alloc, &self.system.?);
+        defer snapshot.deinit(self.alloc);
+        self.system.?.apu.resetOutputBuffers();
+        const encoded = try save_state.encodeNetwork(self.alloc, &snapshot);
+        defer self.alloc.free(encoded);
+        self.netplay_epoch +%= 1;
+        self.netplay_frame = 0;
+        self.netplay_last_ack = 0;
+        self.netplay_resyncing = true;
+        self.netplay_ready = false;
+        self.netplay_lead_paused = false;
+        if (self.system) |*system| system.setAudioPaused(true);
+        self.session_manager.markResyncing();
+        std.log.info("netplay: sending authoritative rebase (epoch={d}, snapshot={d} bytes)", .{
+            self.netplay_epoch,
+            encoded.len,
+        });
+        try self.session_manager.send(.{ .rebase = .{ .epoch = self.netplay_epoch, .frame = 0, .snapshot = encoded } });
+    }
+
+    fn applyRebase(self: *Self, rebase: netplay_protocol.Rebase) !void {
+        if (rebase.epoch <= self.netplay_epoch) return error.UnexpectedEpoch;
+        std.log.info("netplay: applying authoritative rebase (old_epoch={d}, new_epoch={d}, frame={d}, snapshot={d} bytes)", .{
+            self.netplay_epoch,
+            rebase.epoch,
+            rebase.frame,
+            rebase.snapshot.len,
+        });
+        self.session_manager.markResyncing();
+        var snapshot = try save_state.decodeNetwork(self.alloc, rebase.snapshot);
+        defer snapshot.deinit(self.alloc);
+        self.emulation_lock.lock();
+        defer self.emulation_lock.unlock();
+        try save_state.apply(&self.system.?, &snapshot);
+        self.netplay_epoch = rebase.epoch;
+        self.netplay_frame = rebase.frame;
+        self.publishFrame(self.system.?.frame_buffer());
+        const player2: u8 = @bitCast(self.controllerSnapshot().player2);
+        try self.session_manager.send(.{ .ready = .{ .epoch = rebase.epoch, .frame = rebase.frame, .player2 = player2 } });
+        self.session_manager.markConnected();
+        std.log.info("netplay: authoritative rebase applied and acknowledged (epoch={d}, frame={d})", .{
+            rebase.epoch,
+            rebase.frame,
+        });
+    }
+
+    fn recoverDesyncLocked(self: *Self) !void {
+        const now = std.time.timestamp();
+        self.netplay_rebase_times[0] = self.netplay_rebase_times[1];
+        self.netplay_rebase_times[1] = self.netplay_rebase_times[2];
+        self.netplay_rebase_times[2] = now;
+        if (self.netplay_rebase_times[0] != 0 and now - self.netplay_rebase_times[0] <= 60) {
+            std.log.err("netplay: automatic desync recovery limit exceeded (3 rebases within 60 seconds)", .{});
+            return error.RepeatedDesync;
+        }
+        std.log.warn("netplay: starting automatic desync recovery", .{});
+        try self.sendRebaseLocked();
+    }
+
+    fn handleSessionEnded(self: *Self) void {
+        const was_client = self.active_session_role == .client;
+        const stopped_client_game = was_client and self.network_rom;
+        std.log.info("netplay: cleaning up ended session (role={s}, unload_network_game={any})", .{
+            @tagName(self.active_session_role),
+            stopped_client_game,
+        });
+        if (stopped_client_game) {
+            self.unloadCurrentRomInternal();
+        } else {
+            self.emulation_lock.lock();
+        }
+        defer if (!stopped_client_game) self.emulation_lock.unlock();
+        if (self.client_saved_speed) |speed| self.settings.emulation_speed = speed;
+        self.client_saved_speed = null;
+        self.netplay_remote_player2.store(0, .release);
+        self.netplay_resyncing = false;
+        self.netplay_ready = false;
+        self.netplay_lead_paused = false;
+        self.active_session_role = .none;
+        if (self.system) |*system| system.setAudioPaused(false);
+        std.log.info("netplay: session cleanup completed", .{});
     }
 };
 

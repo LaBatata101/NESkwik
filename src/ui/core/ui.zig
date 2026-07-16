@@ -778,6 +778,7 @@ pub const WidgetState = union(enum) {
     pub const TextInputState = struct {
         buffer: std.ArrayList(u8),
         cursor_pos: usize,
+        initialized: bool = false,
     };
     pub const ScrollState = struct {
         offset: clay.Vector2,
@@ -2263,6 +2264,7 @@ const SecondaryWindow = struct {
     /// Opaque pointer forwarded to draw_fn as user data.
     user_data: ?*anyopaque = null,
     draw_fn: ?*const fn (*UI, user_data: ?*anyopaque) void = null,
+    on_close: ?*const fn (*UI, user_data: ?*anyopaque) void = null,
 
     fn deinit(self: *const @This(), alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
         self.inner.deinit(alloc, device);
@@ -2353,6 +2355,7 @@ pub const UI = struct {
         dpad_down,
         dpad_left,
         dpad_right,
+        copy,
 
         fn data(self: @This()) []const u8 {
             return switch (self) {
@@ -2367,6 +2370,7 @@ pub const UI = struct {
                 .dpad_down => @embedFile("dpad_down_icon"),
                 .dpad_left => @embedFile("dpad_left_icon"),
                 .dpad_right => @embedFile("dpad_right_icon"),
+                .copy => @embedFile("copy_icon"),
             };
         }
     };
@@ -2666,8 +2670,9 @@ pub const UI = struct {
         params: struct {
             draw_fn_data: ?*anyopaque = null,
             draw_fn: ?*const fn (*UI, user_data: ?*anyopaque) void = null,
+            on_close: ?*const fn (*UI, user_data: ?*anyopaque) void = null,
         },
-    ) void {
+    ) c.SDL_WindowID {
         const previous_clay_ctx = clay.getCurrentContext();
         const debug_mode_enabled = clay.isDebugModeEnabled();
 
@@ -2718,19 +2723,32 @@ pub const UI = struct {
             .inner = window,
             .user_data = params.draw_fn_data,
             .draw_fn = params.draw_fn,
+            .on_close = params.on_close,
         }) catch @panic("OOM");
 
         clay.setCurrentContext(previous_clay_ctx);
+        return window.id();
     }
 
     pub fn closeCurrentWindow(self: *Self) void {
+        self.closeWindow(self.current_window.id());
+    }
+
+    pub fn closeWindow(self: *Self, window_id: c.SDL_WindowID) void {
+        _ = self;
         var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
         event.type = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
         event.window.type = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
         event.window.timestamp = c.SDL_GetTicksNS();
-        event.window.windowID = self.current_window.id();
+        event.window.windowID = window_id;
 
         sdlError(c.SDL_PushEvent(&event));
+    }
+
+    pub fn setClipboardText(self: *Self, value: []const u8) !void {
+        const terminated = try self.allocator.dupeZ(u8, value);
+        defer self.allocator.free(terminated);
+        sdlError(c.SDL_SetClipboardText(terminated));
     }
 
     pub fn beginFrame(self: *Self) void {
@@ -2975,7 +2993,15 @@ pub const UI = struct {
                 if (closed_window_id == self.main_window.id()) {
                     self.quit = true;
                 } else {
-                    const secondary_window = self.secondary_windows.pop() orelse unreachable;
+                    var found: ?usize = null;
+                    for (self.secondary_windows.items, 0..) |secondary, index| {
+                        if (secondary.inner.id() == closed_window_id) {
+                            found = index;
+                            break;
+                        }
+                    }
+                    const secondary_window = self.secondary_windows.orderedRemove(found orelse return);
+                    if (secondary_window.on_close) |callback| callback(self, secondary_window.user_data);
                     self.pending_close_window = secondary_window.inner;
 
                     if (self.current_window == secondary_window.inner) {

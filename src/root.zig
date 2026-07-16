@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const cpu = @import("cpu.zig");
 const rom = @import("rom.zig");
@@ -8,6 +9,12 @@ pub const controller = @import("controller.zig");
 pub const ui = @import("ui/core/ui.zig");
 pub const gui = @import("ui/gui.zig");
 pub const logging = @import("logging.zig");
+pub const netplay_protocol = @import("netplay/protocol.zig");
+pub const save_state = @import("save_state.zig");
+pub const netplay_session = if (builtin.abi.isAndroid())
+    @import("netplay/session_stub.zig")
+else
+    @import("netplay/session.zig");
 
 pub const customPanic = @import("utils/panic.zig").customPanic;
 

@@ -228,6 +228,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
         });
         if (ui.menuItem(.{
             .label = "Open",
+            .enabled = !app_state.isConnectedClient(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -255,7 +256,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
         });
         if (ui.menuItem(.{
             .label = if (app_state.paused) "Continue" else "Pause",
-            .enabled = app_state.emulation_running,
+            .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -265,7 +266,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
         }
         if (ui.menuItem(.{
             .label = "Stop",
-            .enabled = app_state.emulation_running,
+            .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -275,7 +276,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
         }
         if (ui.menuItem(.{
             .label = "Restart",
-            .enabled = app_state.emulation_running,
+            .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -287,7 +288,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
         _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
         const save_state_item = ui.menuItem(.{
             .label = "Save State",
-            .enabled = app_state.emulation_running,
+            .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -304,7 +305,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
                 {
                     if (ui.menuItem(.{
                         .label = "Quick Save",
-                        .enabled = app_state.emulation_running,
+                        .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
                         .bg_color = theme.bg_section,
                         .hover_color = theme.accent_blue,
                         .text_color = theme.text_secondary,
@@ -322,7 +323,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
 
         const load_state_item = ui.menuItem(.{
             .label = "Load State",
-            .enabled = app_state.emulation_running,
+            .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -339,7 +340,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
                 {
                     if (ui.menuItem(.{
                         .label = "Quick Load",
-                        .enabled = app_state.emulation_running,
+                        .enabled = app_state.emulation_running and !app_state.isConnectedClient(),
                         .bg_color = theme.bg_section,
                         .hover_color = theme.accent_blue,
                         .text_color = theme.text_secondary,
@@ -358,7 +359,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
         _ = ui.separator(.{ .color = theme.border, .thickness = 2 });
         if (ui.menuItem(.{
             .label = "Debug",
-            .enabled = app_state.emulation_running,
+            .enabled = app_state.emulation_running and !app_state.sessionActive(),
             .bg_color = theme.bg_section,
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
@@ -382,7 +383,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
             .hover_color = theme.accent_blue,
             .text_color = theme.text_secondary,
         }).clicked(ui.main_window.ctx)) {
-            ui.createWindow(
+            _ = ui.createWindow(
                 "Settings",
                 680,
                 640,
@@ -390,8 +391,225 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
             );
         }
         emulation_menu.end();
+
+        const multiplayer_menu = ui.dropdownMenu(.{
+            .label = "Multiplayer",
+            .bg_color = theme.bg_panel,
+            .hover_color = theme.bg_hover,
+            .text_color = theme.text_secondary,
+            .list_bg_color = theme.bg_section,
+            .list_border_color = theme.border,
+        });
+        if (app_state.sessionActive()) {
+            if (ui.menuItem(.{
+                .label = "Session Details…",
+                .bg_color = theme.bg_section,
+                .hover_color = theme.accent_blue,
+                .text_color = theme.text_secondary,
+            }).clicked(ui.main_window.ctx)) openSessionWindow(ui, app_state);
+        } else {
+            if (ui.menuItem(.{
+                .label = "Connect to Session…",
+                .bg_color = theme.bg_section,
+                .hover_color = theme.accent_blue,
+                .text_color = theme.text_secondary,
+            }).clicked(ui.main_window.ctx)) openSessionWindow(ui, app_state);
+            if (ui.menuItem(.{
+                .label = "Host Session…",
+                .enabled = app_state.emulation_running,
+                .bg_color = theme.bg_section,
+                .hover_color = theme.accent_blue,
+                .text_color = theme.text_secondary,
+            }).clicked(ui.main_window.ctx)) {
+                app_state.startHostSession() catch |err| std.log.err("failed to host session: {s}", .{@errorName(err)});
+                openSessionWindow(ui, app_state);
+            }
+        }
+        multiplayer_menu.end();
     }
     menubar.end();
+}
+
+fn openSessionWindow(ui: *UI, app_state: *AppState) void {
+    if (app_state.session_window_id) |window_id| {
+        _ = c.SDL_RaiseWindow(c.SDL_GetWindowFromID(window_id));
+        return;
+    }
+    app_state.session_window_id = ui.createWindow(
+        "NESkwik Multiplayer",
+        600,
+        620,
+        .{
+            .draw_fn = drawSessionWindowUI,
+            .draw_fn_data = @ptrCast(app_state),
+            .on_close = sessionWindowClosed,
+        },
+    );
+}
+
+fn sessionWindowClosed(_: *UI, user_data: ?*anyopaque) void {
+    const app_state: *AppState = @ptrCast(@alignCast(user_data.?));
+    app_state.sessionWindowClosed();
+}
+
+fn drawSessionWindowUI(ui: *UI, user_data: ?*anyopaque) void {
+    const app_state: *AppState = @ptrCast(@alignCast(user_data.?));
+    const session_state = app_state.sessionState();
+    const root = ui.column(.{
+        .sizing = .grow,
+        .bg_color = theme.bg_base,
+        .padding = .all(24),
+        .gap = 14,
+        .child_alignment = .{ .x = .left, .y = .top },
+    });
+    {
+        _ = ui.label(.{ .text = "Multiplayer", .font_size = 26, .color = theme.text_primary });
+        _ = ui.label(.{ .text = sessionStateLabel(session_state), .font_size = 15, .color = theme.text_secondary });
+
+        if (app_state.session_error) |message| {
+            _ = ui.label(.{ .text = message, .font_size = 13, .color = theme.accent_red });
+        }
+
+        if (app_state.sessionRole() == .host) {
+            drawHostSessionWindow(ui, app_state, session_state);
+        } else if (session_state == .preview and app_state.session_preview_name != null) {
+            drawClientPreview(ui, app_state);
+        } else if (app_state.sessionRole() == .client and session_state != .idle and session_state != .failed) {
+            drawConnectedSessionActions(ui, app_state, "Cancel Connection");
+        } else {
+            const code_scroll = ui.scrollArea(.{
+                .id = "multiplayer_session_code_scroll",
+                .sizing = .{ .w = .grow, .h = .fit },
+                .vertical = false,
+                .horizontal = true,
+            });
+            const code = ui.textField(.{
+                .id = "multiplayer_session_code",
+                .placeholder = "neskwik:…",
+                .max_length = 4120,
+                .padding_val = .all(12),
+            });
+            code_scroll.end();
+
+            if (ui.button(.{
+                .text = "Connect",
+                .bg_color = theme.accent_blue,
+                .hover_color = theme.accent_blue.lighten(0.1),
+                .text_color = Color.white,
+                .enabled = code.value().len != 0,
+            }).clicked(ui.current_window.ctx) or code.submitted()) {
+                app_state.connectSession(code.value()) catch |err| std.log.err("failed to connect: {s}", .{@errorName(err)});
+            }
+        }
+    }
+    root.end();
+}
+
+fn drawHostSessionWindow(ui: *UI, app_state: *AppState, session_state: ness.netplay_session.State) void {
+    if (app_state.current_rom_path) |path| {
+        _ = ui.label(.{ .text = std.fs.path.basename(path), .font_size = 15, .color = theme.text_value });
+    }
+    if (app_state.session_code) |code| {
+        const code_row = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .gap = 8 });
+        {
+            const code_scroll = ui.scrollArea(.{
+                .id = "multiplayer_host_code_scroll",
+                .sizing = .{ .w = .grow, .h = .fit },
+                .vertical = false,
+                .horizontal = true,
+            });
+            {
+                _ = ui.textField(.{
+                    .id = "multiplayer_host_code",
+                    .initial_value = code,
+                    .read_only = true,
+                    .max_length = 4120,
+                    .width = .fit,
+                });
+            }
+            code_scroll.end();
+            if (ui.iconButton(.{
+                .icon = ui.icons.get(.copy),
+                .size = 24,
+                .padding = .all(10),
+                .bg_color = theme.bg_hover,
+                .hover_color = theme.accent_blue,
+                .overlay_color = theme.text_primary,
+            }).clicked(ui.current_window.ctx)) {
+                ui.setClipboardText(code) catch {};
+                ui.setTimer("session_code_copied", 1400);
+            }
+        }
+        code_row.end();
+        if (!ui.hasTimerExpired("session_code_copied").unwrap_or(true)) {
+            _ = ui.label(.{ .text = "Copied", .font_size = 12, .color = theme.accent_green });
+        }
+    }
+    if (app_state.session_peer) |peer| {
+        const peer_text = std.fmt.allocPrint(ui.current_window.ctx.frameAlloc(), "Peer: {x}", .{peer[0..8]}) catch "Peer connected";
+        _ = ui.label(.{ .text = peer_text, .font_size = 12, .color = theme.text_secondary });
+    }
+    drawConnectedSessionActions(ui, app_state, if (session_state == .connected) "Disconnect" else "Cancel Hosting");
+}
+
+fn drawClientPreview(ui: *UI, app_state: *AppState) void {
+    _ = ui.label(.{ .text = app_state.session_preview_name.?, .font_size = 18, .color = theme.text_primary });
+    const size_text = std.fmt.allocPrint(
+        ui.current_window.ctx.frameAlloc(),
+        "{d:.2} MiB",
+        .{@as(f64, @floatFromInt(app_state.session_preview_size)) / (1024.0 * 1024.0)},
+    ) catch "";
+    _ = ui.label(.{ .text = size_text, .font_size = 13, .color = theme.text_secondary });
+    _ = ui.canvas(.{
+        .id = "multiplayer_preview",
+        .pixel_format = c.SDL_PIXELFORMAT_ABGR8888,
+        .pixels = &app_state.session_preview_frame,
+        .w = NES_WIDTH,
+        .h = NES_HEIGHT,
+        .sizing = .{ .w = .grow, .h = .fixed(360) },
+        .aspect_ratio = .@"4_3",
+        .bg_color = Color.black,
+    });
+    const actions = ui.row(.{ .sizing = .{ .w = .grow, .h = .fit }, .gap = 10 });
+    {
+        if (ui.button(.{
+            .text = "Join",
+            .bg_color = theme.accent_green,
+            .hover_color = theme.accent_green.lighten(0.1),
+            .text_color = Color.white,
+        }).clicked(ui.current_window.ctx)) app_state.joinSession() catch {};
+        if (ui.button(.{
+            .text = "Cancel",
+            .bg_color = theme.bg_hover,
+            .hover_color = theme.border,
+            .text_color = theme.text_primary,
+        }).clicked(ui.current_window.ctx)) app_state.leaveSession();
+    }
+    actions.end();
+}
+
+fn drawConnectedSessionActions(ui: *UI, app_state: *AppState, label: []const u8) void {
+    if (ui.button(.{
+        .text = label,
+        .bg_color = theme.accent_red,
+        .hover_color = theme.accent_red.lighten(0.1),
+        .text_color = Color.white,
+    }).clicked(ui.current_window.ctx)) app_state.leaveSession();
+}
+
+fn sessionStateLabel(value: ness.netplay_session.State) []const u8 {
+    return switch (value) {
+        .idle => "Enter a session code or host a running game.",
+        .creating => "Creating a secure endpoint…",
+        .waiting => "Waiting for a guest…",
+        .connecting => "Connecting…",
+        .preview => "Review the host game before joining.",
+        .joining => "Transferring and loading game state…",
+        .connected => "Connected",
+        .resyncing => "Resynchronizing…",
+        .disconnecting => "Disconnecting…",
+        .failed => "Connection failed",
+    };
 }
 
 fn drawAndroidHeader(ui: *UI, app_state: *AppState) void {
@@ -2527,6 +2745,16 @@ fn drawEmulationSpeedRow(ui: *UI, app_state: *AppState) void {
         });
 
         _ = ui.spacer(.{ .sizing = .grow });
+
+        if (app_state.isConnectedClient()) {
+            _ = ui.label(.{
+                .text = app_state.settings.emulation_speed.label(),
+                .font_size = theme.LABEL_FONT,
+                .color = theme.text_value,
+            });
+            row.end();
+            return;
+        }
 
         const speed_opts = ui.combobox(EmulationSpeed, .{
             .selected = app_state.settings.emulation_speed,
