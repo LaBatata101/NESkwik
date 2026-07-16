@@ -1074,6 +1074,8 @@ pub const IconButton = struct {
 pub const TextField = struct {
     id: clay.ElementId,
     params: Params,
+    ctx: *UIContext,
+    submitted_this_frame: bool,
 
     pub const Params = struct {
         id: ?[]const u8 = null,
@@ -1081,6 +1083,9 @@ pub const TextField = struct {
         width: clay.SizingAxis = .grow,
         padding_val: clay.Padding = .all(8),
         corner_radius: f32 = 8,
+        initial_value: []const u8 = "",
+        max_length: usize = std.math.maxInt(usize),
+        read_only: bool = false,
     };
     const Self = @This();
 
@@ -1095,6 +1100,11 @@ pub const TextField = struct {
             .buffer = .empty,
             .cursor_pos = 0,
         } });
+        if (!state.text_input.initialized) {
+            const initial_len = @min(params.initial_value.len, params.max_length);
+            state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), params.initial_value[0..initial_len]) catch @panic("OOM");
+            state.text_input.initialized = true;
+        }
 
         const is_hovered = clay.hovered();
         const is_focused = if (ctx.frame.focused_id) |fid| fid == element_id.id else false;
@@ -1102,22 +1112,35 @@ pub const TextField = struct {
         ui.setMouseCursorText(is_hovered);
 
         var placeholder = params.placeholder;
-        if (is_hovered and ctx.frame.mouse_pressed) {
+        if (is_hovered and ctx.frame.mouse_pressed and !params.read_only) {
             ctx.frame.focused_id = element_id.id;
             placeholder = "";
         } else if (!is_hovered and ctx.frame.mouse_pressed and is_focused) {
             ctx.frame.focused_id = null;
         }
 
-        if (is_focused) {
+        var submitted_this_frame = false;
+        if (is_focused and !params.read_only) {
             if (ctx.frame.text_input.items.len > 0) {
-                state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), ctx.frame.text_input.items) catch
-                    @panic("panic");
+                const room = params.max_length -| state.text_input.buffer.items.len;
+                const count = @min(room, ctx.frame.text_input.items.len);
+                state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), ctx.frame.text_input.items[0..count]) catch @panic("OOM");
             }
 
             if (ctx.input.isKeyPressed(.BACKSPACE, true) and state.text_input.buffer.items.len > 0) {
                 _ = state.text_input.buffer.pop();
             }
+            const ctrl = ctx.input.isKeyDown(.LCTRL) or ctx.input.isKeyDown(.RCTRL);
+            if (ctrl and ctx.input.isKeyPressed(.V, false)) {
+                if (c.SDL_GetClipboardText()) |clipboard| {
+                    defer c.SDL_free(clipboard);
+                    const clipboard_value = std.mem.span(clipboard);
+                    const room = params.max_length -| state.text_input.buffer.items.len;
+                    const count = @min(room, clipboard_value.len);
+                    state.text_input.buffer.appendSlice(ctx.persistent_arena.allocator(), clipboard_value[0..count]) catch @panic("OOM");
+                }
+            }
+            submitted_this_frame = ctx.input.isKeyPressed(.RETURN, false) or ctx.input.isKeyPressed(.KP_ENTER, false);
         }
 
         clay.configureOpenElement(.{
@@ -1162,7 +1185,19 @@ pub const TextField = struct {
         clay.closeElement(); // End end text cursor
 
         clay.closeElement();
-        return .{ .id = element_id, .params = params };
+        return .{ .id = element_id, .params = params, .ctx = ctx, .submitted_this_frame = submitted_this_frame };
+    }
+
+    pub fn value(self: *const Self) []const u8 {
+        return self.ctx.getWidgetStateById(self.id).?.text_input.buffer.items;
+    }
+
+    pub fn clear(self: *Self) void {
+        self.ctx.getWidgetStateById(self.id).?.text_input.buffer.clearRetainingCapacity();
+    }
+
+    pub fn submitted(self: *const Self) bool {
+        return self.submitted_this_frame;
     }
 };
 

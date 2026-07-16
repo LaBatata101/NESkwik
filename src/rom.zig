@@ -73,14 +73,28 @@ pub const Rom = struct {
     pub const InitError = error{InvalidNesFormat};
 
     pub fn init(allocator: std.mem.Allocator, rom_path: []const u8, bytes: []u8) !Self {
-        if (!std.mem.eql(u8, bytes[0..4], &NES_TAG)) {
+        return initWithOptions(allocator, rom_path, bytes, .{});
+    }
+
+    /// Constructs a transferred ROM without ever opening battery-save files.
+    pub fn initNetwork(allocator: std.mem.Allocator, display_name: []const u8, bytes: []u8) !Self {
+        if (bytes.len > 16 * 1024 * 1024) return error.RomTooLarge;
+        return initWithOptions(allocator, display_name, bytes, .{ .volatile_ram = true });
+    }
+
+    const InitOptions = struct {
+        volatile_ram: bool = false,
+    };
+
+    fn initWithOptions(allocator: std.mem.Allocator, rom_path: []const u8, bytes: []u8, options: InitOptions) !Self {
+        if (bytes.len < 16 or !std.mem.eql(u8, bytes[0..4], &NES_TAG)) {
             return error.InvalidNesFormat;
         }
 
         const flag6: Flag6 = @bitCast(bytes[6]);
         const flag7: Flag7 = @bitCast(bytes[7]);
 
-        const mapper_id = @as(u8, flag7.mapper_hi) | @as(u8, flag6.mapper_lo);
+        const mapper_id = (@as(u8, flag7.mapper_hi) << 4) | @as(u8, flag6.mapper_lo);
 
         // Byte 4 contains the number of 16KB PGR-ROM banks
         const prg_rom_banks = bytes[4];
@@ -91,7 +105,9 @@ pub const Rom = struct {
         const chr_rom_size = @as(usize, chr_rom_banks) * CHR_ROM_PAGE_SIZE;
 
         const prg_rom_start: usize = 16 + @as(usize, if (flag6.has_trainer) 512 else 0);
-        const chr_rom_start = prg_rom_start + prg_rom_size;
+        const chr_rom_start = std.math.add(usize, prg_rom_start, prg_rom_size) catch return error.InvalidNesFormat;
+        const rom_end = std.math.add(usize, chr_rom_start, chr_rom_size) catch return error.InvalidNesFormat;
+        if (prg_rom_banks == 0 or rom_end > bytes.len) return error.InvalidNesFormat;
 
         const prg_ram_size: usize = blk: {
             const ram_size = bytes[8];
@@ -104,6 +120,7 @@ pub const Rom = struct {
 
         const prg_rom = bytes[prg_rom_start..(prg_rom_start + prg_rom_size)];
         const chr_rom = bytes[chr_rom_start..(chr_rom_start + chr_rom_size)];
+        const has_persistent_battery = flag6.has_battery and !options.volatile_ram;
 
         std.log.info(
             \\{s}
@@ -121,7 +138,7 @@ pub const Rom = struct {
             chr_rom_banks,
             prg_ram_size,
             @tagName(flag6.mirroring_type()),
-            if (flag6.has_battery) "YES" else "NO",
+            if (has_persistent_battery) "YES" else "NO",
         });
 
         const mapper = try Mapper.init(allocator, mapper_id, .{
@@ -130,7 +147,7 @@ pub const Rom = struct {
             .chr_rom = chr_rom,
             .prg_rom_banks = prg_rom_banks,
             .prg_ram_size = prg_ram_size,
-            .has_battery_backed_ram = flag6.has_battery,
+            .has_battery_backed_ram = has_persistent_battery,
             .mirroring_mode = flag6.mirroring_type(),
         });
 
@@ -197,6 +214,35 @@ pub const Rom = struct {
         self.mapper.ppu_address_updated(addr, ppu_cycle);
     }
 };
+
+test "ROM parser rejects short and truncated bank ranges" {
+    const alloc = std.testing.allocator;
+    var short = [_]u8{0} ** 8;
+    try std.testing.expectError(error.InvalidNesFormat, Rom.init(alloc, "short.nes", &short));
+
+    var truncated = [_]u8{0} ** 16;
+    @memcpy(truncated[0..4], &NES_TAG);
+    truncated[4] = 1;
+    try std.testing.expectError(error.InvalidNesFormat, Rom.init(alloc, "truncated.nes", &truncated));
+}
+
+test "network ROM battery RAM is volatile" {
+    const alloc = std.testing.allocator;
+    const bytes = try alloc.alloc(u8, 16 + PRG_ROM_PAGE_SIZE);
+    defer alloc.free(bytes);
+    @memset(bytes, 0);
+    @memcpy(bytes[0..4], &NES_TAG);
+    bytes[4] = 1;
+    bytes[6] = 0x12; // Mapper 1 plus the battery-backed RAM flag.
+
+    // A battery-backed local Mapper 1 ROM requires a filesystem path. A
+    // transferred ROM with only a display name must still initialize because
+    // initNetwork forces its mapper RAM to the volatile implementation.
+    var network_rom = try Rom.initNetwork(alloc, "remote.nes", bytes);
+    defer network_rom.deinit();
+    network_rom.prg_ram_write(0, 0x5a);
+    try std.testing.expectEqual(@as(u8, 0x5a), network_rom.prg_ram_read(0));
+}
 
 pub const TestRom = struct {
     prg_rom: []u8,
