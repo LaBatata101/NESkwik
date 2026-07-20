@@ -7,6 +7,7 @@ pub const opcodes = @import("opcodes.zig");
 pub const controller = @import("controller.zig");
 pub const ui = @import("ui/core/ui.zig");
 pub const gui = @import("ui/gui.zig");
+pub const settings = @import("ui/settings.zig");
 pub const logging = @import("logging.zig");
 
 pub const customPanic = @import("utils/panic.zig").customPanic;
