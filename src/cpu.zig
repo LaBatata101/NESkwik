@@ -282,22 +282,37 @@ pub const CPU = struct {
         return @as(u16, hi) << 8 | lo;
     }
 
-    fn operand_address(self: *Self, opcode: opcodes.OpCode) struct { u16, u8 } {
+    fn operand_address(self: *Self, opcode: opcodes.OpCode) u16 {
         const has_page_cross_penalty = opcode.has_page_cross_penalty();
         return switch (opcode.addressing_mode()) {
-            AdressingMode.Immediate => .{ self.pc, 0 },
-            AdressingMode.ZeroPage => .{ self.mem_read(self.pc), 0 },
+            AdressingMode.Immediate => self.pc,
+            AdressingMode.ZeroPage => self.mem_read(self.pc),
             AdressingMode.ZeroPageX => {
                 const lo = self.mem_read(self.pc);
                 _ = self.mem_read(lo); // dummy read
-                return .{ lo +% self.register_x, 0 };
+                return lo +% self.register_x;
             },
             AdressingMode.ZeroPageY => {
                 const lo = self.mem_read(self.pc);
                 _ = self.mem_read(lo); // dummy read
-                return .{ lo +% self.register_y, 0 };
+                return lo +% self.register_y;
             },
-            AdressingMode.Absolute => .{ self.bus.mem_read_u16(self.pc), 0 },
+            AdressingMode.Absolute => {
+                // JSR is unusual: it reads the high byte of the target only after
+                // performing its stack accesses. This ordering matters for open bus,
+                // because the target high byte must be the final value on the data bus.
+                if (opcode == .JSR) {
+                    const target_lo = self.mem_read(self.pc);
+                    _ = self.mem_read(STACK_START + self.sp); // dummy stack read
+
+                    const return_addr = self.pc +% 1;
+                    self.stack_push_u16(return_addr);
+
+                    const target_hi = self.mem_read(self.pc +% 1);
+                    return (@as(u16, target_hi) << 8) | target_lo;
+                }
+                return self.bus.mem_read_u16(self.pc);
+            },
             AdressingMode.AbsoluteX => {
                 const lo = self.bus.mem_read(self.pc);
                 const hi: u16 = self.bus.mem_read(self.pc + 1);
@@ -311,9 +326,9 @@ pub const CPU = struct {
 
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.extra_cycles = 1;
-                    return .{ (@as(u16, (hi +% 1)) << 8) | result[0], @intFromBool(has_page_cross_penalty) };
+                    return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
-                    return .{ (hi << 8) | result[0], 0 };
+                    return (hi << 8) | result[0];
                 }
             },
             AdressingMode.AbsoluteY => {
@@ -329,16 +344,16 @@ pub const CPU = struct {
 
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.extra_cycles = 1;
-                    return .{ (@as(u16, (hi +% 1)) << 8) | result[0], @intFromBool(has_page_cross_penalty) };
+                    return (@as(u16, (hi +% 1)) << 8) | result[0];
                 } else {
-                    return .{ (hi << 8) | result[0], 0 };
+                    return (hi << 8) | result[0];
                 }
             },
             AdressingMode.Relative => {
                 const offset: i8 = @bitCast(self.mem_read(self.pc));
                 _ = self.mem_read(self.pc + 1); // dummy read
                 const jump_addr: u32 = @bitCast(@as(i32, self.pc) +% 1 +% offset);
-                return .{ @truncate(jump_addr), 0 };
+                return @truncate(jump_addr);
             },
             AdressingMode.Indirect => {
                 const ptr_addr = self.bus.mem_read_u16(self.pc);
@@ -351,9 +366,9 @@ pub const CPU = struct {
                     const lo = self.mem_read(ptr_addr);
                     const hi = self.mem_read(ptr_addr & 0xFF00);
 
-                    return .{ @as(u16, hi) << 8 | lo, 0 };
+                    return @as(u16, hi) << 8 | lo;
                 } else {
-                    return .{ self.bus.mem_read_u16(ptr_addr), 0 };
+                    return self.bus.mem_read_u16(ptr_addr);
                 }
             },
             AdressingMode.IndirectX => {
@@ -364,7 +379,7 @@ pub const CPU = struct {
                 const lo = self.mem_read(ptr);
                 const hi = self.mem_read(ptr +% 1);
 
-                return .{ @as(u16, hi) << 8 | lo, 0 };
+                return @as(u16, hi) << 8 | lo;
             },
             AdressingMode.IndirectY => {
                 const base = self.mem_read(self.pc);
@@ -375,12 +390,12 @@ pub const CPU = struct {
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.extra_cycles = 1;
                     _ = self.mem_read(@as(u16, hi) << 8 | result[0]); // dummy read
-                    return .{ @as(u16, hi +% 1) << 8 | result[0], @intFromBool(has_page_cross_penalty) };
+                    return @as(u16, hi +% 1) << 8 | result[0];
                 } else {
-                    return .{ @as(u16, hi) << 8 | result[0], 0 };
+                    return @as(u16, hi) << 8 | result[0];
                 }
             },
-            AdressingMode.Implicit => .{ 0, 0 }, // The address value is discarded for implicit instrunctions
+            AdressingMode.Implicit => 0, // The address value is discarded for implicit instrunctions
         };
     }
 
@@ -602,7 +617,7 @@ pub const CPU = struct {
         self.pc +%= 1;
         const old_pc = self.pc;
 
-        const instr_addr, _ = self.operand_address(opcode);
+        const instr_addr = self.operand_address(opcode);
 
         switch (opcode) {
             .AND => self.register_a = self.and_base(self.mem_read(instr_addr), self.register_a),
@@ -677,10 +692,7 @@ pub const CPU = struct {
             .SEC => self.status.carry_flag = true,
             .DEC => _ = self.dec(instr_addr, self.mem_read(instr_addr)),
             .JMP => self.pc = instr_addr,
-            .JSR => {
-                self.stack_push_u16(self.pc + 2 - 1);
-                self.pc = instr_addr;
-            },
+            .JSR => self.pc = instr_addr, // The JSR memory read special case is handled inside of `operand_address`
             .RTS => self.pc = self.stack_pop_u16() + 1,
             .RTI => {
                 const current_status = self.status;
@@ -2194,6 +2206,23 @@ test "0x20: JSR Jump to Subroutine" {
     _ = cpu.tick();
     _ = cpu.tick();
     try std.testing.expectEqual(3, cpu.register_x);
+}
+
+test "0x20: JSR reads target high byte after stack writes" {
+    const alloc = std.testing.allocator;
+    const instructions = [_]u8{ 0x20, 0x00, 0x56 };
+    var test_rom = rom.TestRom.init(alloc, &instructions);
+    defer test_rom.deinit();
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+
+    _ = cpu.tick();
+
+    try std.testing.expectEqual(@as(u16, 0x5600), cpu.pc);
+    try std.testing.expectEqual(@as(u8, 0xFB), cpu.sp);
+    try std.testing.expectEqual(@as(u8, 0x80), bus.ram[0x01FD]);
+    try std.testing.expectEqual(@as(u8, 0x02), bus.ram[0x01FC]);
+    try std.testing.expectEqual(@as(u8, 0x56), bus.open_bus);
 }
 
 test "0x60: RTS Return from Subroutine" {

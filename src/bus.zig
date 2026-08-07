@@ -91,17 +91,19 @@ pub const Bus = struct {
             // $4000-$4014 are write-only APU/OAM registers; reads return open bus.
             // $4018-$40FF is unallocated I/O space; also returns open bus.
             0x4000...0x4014, 0x4018...0x40FF => return self.open_bus,
-            0x4015 => self.apu.read_status(),
+            0x4015 => (self.open_bus & 0x20) | self.apu.read_status(),
             // Controllers only drive bits 0-4; bits 5-7 float as open bus.
             0x4016 => (self.open_bus & 0xE0) | self.controllers.cntrl1_read(),
             0x4017 => (self.open_bus & 0xE0) | self.controllers.cntrl2_read(),
             // $4100-$5FFF is cartridge expansion space. None of the implemented
             // mappers expose it yet, so treat it as unmapped.
-            0x4100...0x5FFF => 0,
+            0x4100...0x5FFF => return self.open_bus,
             0x6000...0x7FFF => self.rom.prg_ram_read(addr),
             0x8000...0xFFFF => self.rom.prg_rom_read(addr),
         };
-        self.open_bus = value;
+
+        if (addr != 0x4015) self.open_bus = value;
+
         return value;
     }
 
@@ -120,6 +122,7 @@ pub const Bus = struct {
     }
 
     pub fn mem_write(self: *Self, addr: u16, data: u8) void {
+        self.open_bus = data;
         switch (addr) {
             0...0x1FFF => self.ram[addr % RAM_SIZE] = data,
             0x2000...0x3FFF => self.ppu.cpu_write(addr, data),
