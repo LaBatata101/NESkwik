@@ -853,12 +853,10 @@ pub const CPU = struct {
                 const result = self.sp & @as(u8, @truncate(instr_addr >> 8)) + 1;
                 self.mem_write(instr_addr, result);
             },
-            .TOP, .DOP => {
-                // No-op instructions, read argument and discard it.
-            },
-            .NOP, .KIL => {
-                // Do nothing! Any arguments are ignored.
-            },
+            // No-op instructions, read argument and discard it.
+            .TOP, .DOP => _ = self.mem_read(instr_addr),
+            // Do nothing! Any arguments are ignored.
+            .NOP, .KIL => {},
         }
 
         // For instructions that have implicit adressing, the CPU will read the next byte of memory and then discard it.
