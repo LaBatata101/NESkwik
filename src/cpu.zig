@@ -599,7 +599,7 @@ pub const CPU = struct {
 
         const code = self.mem_read(self.pc);
         const opcode = opcodes.OP_CODES[code];
-        self.pc += 1;
+        self.pc +%= 1;
         const old_pc = self.pc;
 
         const instr_addr, _ = self.operand_address(opcode);
