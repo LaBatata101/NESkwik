@@ -282,20 +282,26 @@ pub const CPU = struct {
         return @as(u16, hi) << 8 | lo;
     }
 
-    fn operand_address(self: *Self, opcode: opcodes.OpCode) u16 {
+    const OperandAddress = struct {
+        effective: u16,
+        base_hi: ?u8 = null,
+        page_crossed: bool = false,
+    };
+
+    fn operand_address(self: *Self, opcode: opcodes.OpCode) OperandAddress {
         const has_page_cross_penalty = opcode.has_page_cross_penalty();
         return switch (opcode.addressing_mode()) {
-            AdressingMode.Immediate => self.pc,
-            AdressingMode.ZeroPage => self.mem_read(self.pc),
+            AdressingMode.Immediate => .{ .effective = self.pc },
+            AdressingMode.ZeroPage => .{ .effective = self.mem_read(self.pc) },
             AdressingMode.ZeroPageX => {
                 const lo = self.mem_read(self.pc);
                 _ = self.mem_read(lo); // dummy read
-                return lo +% self.register_x;
+                return .{ .effective = lo +% self.register_x };
             },
             AdressingMode.ZeroPageY => {
                 const lo = self.mem_read(self.pc);
                 _ = self.mem_read(lo); // dummy read
-                return lo +% self.register_y;
+                return .{ .effective = lo +% self.register_y };
             },
             AdressingMode.Absolute => {
                 // JSR is unusual: it reads the high byte of the target only after
@@ -309,9 +315,9 @@ pub const CPU = struct {
                     self.stack_push_u16(return_addr);
 
                     const target_hi = self.mem_read(self.pc +% 1);
-                    return (@as(u16, target_hi) << 8) | target_lo;
+                    return .{ .effective = (@as(u16, target_hi) << 8) | target_lo };
                 }
-                return self.bus.mem_read_u16(self.pc);
+                return .{ .effective = self.bus.mem_read_u16(self.pc) };
             },
             AdressingMode.AbsoluteX => {
                 const lo = self.bus.mem_read(self.pc);
@@ -326,9 +332,13 @@ pub const CPU = struct {
 
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.extra_cycles = 1;
-                    return (@as(u16, (hi +% 1)) << 8) | result[0];
+                    return .{
+                        .effective = (@as(u16, (hi +% 1)) << 8) | result[0],
+                        .base_hi = @truncate(hi),
+                        .page_crossed = true,
+                    };
                 } else {
-                    return (hi << 8) | result[0];
+                    return .{ .effective = (hi << 8) | result[0], .base_hi = @truncate(hi) };
                 }
             },
             AdressingMode.AbsoluteY => {
@@ -344,16 +354,20 @@ pub const CPU = struct {
 
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.extra_cycles = 1;
-                    return (@as(u16, (hi +% 1)) << 8) | result[0];
+                    return .{
+                        .effective = (@as(u16, (hi +% 1)) << 8) | result[0],
+                        .base_hi = @truncate(hi),
+                        .page_crossed = true,
+                    };
                 } else {
-                    return (hi << 8) | result[0];
+                    return .{ .effective = (hi << 8) | result[0], .base_hi = @truncate(hi) };
                 }
             },
             AdressingMode.Relative => {
                 const offset: i8 = @bitCast(self.mem_read(self.pc));
                 _ = self.mem_read(self.pc + 1); // dummy read
                 const jump_addr: u32 = @bitCast(@as(i32, self.pc) +% 1 +% offset);
-                return @truncate(jump_addr);
+                return .{ .effective = @truncate(jump_addr) };
             },
             AdressingMode.Indirect => {
                 const ptr_addr = self.bus.mem_read_u16(self.pc);
@@ -366,9 +380,9 @@ pub const CPU = struct {
                     const lo = self.mem_read(ptr_addr);
                     const hi = self.mem_read(ptr_addr & 0xFF00);
 
-                    return @as(u16, hi) << 8 | lo;
+                    return .{ .effective = @as(u16, hi) << 8 | lo };
                 } else {
-                    return self.bus.mem_read_u16(ptr_addr);
+                    return .{ .effective = self.bus.mem_read_u16(ptr_addr) };
                 }
             },
             AdressingMode.IndirectX => {
@@ -379,7 +393,7 @@ pub const CPU = struct {
                 const lo = self.mem_read(ptr);
                 const hi = self.mem_read(ptr +% 1);
 
-                return @as(u16, hi) << 8 | lo;
+                return .{ .effective = @as(u16, hi) << 8 | lo };
             },
             AdressingMode.IndirectY => {
                 const base = self.mem_read(self.pc);
@@ -390,12 +404,20 @@ pub const CPU = struct {
                 if (result[1] == 1) {
                     if (has_page_cross_penalty) self.extra_cycles = 1;
                     _ = self.mem_read(@as(u16, hi) << 8 | result[0]); // dummy read
-                    return @as(u16, hi +% 1) << 8 | result[0];
+                    return .{
+                        .effective = @as(u16, hi +% 1) << 8 | result[0],
+                        .base_hi = hi,
+                        .page_crossed = true,
+                    };
                 } else {
-                    return @as(u16, hi) << 8 | result[0];
+                    if (!has_page_cross_penalty) {
+                        _ = self.mem_read(@as(u16, hi) << 8 | result[0]); // dummy read
+                    }
+                    return .{ .effective = @as(u16, hi) << 8 | result[0], .base_hi = hi };
                 }
             },
-            AdressingMode.Implicit => 0, // The address value is discarded for implicit instrunctions
+            // The address value is discarded for implicit instrunctions
+            AdressingMode.Implicit => .{ .effective = 0 },
         };
     }
 
@@ -617,7 +639,8 @@ pub const CPU = struct {
         self.pc +%= 1;
         const old_pc = self.pc;
 
-        const instr_addr = self.operand_address(opcode);
+        const operand = self.operand_address(opcode);
+        const instr_addr = operand.effective;
 
         switch (opcode) {
             .AND => self.register_a = self.and_base(self.mem_read(instr_addr), self.register_a),
@@ -792,8 +815,12 @@ pub const CPU = struct {
                 self.update_zero_and_negative_flags(instr_arg);
             },
             .AXA => {
-                const result = self.register_x & self.register_a & 7;
-                self.mem_write(instr_addr, result);
+                const value = self.register_x & self.register_a & (operand.base_hi.? +% 1);
+                const final_addr = if (operand.page_crossed)
+                    (@as(u16, value) << 8) | @as(u8, @truncate(instr_addr))
+                else
+                    instr_addr;
+                self.mem_write(final_addr, value);
             },
             .SAX => {
                 const result = self.register_a & self.register_x;
@@ -2520,6 +2547,70 @@ test "0x9F: AXA" {
     _ = cpu2.run_instructions(&instructions);
 
     try std.testing.expectEqual(0, cpu2.mem_read(0x1092));
+}
+
+test "0x93: AXA indirect Y corrupts the address high byte on page crossing" {
+    const alloc = std.testing.allocator;
+    const instructions = [_]u8{ 0x93, 0x30 };
+    var test_rom = rom.TestRom.init(alloc, &instructions);
+    defer test_rom.deinit();
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+
+    cpu.mem_write(0x30, 0xF0);
+    cpu.mem_write(0x31, 0x1E);
+    cpu.mem_write(0x0000, 0xFF);
+    cpu.mem_write(0x1F00, 0xFF);
+    cpu.register_a = 0x55;
+    cpu.register_x = 0xAA;
+    cpu.register_y = 0x10;
+
+    _ = cpu.tick();
+
+    try std.testing.expectEqual(@as(u8, 0x00), cpu.mem_read(0x0000));
+    try std.testing.expectEqual(@as(u8, 0xFF), cpu.mem_read(0x1F00));
+}
+
+test "0x93: AXA indirect Y uses the stored value as the corrupted address high byte" {
+    const alloc = std.testing.allocator;
+    const instructions = [_]u8{ 0x93, 0x30 };
+    var test_rom = rom.TestRom.init(alloc, &instructions);
+    defer test_rom.deinit();
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+
+    cpu.mem_write(0x30, 0x90);
+    cpu.mem_write(0x31, 0x1E);
+    cpu.mem_write(0x0D10, 0xFF);
+    cpu.mem_write(0x1F10, 0xFF);
+    cpu.register_a = 0x0D;
+    cpu.register_x = 0xFF;
+    cpu.register_y = 0x80;
+
+    _ = cpu.tick();
+
+    try std.testing.expectEqual(@as(u8, 0x0D), cpu.mem_read(0x0D10));
+    try std.testing.expectEqual(@as(u8, 0xFF), cpu.mem_read(0x1F10));
+}
+
+test "0x9F: AXA absolute Y uses the instruction operand high byte" {
+    const alloc = std.testing.allocator;
+    const instructions = [_]u8{ 0x9F, 0xF0, 0x1E };
+    var test_rom = rom.TestRom.init(alloc, &instructions);
+    defer test_rom.deinit();
+    var bus = Bus.init(&test_rom.rom, undefined, undefined);
+    var cpu = CPU.init(&bus);
+
+    cpu.mem_write(0x0100, 0xFF);
+    cpu.mem_write(0x1F00, 0xFF);
+    cpu.register_a = 0x1F;
+    cpu.register_x = 0xFF;
+    cpu.register_y = 0x10;
+
+    _ = cpu.tick();
+
+    try std.testing.expectEqual(@as(u8, 0x1F), cpu.mem_read(0x1F00));
+    try std.testing.expectEqual(@as(u8, 0xFF), cpu.mem_read(0x0100));
 }
 
 test "0x87: SAX" {
