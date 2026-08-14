@@ -1,9 +1,12 @@
-const c = @import("../root.zig").c;
 const std = @import("std");
 const builtin = @import("builtin");
+const features = @import("features");
 const logging = @import("../logging.zig");
+const c = @import("../root.zig").c;
 
-pub fn customPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+pub const customPanic = if (features.wasm) @import("../wasm/panic.zig").panic else nativePanic;
+
+fn nativePanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     const alloc = std.heap.page_allocator;
     var trace: std.Io.Writer.Allocating = .init(alloc);
     defer trace.deinit();

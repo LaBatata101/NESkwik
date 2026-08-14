@@ -62,6 +62,15 @@ pub const Options = struct {
     stack_size: usize = std.Thread.SpawnConfig.default_stack_size,
 };
 
+fn defaultThreadCount() usize {
+    // Zig's libc-backed Emscripten Thread implementation currently falls
+    // through to the BSD sysctlbyname("hw.ncpu") path. Browsers do not expose
+    // that symbol, so callers targeting Emscripten must provide an explicit
+    // worker count instead of probing through std.Thread.getCpuCount().
+    if (builtin.os.tag == .emscripten) return 1;
+    return @max(1, std.Thread.getCpuCount() catch 1);
+}
+
 pub fn init(pool: *Pool, options: Options) !void {
     const allocator = options.allocator;
 
@@ -76,7 +85,7 @@ pub fn init(pool: *Pool, options: Options) !void {
         return;
     }
 
-    const thread_count = options.n_jobs orelse @max(1, std.Thread.getCpuCount() catch 1);
+    const thread_count = options.n_jobs orelse defaultThreadCount();
     if (options.track_ids) {
         try pool.ids.ensureTotalCapacity(allocator, 1 + thread_count);
         pool.ids.putAssumeCapacityNoClobber(std.Thread.getCurrentId(), {});

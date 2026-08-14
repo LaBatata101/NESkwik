@@ -1,8 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zeit = @import("zeit");
+const features = @import("features");
 
 const paths = @import("utils/paths.zig");
+const wasm = if (features.wasm) @import("wasm/logging.zig") else struct {};
 
 const LOG_FILENAME = "NESkwik.log";
 const MAX_LOG_FILE_SIZE_BYTES = 10 * 1024 * 1024;
@@ -19,7 +21,11 @@ var log_timezone: zeit.TimeZone = zeit.utc;
 
 const FILE_WRITER_BUFFER_SIZE = 1024;
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
+pub const init = if (features.wasm) wasm.init else nativeInit;
+pub const deinit = if (features.wasm) wasm.deinit else nativeDeinit;
+pub const logFn = if (features.wasm) wasm.logFn else nativeLogFn;
+
+fn nativeInit(alloc: std.mem.Allocator, io: std.Io) !void {
     if (log_file != null) return;
 
     var local_timezone = zeit.local(alloc, io, .{}) catch zeit.utc;
@@ -50,7 +56,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
     log_timezone = local_timezone;
 }
 
-pub fn deinit(alloc: std.mem.Allocator) void {
+fn nativeDeinit(alloc: std.mem.Allocator) void {
     const io = context.io;
 
     if (log_file) |file| {
@@ -72,7 +78,7 @@ pub fn path() ?[]const u8 {
     return log_path;
 }
 
-pub fn logFn(
+fn nativeLogFn(
     comptime message_level: std.log.Level,
     comptime scope: @EnumLiteral(),
     comptime format: []const u8,

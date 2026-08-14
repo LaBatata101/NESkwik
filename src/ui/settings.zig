@@ -87,13 +87,12 @@ const OnScreenControllerConfig = struct {
     }
 };
 
-pub fn load(alloc: std.mem.Allocator, io: std.Io, config_dir: ?[]const u8, settings: *EmulatorSettings) !void {
+pub fn load(alloc: std.mem.Allocator, io: std.Io, config_dir: []const u8, settings: *EmulatorSettings) !void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    const dir = config_dir orelse return;
-    const config_path = try std.fs.path.join(arena_alloc, &.{ dir, SETTINGS_FILENAME });
+    const config_path = try std.fs.path.join(arena_alloc, &.{ config_dir, SETTINGS_FILENAME });
 
     const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
@@ -111,15 +110,14 @@ pub fn load(alloc: std.mem.Allocator, io: std.Io, config_dir: ?[]const u8, setti
     try applyConfig(alloc, settings, parsed.value);
 }
 
-pub fn save(alloc: std.mem.Allocator, io: std.Io, config_dir: ?[]const u8, settings: EmulatorSettings) !void {
+pub fn save(alloc: std.mem.Allocator, io: std.Io, config_dir: []const u8, settings: EmulatorSettings) !void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    const dir = config_dir orelse return;
-    try std.Io.Dir.cwd().createDirPath(io, dir);
+    try std.Io.Dir.cwd().createDirPath(io, config_dir);
 
-    const config_path = try std.fs.path.join(arena_alloc, &.{ dir, SETTINGS_FILENAME });
+    const config_path = try std.fs.path.join(arena_alloc, &.{ config_dir, SETTINGS_FILENAME });
     const json_bytes = try std.json.Stringify.valueAlloc(arena_alloc, configFromSettings(settings), .{
         .whitespace = .indent_2,
         .emit_null_optional_fields = false,

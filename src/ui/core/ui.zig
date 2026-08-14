@@ -13,11 +13,15 @@ const shaders = @import("shaders.zig");
 const utils = @import("viewport.zig");
 const Optional = @import("../../utils/types.zig").Optional;
 const android = @import("../../utils/android.zig");
+const features = @import("features");
 const pipeline = @import("../../shaders/pipeline.zig");
 const GamepadButton = @import("../bindings.zig").GamepadButton;
 const ControllerAction = @import("../bindings.zig").ControllerAction;
 const ControllerButton = @import("../../controller.zig").ControllerButton;
 const env = @import("../../env.zig");
+const RendererWeb = @import("../../wasm/renderer.zig").RendererWeb;
+const Texture = if (features.wasm) @import("../../wasm/renderer.zig").Texture else c.SDL_GPUTexture;
+const browser = @import("../../wasm/browser.zig");
 
 const PIXELOID_FONT = @embedFile("pixeloid_font");
 const APP_ICON = @embedFile("app_icon");
@@ -26,7 +30,7 @@ fn handleClayError(error_data: clay.ErrorData) callconv(.c) void {
     std.log.err("Clay Error: {s}\n", .{error_data.error_text.chars[0..@intCast(error_data.error_text.length)]});
 }
 
-const FontUserData = struct {
+pub const FontUserData = struct {
     font_cache: *FontCache,
     scale: *const f32,
     measure_cache: *std.AutoHashMap(u64, clay.Dimensions),
@@ -45,7 +49,7 @@ const FontUserData = struct {
         return hasher.final();
     }
 
-    fn measure(self: *const @This(), text: []const u8, font_size: u16) clay.Dimensions {
+    pub fn measure(self: *const @This(), text: []const u8, font_size: u16) clay.Dimensions {
         const key = self.measureCacheKey(text, font_size);
         if (self.measure_cache.get(key)) |dims| return dims;
 
@@ -72,17 +76,17 @@ const GlyphKey = struct {
     glyph_index: u32,
 };
 
-const LayoutGlyph = struct {
+pub const LayoutGlyph = struct {
     glyph: raster.Glyph,
     pen_x: f32,
     baseline_y: f32,
 };
 
-const TextLayout = struct {
+pub const TextLayout = struct {
     glyphs: []LayoutGlyph,
 };
 
-const FontCache = struct {
+pub const FontCache = struct {
     allocator: std.mem.Allocator,
     library: raster.Library,
     face: raster.Face,
@@ -100,6 +104,17 @@ const FontCache = struct {
     const COMMON_FONT_SIZES = [_]u16{ 12, 13, 14, 15, 16, 18, 19, 20, 25, 42 };
 
     fn init(allocator: std.mem.Allocator, io: std.Io, device: ?*c.SDL_GPUDevice, initial_scale: f32) !*Self {
+        const self = try initCommon(allocator, io, initial_scale);
+        errdefer self.deinit(device);
+        try self.recreateAtlasTextureIfChanged(device);
+        return self;
+    }
+
+    pub fn initWeb(allocator: std.mem.Allocator, io: std.Io, initial_scale: f32) !*Self {
+        return initCommon(allocator, io, initial_scale);
+    }
+
+    fn initCommon(allocator: std.mem.Allocator, io: std.Io, initial_scale: f32) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
@@ -123,14 +138,12 @@ const FontCache = struct {
         };
         errdefer self.glyphs.deinit();
         errdefer self.layouts.deinit();
-        errdefer if (self.texture) |texture| c.SDL_ReleaseGPUTexture(device, texture);
 
         try self.prewarm(initial_scale);
-        try self.recreateAtlasTextureIfChanged(device);
         return self;
     }
 
-    fn deinit(self: *Self, device: ?*c.SDL_GPUDevice) void {
+    pub fn deinit(self: *Self, device: ?*c.SDL_GPUDevice) void {
         if (self.texture) |texture| c.SDL_ReleaseGPUTexture(device, texture);
         self.clearLayouts();
         self.layouts.deinit();
@@ -173,11 +186,11 @@ const FontCache = struct {
         return hasher.final();
     }
 
-    fn getLayout(self: *const Self, font_size: u16, scale: f32, text: []const u8) ?*const TextLayout {
+    pub fn getLayout(self: *const Self, font_size: u16, scale: f32, text: []const u8) ?*const TextLayout {
         return self.layouts.getPtr(layoutKey(font_size, scale, text));
     }
 
-    fn cacheTextLayout(self: *Self, font_size: u16, scale: f32, text: []const u8) !*const TextLayout {
+    pub fn cacheTextLayout(self: *Self, font_size: u16, scale: f32, text: []const u8) !*const TextLayout {
         const key = layoutKey(font_size, scale, text);
         if (self.layouts.getPtr(key)) |layout| return layout;
 
@@ -278,7 +291,7 @@ const FontCache = struct {
     }
 };
 
-fn measureText(text: []const u8, config: *clay.TextElementConfig, user_data: *const FontUserData) clay.Dimensions {
+pub fn measureText(text: []const u8, config: *clay.TextElementConfig, user_data: *const FontUserData) clay.Dimensions {
     return user_data.measure(text, config.font_size);
 }
 
@@ -382,7 +395,7 @@ pub const ShaderModeScope = struct {
 };
 
 const CanvasCacheItem = struct {
-    texture: ?*c.SDL_GPUTexture,
+    texture: ?*Texture,
     width: u32,
     height: u32,
 };
@@ -416,8 +429,6 @@ pub const UIContext = struct {
 
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
-    prev_mouse_x: f32 = 0,
-    prev_mouse_y: f32 = 0,
     fingers: [MAX_ACTIVE_TOUCHES]FingerState,
 
     frame_arena: std.heap.ArenaAllocator,
@@ -465,7 +476,10 @@ pub const UIContext = struct {
 
         var canvas_iter = self.canvas_cache.iterator();
         while (canvas_iter.next()) |item| {
-            c.SDL_ReleaseGPUTexture(device, item.value_ptr.texture);
+            if (features.wasm)
+                item.value_ptr.texture.?.deinit(allocator)
+            else
+                c.SDL_ReleaseGPUTexture(device, item.value_ptr.texture);
         }
         self.canvas_cache.deinit();
 
@@ -475,12 +489,15 @@ pub const UIContext = struct {
         allocator.destroy(self);
     }
 
-    fn releaseCachedTextures(self: *Self, device: ?*c.SDL_GPUDevice) void {
+    fn releaseCachedTextures(self: *Self, alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
         self.text_measure_cache.clearRetainingCapacity();
 
         var canvas_iter = self.canvas_cache.iterator();
         while (canvas_iter.next()) |item| {
-            c.SDL_ReleaseGPUTexture(device, item.value_ptr.texture);
+            if (features.wasm)
+                item.value_ptr.texture.?.deinit(alloc)
+            else
+                c.SDL_ReleaseGPUTexture(device, item.value_ptr.texture);
         }
         self.canvas_cache.clearRetainingCapacity();
     }
@@ -525,7 +542,7 @@ pub const UIContext = struct {
             .{ .x = self.mouse_x, .y = self.mouse_y },
             self.frame.mouse_down,
         );
-        clay.updateScrollContainers(builtin.abi.isAndroid(), .{
+        clay.updateScrollContainers(builtin.abi.isAndroid() or features.wasm, .{
             .x = self.frame.scroll.delta_x,
             .y = self.frame.scroll.delta_y,
         }, self.dt);
@@ -543,6 +560,7 @@ pub const UIContext = struct {
         self.frame.mouse_pressed = false;
         self.frame.mouse_released = false;
         self.frame.mouse_delta = .{ .x = 0, .y = 0 };
+        self.frame.pointer_moved = false;
 
         self.frame.menu_item_clicked = false;
         self.frame.hot_id = null;
@@ -655,14 +673,14 @@ pub const UIContext = struct {
         return .{ .value = c.SDL_GetTicks() - value.start >= value.ms };
     }
 
-    fn allocWidget(self: *Self, T: type, value: T) *T {
+    pub fn allocWidget(self: *Self, T: type, value: T) *T {
         const w = self.frameAlloc().create(T) catch
             std.debug.panic("Failed to allocate widget: {s}", .{@typeName(T)});
         w.* = value;
         return w;
     }
 
-    fn updateMousePos(self: *Self, motion: c.SDL_MouseMotionEvent, scale_x: f32, scale_y: f32) void {
+    pub fn updateMousePos(self: *Self, motion: c.SDL_MouseMotionEvent, scale_x: f32, scale_y: f32) void {
         self.updatePointerPosition(
             motion.x * scale_x,
             motion.y * scale_y,
@@ -671,9 +689,8 @@ pub const UIContext = struct {
         );
     }
 
-    fn updatePointerPosition(self: *Self, x: f32, y: f32, dx: f32, dy: f32) void {
-        self.prev_mouse_x = self.mouse_x;
-        self.prev_mouse_y = self.mouse_y;
+    pub fn updatePointerPosition(self: *Self, x: f32, y: f32, dx: f32, dy: f32) void {
+        if (x != self.mouse_x or y != self.mouse_y) self.frame.pointer_moved = true;
         self.mouse_x = x;
         self.mouse_y = y;
 
@@ -681,7 +698,7 @@ pub const UIContext = struct {
         self.frame.mouse_delta.y += dy;
     }
 
-    fn beginPointerDown(self: *Self) void {
+    pub fn beginPointerDown(self: *Self) void {
         self.frame.mouse_pressed = true;
         self.frame.mouse_down = true;
         self.frame.pointer_down_time_ms = c.SDL_GetTicks();
@@ -693,27 +710,27 @@ pub const UIContext = struct {
         return c.SDL_GetTicks() - self.frame.pointer_down_time_ms <= TAP_MAX_DURATION_MS;
     }
 
-    fn setFingerDown(self: *Self, finger_id: c.SDL_FingerID, value: bool) void {
+    pub fn setFingerDown(self: *Self, finger_id: c.SDL_FingerID, value: bool) void {
         if (finger_id > MAX_ACTIVE_TOUCHES) {
             std.log.warn("FingerID: {} greater than supported MAX_ACTIVE_TOUCHES", .{finger_id});
             return;
         }
 
         // SDL finger ID starts at 1
-        self.fingers[finger_id - 1].down = value;
+        self.fingers[@intCast(finger_id - 1)].down = value;
     }
 
-    fn setFingerPos(self: *Self, finger_id: c.SDL_FingerID, x: f32, y: f32) void {
+    pub fn setFingerPos(self: *Self, finger_id: c.SDL_FingerID, x: f32, y: f32) void {
         if (finger_id > MAX_ACTIVE_TOUCHES) {
             std.log.warn("FingerID: {} greater than supported MAX_ACTIVE_TOUCHES", .{finger_id});
             return;
         }
 
-        self.fingers[finger_id - 1].x = x;
-        self.fingers[finger_id - 1].y = y;
+        self.fingers[@intCast(finger_id - 1)].x = x;
+        self.fingers[@intCast(finger_id - 1)].y = y;
     }
 
-    fn hasFingerDown(self: *const Self) bool {
+    pub fn hasFingerDown(self: *const Self) bool {
         for (self.fingers) |finger| {
             if (finger.down) return true;
         }
@@ -736,8 +753,9 @@ pub const UIContext = struct {
         return point.x >= box.x and point.x <= box.x + box.width and point.y >= box.y and point.y <= box.y + box.height;
     }
 
-    fn mouseMotion(self: *const Self) bool {
-        return self.mouse_x != self.prev_mouse_x and self.mouse_y != self.prev_mouse_y;
+    /// Whether the pointer moved during this frame.
+    pub fn mouseMotion(self: *const Self) bool {
+        return self.frame.pointer_moved;
     }
 };
 
@@ -750,6 +768,8 @@ pub const FrameState = struct {
     /// True as long as the button is held
     mouse_down: bool = false,
     mouse_delta: clay.Vector2 = .{ .x = 0, .y = 0 },
+    /// True only on frames the pointer moved
+    pointer_moved: bool = false,
     pointer_down_time_ms: u64 = 0,
 
     scroll: struct {
@@ -1421,7 +1441,7 @@ const TextVertex = extern struct {
     }
 };
 
-pub const Renderer = struct {
+const RendererNative = struct {
     allocator: std.mem.Allocator,
     device: ?*c.SDL_GPUDevice,
     pipeline: ?*c.SDL_GPUGraphicsPipeline,
@@ -2133,6 +2153,7 @@ pub const Renderer = struct {
         }
     }
 };
+const Renderer = if (features.wasm) RendererWeb else RendererNative;
 
 pub const Window = struct {
     ctx: *UIContext,
@@ -2167,6 +2188,7 @@ pub const Window = struct {
 
     fn updateWindowSize(self: *Window) void {
         self.display_scale = currentDisplayScale(self.ptr);
+        if (features.wasm) self.renderer.setDisplayScale(self.display_scale);
 
         sdlError(c.SDL_GetWindowSize(self.ptr, &self.window_width, &self.window_height));
         sdlError(c.SDL_GetWindowSizeInPixels(self.ptr, &self.pixel_width, &self.pixel_height));
@@ -2174,6 +2196,10 @@ pub const Window = struct {
 
         self.logical_width = @as(f32, @floatFromInt(self.pixel_width)) / self.display_scale;
         self.logical_height = @as(f32, @floatFromInt(self.pixel_height)) / self.display_scale;
+    }
+
+    fn isMobileResolution(_: *const Window) bool {
+        return browser.hasTouchInput();
     }
 
     fn currentDisplayScale(window: ?*c.SDL_Window) f32 {
@@ -2263,10 +2289,16 @@ pub const Window = struct {
     }
 
     fn deinit(self: *@This(), alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
-        self.renderer.deinit();
-        c.SDL_ReleaseWindowFromGPUDevice(device, self.ptr);
-        c.SDL_DestroyWindow(self.ptr);
-        self.ctx.deinit(alloc, device);
+        if (features.wasm) {
+            self.ctx.deinit(alloc, device);
+            self.renderer.deinit();
+            c.SDL_DestroyWindow(self.ptr);
+        } else {
+            self.renderer.deinit();
+            c.SDL_ReleaseWindowFromGPUDevice(device, self.ptr);
+            c.SDL_DestroyWindow(self.ptr);
+            self.ctx.deinit(alloc, device);
+        }
         alloc.destroy(self);
     }
 
@@ -2341,6 +2373,19 @@ fn loadIconTexture(device: ?*c.SDL_GPUDevice, png_data: []const u8) ?*c.SDL_GPUT
     return texture;
 }
 
+fn loadIconTextureWeb(renderer: *RendererWeb, png: []const u8) ?*Texture {
+    const io = c.SDL_IOFromConstMem(png.ptr, png.len);
+    const surface = c.SDL_LoadPNG_IO(io, true);
+    defer c.SDL_DestroySurface(surface);
+
+    const rgba = sdlError(c.SDL_ConvertSurface(surface, c.SDL_PIXELFORMAT_RGBA32));
+    defer c.SDL_DestroySurface(rgba);
+    const size: usize = @intCast(rgba.*.w * rgba.*.h * 4);
+    const pixels: [*]const u8 = @ptrCast(@alignCast(rgba.*.pixels));
+    return renderer.createTexture(@intCast(rgba.*.w), @intCast(rgba.*.h), pixels[0..size], true) catch
+        @panic("Failed to create icon texture");
+}
+
 pub const UI = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -2365,7 +2410,7 @@ pub const UI = struct {
     gamepads: std.ArrayList(GamepadState) = .empty,
     on_screen_controller: ControllerButton = .{},
 
-    icons: std.EnumArray(Icon, ?*c.SDL_GPUTexture) = .initUndefined(),
+    icons: std.EnumArray(Icon, ?*Texture) = .initUndefined(),
 
     pub const Icon = enum {
         play,
@@ -2404,7 +2449,9 @@ pub const UI = struct {
     const Self = @This();
     const CLAY_ERROR_HANDLER = clay.ErrorHandler{ .error_handler_function = handleClayError };
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, title: []const u8, width: i32, height: i32) !*Self {
+    pub const init = if (features.wasm) initWeb else initNative;
+
+    fn initNative(allocator: std.mem.Allocator, io: std.Io, title: []const u8, width: i32, height: i32) !*Self {
         sdlError(c.SDL_SetAppMetadata("NESkwik", "1.0.0", "com.labatata.neskwik"));
         sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD));
 
@@ -2500,8 +2547,8 @@ pub const UI = struct {
             setWindowIcon(main_window.ptr);
         }
 
-        const gui = try allocator.create(UI);
-        gui.* = .{
+        const ui = try allocator.create(UI);
+        ui.* = .{
             .allocator = allocator,
             .io = io,
             .main_window = main_window,
@@ -2526,18 +2573,112 @@ pub const UI = struct {
         if (gp_ids != null) {
             var i: c_int = 0;
             while (i < gp_count) : (i += 1) {
-                gui.gamepads.append(allocator, GamepadState.init(c.SDL_OpenGamepad(gp_ids[@intCast(i)]))) catch
+                ui.gamepads.append(allocator, GamepadState.init(c.SDL_OpenGamepad(gp_ids[@intCast(i)]))) catch
                     @panic("OOM");
             }
             c.SDL_free(gp_ids);
         }
 
-        return gui;
+        return ui;
+    }
+
+    fn initWeb(alloc: std.mem.Allocator, io: std.Io, title: []const u8, width: i32, height: i32) !*Self {
+        if (c.glslang_initialize_process() != 1) {
+            return error.GLSlangFailedToInitialize;
+        }
+        errdefer c.glslang_finalize_process();
+
+        sdlError(c.SDL_SetAppMetadata("NESkwik", "1.0.0", "com.labatata.neskwik"));
+        sdlError(c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD));
+
+        sdlError(c.SDL_SetHint(c.SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0"));
+        sdlError(c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_PROFILE_MASK, c.SDL_GL_CONTEXT_PROFILE_ES));
+        sdlError(c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 3));
+        sdlError(c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 0));
+        sdlError(c.SDL_GL_SetAttribute(c.SDL_GL_DOUBLEBUFFER, 1));
+
+        const ui_ctx = try UIContext.init(
+            alloc,
+            .{ .w = @floatFromInt(width), .h = @floatFromInt(height) },
+            CLAY_ERROR_HANDLER,
+        );
+        const main_window = try alloc.create(Window);
+        const win_ptr = sdlError(c.SDL_CreateWindow(
+            title.ptr,
+            width,
+            height,
+            c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_FILL_DOCUMENT,
+        ));
+        const font_cache = try FontCache.initWeb(alloc, io, Window.currentDisplayScale(win_ptr));
+        const display_scale = Window.currentDisplayScale(win_ptr);
+        main_window.* = .{
+            .ptr = win_ptr,
+            .logical_width = @as(f32, @floatFromInt(width)) / display_scale,
+            .logical_height = @as(f32, @floatFromInt(height)) / display_scale,
+            .pixel_width = @intCast(width),
+            .pixel_height = @intCast(height),
+            .window_width = width,
+            .window_height = height,
+            .display_scale = display_scale,
+            .safe_area = Window.fullWindowArea(width, height),
+            .title = title,
+            .ctx = ui_ctx,
+            .renderer = try Renderer.init(alloc, io, null, win_ptr, 0),
+            .font_user_data = .{
+                .font_cache = font_cache,
+                .scale = &main_window.display_scale,
+                .measure_cache = &ui_ctx.text_measure_cache,
+            },
+        };
+
+        clay.setMeasureTextFunction(*const FontUserData, &main_window.font_user_data, measureText);
+
+        const ui = try alloc.create(UI);
+        ui.* = .{
+            .allocator = alloc,
+            .io = io,
+            .main_window = main_window,
+            .secondary_windows = .empty,
+            .current_window = main_window,
+            .gpu_device = null,
+            .font_cache = font_cache,
+            .fps_manager = FPSManager.init(),
+            .vk_version = 0,
+            .shaders_pipeline = .init(alloc),
+            .icons = blk: {
+                var arr = std.EnumArray(Icon, ?*Texture).initUndefined();
+                inline for (std.meta.tags(Icon)) |tag| {
+                    arr.set(tag, loadIconTextureWeb(main_window.renderer, tag.data()));
+                }
+                break :blk arr;
+            },
+        };
+
+        // Open any gamepads already connected at startup.
+        var gp_count: c_int = 0;
+        const gp_ids = c.SDL_GetGamepads(&gp_count);
+        if (gp_ids != null) {
+            var i: c_int = 0;
+            while (i < gp_count) : (i += 1) {
+                ui.gamepads.append(alloc, GamepadState.init(c.SDL_OpenGamepad(gp_ids[@intCast(i)]))) catch
+                    @panic("OOM");
+            }
+            c.SDL_free(gp_ids);
+        }
+
+        return ui;
     }
 
     pub fn deinit(self: *Self) void {
         for (self.gamepads.items) |state| c.SDL_CloseGamepad(state.handle);
         self.gamepads.deinit(self.allocator);
+
+        if (features.wasm) {
+            inline for (std.meta.tags(Icon)) |tag| {
+                self.icons.get(tag).?.deinit(self.allocator);
+            }
+            self.font_cache.deinit(null);
+        }
 
         self.main_window.deinit(self.allocator, self.gpu_device);
 
@@ -2553,13 +2694,15 @@ pub const UI = struct {
         }
         self.shaders_pipeline.deinit();
 
-        inline for (std.meta.tags(Icon)) |tag| {
-            c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(tag));
-        }
+        if (!features.wasm) {
+            inline for (std.meta.tags(Icon)) |tag| {
+                c.SDL_ReleaseGPUTexture(self.gpu_device, self.icons.get(tag));
+            }
 
-        self.font_cache.deinit(self.gpu_device);
+            self.font_cache.deinit(self.gpu_device);
+            c.SDL_DestroyGPUDevice(self.gpu_device);
+        }
         c.glslang_finalize_process();
-        c.SDL_DestroyGPUDevice(self.gpu_device);
         c.SDL_Quit();
 
         self.allocator.destroy(self);
@@ -2611,20 +2754,48 @@ pub const UI = struct {
         sdlError(c.SDL_SetWindowFullscreen(self.current_window.ptr, value));
     }
 
-    pub fn setVSync(self: *const Self, enabled: bool) void {
-        const present_mode: c.SDL_GPUPresentMode = if (enabled)
-            c.SDL_GPU_PRESENTMODE_VSYNC
-        else if (builtin.abi.isAndroid())
-            c.SDL_GPU_PRESENTMODE_MAILBOX
-        else
-            c.SDL_GPU_PRESENTMODE_IMMEDIATE;
+    pub fn isWasmMobile(self: *const Self) bool {
+        return self.current_window.isMobileResolution();
+    }
 
-        sdlError(c.SDL_SetGPUSwapchainParameters(
-            self.gpu_device,
-            self.main_window.ptr,
-            c.SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-            present_mode,
-        ));
+    /// Android, or a browser on a touch device.
+    pub fn isMobile(self: *const Self) bool {
+        return builtin.abi.isAndroid() or (features.wasm and self.isWasmMobile());
+    }
+
+    pub fn mobileScreenOrientation(self: *const Self) android.ScreenOrientation {
+        if (features.wasm and self.isWasmMobile()) {
+            return if (self.current_window.window_width > self.current_window.window_height)
+                .landscape
+            else if (self.current_window.window_height > self.current_window.window_width)
+                .portrait
+            else
+                .unknown;
+        } else if (builtin.abi.isAndroid()) {
+            return android.currentScreenOrientation() orelse .unknown;
+        }
+        return .unknown;
+    }
+
+    pub fn setVSync(self: *const Self, enabled: bool) void {
+        if (features.wasm) {
+            sdlError(c.SDL_GL_MakeCurrent(self.main_window.ptr, self.main_window.renderer.context));
+            sdlError(c.SDL_GL_SetSwapInterval(if (enabled) 1 else 0));
+        } else {
+            const present_mode: c.SDL_GPUPresentMode = if (enabled)
+                c.SDL_GPU_PRESENTMODE_VSYNC
+            else if (builtin.abi.isAndroid())
+                c.SDL_GPU_PRESENTMODE_MAILBOX
+            else
+                c.SDL_GPU_PRESENTMODE_IMMEDIATE;
+
+            sdlError(c.SDL_SetGPUSwapchainParameters(
+                self.gpu_device,
+                self.main_window.ptr,
+                c.SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                present_mode,
+            ));
+        }
     }
 
     pub fn getShaderParamInfos(self: *const Self, name: []const u8) []const pipeline.ParamInfo {
@@ -2642,11 +2813,15 @@ pub const UI = struct {
         shader_pipe.setParam(param, value);
     }
 
-    /// Start an asynchronous load of a `.slangp` shader preset.
+    /// Start an asynchronous load of a shader preset.
     /// Poll progress and completion each frame via `pollShaderLoad`.
     pub fn loadShaderPreset(self: *Self, name: []const u8, path: []const u8) !void {
         const shader_pipeline = self.shaders_pipeline.get(name) orelse blk: {
-            const new_pipeline = try pipeline.ShaderPipeline.init(self.allocator, self.io, self.gpu_device, self.vk_version);
+            const new_pipeline = try pipeline.ShaderPipeline.init(self.allocator, self.io, if (features.wasm) .{} else .{
+                .device = self.gpu_device,
+                .vk_version = self.vk_version,
+                .swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.current_window.ptr),
+            });
             errdefer new_pipeline.deinit();
 
             const owned_name = try self.allocator.dupe(u8, name);
@@ -2656,8 +2831,7 @@ pub const UI = struct {
             break :blk new_pipeline;
         };
 
-        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, self.current_window.ptr);
-        try shader_pipeline.loadPreset(path, swapchain_format);
+        try shader_pipeline.loadPreset(path);
     }
 
     /// Poll the status of an in-progress async shader load.
@@ -2706,7 +2880,7 @@ pub const UI = struct {
             title.ptr,
             width,
             height,
-            c.SDL_WINDOW_ALWAYS_ON_TOP | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
+            (if (features.wasm) c.SDL_WINDOW_OPENGL else 0) | c.SDL_WINDOW_ALWAYS_ON_TOP | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
         ));
         const display_scale = Window.currentDisplayScale(win_ptr);
         window.* = .{
@@ -2730,7 +2904,7 @@ pub const UI = struct {
                 self.io,
                 self.gpu_device,
                 win_ptr,
-                vulkan.detect_vulkan_version(),
+                self.vk_version,
             ) catch @panic("OOM"),
             .font_user_data = .{
                 .font_cache = self.font_cache,
@@ -2953,9 +3127,9 @@ pub const UI = struct {
         }
 
         if (!self.is_suspended) {
-            self.main_window.ctx.releaseCachedTextures(self.gpu_device);
+            self.main_window.ctx.releaseCachedTextures(self.allocator, self.gpu_device);
             for (self.secondary_windows.items) |window| {
-                window.inner.ctx.releaseCachedTextures(self.gpu_device);
+                window.inner.ctx.releaseCachedTextures(self.allocator, self.gpu_device);
             }
         }
     }
@@ -2978,7 +3152,7 @@ pub const UI = struct {
                 return;
             },
             c.SDL_EVENT_LOW_MEMORY => {
-                self.handleAndroidLowMemory();
+                if (builtin.abi.isAndroid()) self.handleAndroidLowMemory();
                 return;
             },
             c.SDL_EVENT_WILL_ENTER_BACKGROUND => { // TODO: pause the emulation on background
@@ -3130,7 +3304,9 @@ pub const UI = struct {
                 self.current_window.ctx.frame.scroll.velocity_y += event.wheel.y * scroll_multiplier;
             },
             c.SDL_EVENT_KEY_DOWN => {
-                if (builtin.abi.isAndroid() and event.key.scancode == c.SDL_SCANCODE_AC_BACK) {
+                if (self.isMobile() and
+                    event.key.scancode == c.SDL_SCANCODE_AC_BACK)
+                {
                     self.android_back_requested = true;
                 }
                 self.current_window.ctx.input.addKeyEvent(.{ .event = .down, .scancode = event.key.scancode });
@@ -3161,9 +3337,13 @@ pub const UI = struct {
 
     fn renderCommands(self: *Self, window: *Window, commands: []clay.RenderCommand) void {
         window.renderer.reset();
-        self.font_cache.recreateAtlasTextureIfChanged(self.gpu_device) catch @panic("Failed to upload UI font atlas");
+        if (features.wasm) {
+            window.renderer.updateFont(&self.font_cache.atlas) catch @panic("Failed to upload UI font atlas");
+        } else {
+            self.font_cache.recreateAtlasTextureIfChanged(self.gpu_device) catch @panic("Failed to upload UI font atlas");
+        }
 
-        const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(self.gpu_device));
+        const cmd = if (features.wasm) null else sdlError(c.SDL_AcquireGPUCommandBuffer(self.gpu_device));
         for (commands) |clay_cmd| {
             switch (clay_cmd.command_type) {
                 clay.RenderCommandType.rectangle => self.renderRectangle(&clay_cmd, window),
@@ -3197,132 +3377,136 @@ pub const UI = struct {
             }
         }
 
-        var swapchain_tex: ?*c.SDL_GPUTexture = null;
-        var win_w: u32 = 0;
-        var win_h: u32 = 0;
-        _ = c.SDL_WaitAndAcquireGPUSwapchainTexture(
-            cmd,
-            window.ptr,
-            &swapchain_tex,
-            &win_w,
-            &win_h,
-        );
-        if (swapchain_tex == null) {
-            sdlError(c.SDL_CancelGPUCommandBuffer(cmd));
-            return;
-        }
+        if (!features.wasm) {
+            var swapchain_tex: ?*c.SDL_GPUTexture = null;
+            var win_w: u32 = 0;
+            var win_h: u32 = 0;
+            _ = c.SDL_WaitAndAcquireGPUSwapchainTexture(
+                cmd,
+                window.ptr,
+                &swapchain_tex,
+                &win_w,
+                &win_h,
+            );
+            if (swapchain_tex == null) {
+                sdlError(c.SDL_CancelGPUCommandBuffer(cmd));
+                return;
+            }
 
-        const vertices_len: u32 = @intCast(window.renderer.vertices.items.len);
-        const indices_len: u32 = @intCast(window.renderer.indices.items.len);
-        const text_vertices_len: u32 = @intCast(window.renderer.text_vertices.items.len);
-        const text_indices_len: u32 = @intCast(window.renderer.text_indices.items.len);
-        const vertices_size = vertices_len * @sizeOf(UIVertex);
-        const indices_size = indices_len * @sizeOf(u32);
-        const text_vertices_size = text_vertices_len * @sizeOf(TextVertex);
-        const text_indices_size = text_indices_len * @sizeOf(u32);
-        window.renderer.resizeGPUBuffers(vertices_len, indices_len, text_vertices_len, text_indices_len);
+            const vertices_len: u32 = @intCast(window.renderer.vertices.items.len);
+            const indices_len: u32 = @intCast(window.renderer.indices.items.len);
+            const text_vertices_len: u32 = @intCast(window.renderer.text_vertices.items.len);
+            const text_indices_len: u32 = @intCast(window.renderer.text_indices.items.len);
+            const vertices_size = vertices_len * @sizeOf(UIVertex);
+            const indices_size = indices_len * @sizeOf(u32);
+            const text_vertices_size = text_vertices_len * @sizeOf(TextVertex);
+            const text_indices_size = text_indices_len * @sizeOf(u32);
+            window.renderer.resizeGPUBuffers(vertices_len, indices_len, text_vertices_len, text_indices_len);
 
-        var texture_uploads_size: u32 = 0;
-        for (window.renderer.textures.items) |upload| {
-            texture_uploads_size += upload.byteSize();
-        }
-        const total_upload_size = texture_uploads_size + vertices_size + indices_size + text_vertices_size + text_indices_size;
-        if (total_upload_size > 0) {
-            const transfer_buffer = window.renderer.createFrameTransferBuffer(total_upload_size).?;
-            const ptr: [*]u8 = @ptrCast(@alignCast(sdlError(c.SDL_MapGPUTransferBuffer(
-                self.gpu_device,
-                transfer_buffer,
-                true,
-            ))));
-
-            var copy_offset: u32 = 0;
+            var texture_uploads_size: u32 = 0;
             for (window.renderer.textures.items) |upload| {
-                const upload_size = upload.byteSize();
-                @memcpy(ptr[copy_offset .. copy_offset + upload_size], upload.pixels[0..upload_size]);
-                copy_offset += upload_size;
+                texture_uploads_size += upload.byteSize();
             }
-            if (vertices_size > 0) {
-                @memcpy(ptr[copy_offset .. copy_offset + vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
-                copy_offset += vertices_size;
-                @memcpy(ptr[copy_offset .. copy_offset + indices_size], std.mem.sliceAsBytes(window.renderer.indices.items));
-                copy_offset += indices_size;
+            const total_upload_size = texture_uploads_size + vertices_size + indices_size + text_vertices_size + text_indices_size;
+            if (total_upload_size > 0) {
+                const transfer_buffer = window.renderer.createFrameTransferBuffer(total_upload_size).?;
+                const ptr: [*]u8 = @ptrCast(@alignCast(sdlError(c.SDL_MapGPUTransferBuffer(
+                    self.gpu_device,
+                    transfer_buffer,
+                    true,
+                ))));
+
+                var copy_offset: u32 = 0;
+                for (window.renderer.textures.items) |upload| {
+                    const upload_size = upload.byteSize();
+                    @memcpy(ptr[copy_offset .. copy_offset + upload_size], upload.pixels[0..upload_size]);
+                    copy_offset += upload_size;
+                }
+                if (vertices_size > 0) {
+                    @memcpy(ptr[copy_offset .. copy_offset + vertices_size], std.mem.sliceAsBytes(window.renderer.vertices.items));
+                    copy_offset += vertices_size;
+                    @memcpy(ptr[copy_offset .. copy_offset + indices_size], std.mem.sliceAsBytes(window.renderer.indices.items));
+                    copy_offset += indices_size;
+                }
+                if (text_vertices_size > 0) {
+                    @memcpy(ptr[copy_offset .. copy_offset + text_vertices_size], std.mem.sliceAsBytes(window.renderer.text_vertices.items));
+                    copy_offset += text_vertices_size;
+                    @memcpy(ptr[copy_offset .. copy_offset + text_indices_size], std.mem.sliceAsBytes(window.renderer.text_indices.items));
+                }
+                c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buffer);
+
+                const copy_pass = c.SDL_BeginGPUCopyPass(cmd);
+
+                copy_offset = 0;
+                for (window.renderer.textures.items) |upload| {
+                    const upload_size = upload.byteSize();
+                    c.SDL_UploadToGPUTexture(
+                        copy_pass,
+                        &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                        &.{ .texture = upload.texture, .w = upload.width, .h = upload.height, .d = 1 },
+                        false,
+                    );
+                    copy_offset += upload_size;
+                }
+
+                if (vertices_size > 0) {
+                    c.SDL_UploadToGPUBuffer(
+                        copy_pass,
+                        &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                        &.{ .buffer = window.renderer.vertex_buffer.?, .offset = 0, .size = vertices_size },
+                        false,
+                    );
+                    copy_offset += vertices_size;
+
+                    c.SDL_UploadToGPUBuffer(
+                        copy_pass,
+                        &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                        &.{ .buffer = window.renderer.index_buffer.?, .offset = 0, .size = indices_size },
+                        false,
+                    );
+                    copy_offset += indices_size;
+                }
+
+                if (text_vertices_size > 0) {
+                    c.SDL_UploadToGPUBuffer(
+                        copy_pass,
+                        &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                        &.{ .buffer = window.renderer.text_vertex_buffer.?, .offset = 0, .size = text_vertices_size },
+                        false,
+                    );
+                    copy_offset += text_vertices_size;
+
+                    c.SDL_UploadToGPUBuffer(
+                        copy_pass,
+                        &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
+                        &.{ .buffer = window.renderer.text_index_buffer.?, .offset = 0, .size = text_indices_size },
+                        false,
+                    );
+                }
+                c.SDL_EndGPUCopyPass(copy_pass);
             }
-            if (text_vertices_size > 0) {
-                @memcpy(ptr[copy_offset .. copy_offset + text_vertices_size], std.mem.sliceAsBytes(window.renderer.text_vertices.items));
-                copy_offset += text_vertices_size;
-                @memcpy(ptr[copy_offset .. copy_offset + text_indices_size], std.mem.sliceAsBytes(window.renderer.text_indices.items));
-            }
-            c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buffer);
 
-            const copy_pass = c.SDL_BeginGPUCopyPass(cmd);
+            const MVP = [16]f32{
+                2.0 / window.logical_width, 0,                            0, 0,
+                0,                          -2.0 / window.logical_height, 0, 0,
+                0,                          0,                            1, 0,
+                -1,                         1,                            0, 1,
+            };
 
-            copy_offset = 0;
-            for (window.renderer.textures.items) |upload| {
-                const upload_size = upload.byteSize();
-                c.SDL_UploadToGPUTexture(
-                    copy_pass,
-                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
-                    &.{ .texture = upload.texture, .w = upload.width, .h = upload.height, .d = 1 },
-                    false,
-                );
-                copy_offset += upload_size;
-            }
+            self.renderDrawCalls(
+                window,
+                cmd,
+                swapchain_tex,
+                win_w,
+                win_h,
+                &MVP,
+                c.SDL_GPU_LOADOP_CLEAR,
+            );
 
-            if (vertices_size > 0) {
-                c.SDL_UploadToGPUBuffer(
-                    copy_pass,
-                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
-                    &.{ .buffer = window.renderer.vertex_buffer.?, .offset = 0, .size = vertices_size },
-                    false,
-                );
-                copy_offset += vertices_size;
-
-                c.SDL_UploadToGPUBuffer(
-                    copy_pass,
-                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
-                    &.{ .buffer = window.renderer.index_buffer.?, .offset = 0, .size = indices_size },
-                    false,
-                );
-                copy_offset += indices_size;
-            }
-
-            if (text_vertices_size > 0) {
-                c.SDL_UploadToGPUBuffer(
-                    copy_pass,
-                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
-                    &.{ .buffer = window.renderer.text_vertex_buffer.?, .offset = 0, .size = text_vertices_size },
-                    false,
-                );
-                copy_offset += text_vertices_size;
-
-                c.SDL_UploadToGPUBuffer(
-                    copy_pass,
-                    &.{ .transfer_buffer = transfer_buffer, .offset = copy_offset },
-                    &.{ .buffer = window.renderer.text_index_buffer.?, .offset = 0, .size = text_indices_size },
-                    false,
-                );
-            }
-            c.SDL_EndGPUCopyPass(copy_pass);
+            sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
+        } else {
+            window.renderer.present();
         }
-
-        const MVP = [16]f32{
-            2.0 / window.logical_width, 0,                            0, 0,
-            0,                          -2.0 / window.logical_height, 0, 0,
-            0,                          0,                            1, 0,
-            -1,                         1,                            0, 1,
-        };
-
-        self.renderDrawCalls(
-            window,
-            cmd,
-            swapchain_tex,
-            win_w,
-            win_h,
-            &MVP,
-            c.SDL_GPU_LOADOP_CLEAR,
-        );
-
-        sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
     }
 
     fn renderDrawCalls(
@@ -3387,13 +3571,16 @@ pub const UI = struct {
         pixels: []const u8,
         w: u32,
         h: u32,
-    ) ?*c.SDL_GPUTexture {
-        var texture: ?*c.SDL_GPUTexture = undefined;
+    ) ?*Texture {
+        var texture: ?*Texture = undefined;
         var should_create = true;
 
         if (window.ctx.canvas_cache.getPtr(id)) |item| {
             if (item.width != w or item.height != h) {
-                c.SDL_ReleaseGPUTexture(self.gpu_device, item.texture);
+                if (features.wasm)
+                    item.texture.?.deinit(self.allocator)
+                else
+                    c.SDL_ReleaseGPUTexture(self.gpu_device, item.texture);
             } else {
                 texture = item.texture;
                 should_create = false;
@@ -3401,15 +3588,19 @@ pub const UI = struct {
         }
 
         if (should_create) {
-            texture = sdlError(c.SDL_CreateGPUTexture(self.gpu_device, &.{
-                .type = c.SDL_GPU_TEXTURETYPE_2D,
-                .format = c.SDL_GetGPUTextureFormatFromPixelFormat(pixel_format),
-                .width = @intCast(w),
-                .height = @intCast(h),
-                .layer_count_or_depth = 1,
-                .num_levels = 1,
-                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-            }));
+            if (features.wasm) {
+                texture = window.renderer.createTexture(w, h, null, false) catch @panic("Failed to create canvas texture");
+            } else {
+                texture = sdlError(c.SDL_CreateGPUTexture(self.gpu_device, &.{
+                    .type = c.SDL_GPU_TEXTURETYPE_2D,
+                    .format = c.SDL_GetGPUTextureFormatFromPixelFormat(pixel_format),
+                    .width = @intCast(w),
+                    .height = @intCast(h),
+                    .layer_count_or_depth = 1,
+                    .num_levels = 1,
+                    .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                }));
+            }
 
             window.ctx.canvas_cache.put(id, .{
                 .texture = texture,
@@ -3451,7 +3642,7 @@ pub const UI = struct {
 
     fn drawTextureInViewport(
         window: *Window,
-        texture: ?*c.SDL_GPUTexture,
+        texture: ?*Texture,
         canvas_bounds: clay.BoundingBox,
         style: widgets.Canvas.Params,
         color: c.SDL_FColor,
@@ -3479,7 +3670,7 @@ pub const UI = struct {
         cmd: *const clay.RenderCommand,
         gpu_cmd: ?*c.SDL_GPUCommandBuffer,
         canvas_: widgets.Canvas,
-        texture: ?*c.SDL_GPUTexture,
+        texture: ?*Texture,
         bounds: clay.BoundingBox,
     ) void {
         const vp = utils.calculateViewport(
@@ -3494,7 +3685,6 @@ pub const UI = struct {
 
         drawCanvasBackground(window, cmd.bounding_box, canvas_.params.bg_color, canvas_.params.corner_radius);
 
-        const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(self.gpu_device, window.ptr);
         for (canvas_.shader_modes) |shader_mode| {
             const rect: c.SDL_FRect = switch (shader_mode.target) {
                 .canvas => .{ .x = bounds.x, .y = bounds.y, .w = bounds.width, .h = bounds.height },
@@ -3514,16 +3704,17 @@ pub const UI = struct {
                     .x = @intFromFloat(rect.x),
                     .y = @intFromFloat(rect.y),
                 }),
-                gpu_cmd,
+                if (features.wasm) {} else gpu_cmd,
                 @intCast(window.pixel_width),
                 @intCast(window.pixel_height),
-                swapchain_format,
-            ) catch |err| {
+            );
+            // The GL passes draw immediately and change GL state behind the UI renderer.
+            if (features.wasm) window.renderer.resumeRendering();
+            const output_texture = output catch |err| {
                 std.log.err("Shader pipeline '{s}' render failed: {any}", .{ shader_mode.id, err });
                 continue;
             };
-
-            window.renderer.setTexture(output.?.ptr);
+            window.renderer.setTexture(if (output_texture) |t| t.ptr else null);
             window.renderer.pushRoundedTexturedRect(rect, color, canvas_.params.corner_radius, null);
 
             if (shader_mode.composition == .original_on_top) {
@@ -3536,7 +3727,7 @@ pub const UI = struct {
         _: *Self,
         window: *Window,
         bounds: clay.BoundingBox,
-        texture: ?*c.SDL_GPUTexture,
+        texture: ?*Texture,
         style: widgets.Canvas.Params,
     ) void {
         drawCanvasBackground(window, bounds, style.bg_color, style.corner_radius);
@@ -3628,7 +3819,7 @@ pub const UI = struct {
 
     fn renderImage(_: *const Self, cmd: *const clay.RenderCommand, window: *Window) void {
         const image = cmd.render_data.image;
-        const image_texture = clay.anyopaquePtrToType(*c.SDL_GPUTexture, image.image_data);
+        const image_texture = clay.anyopaquePtrToType(*Texture, image.image_data);
         const background_color = image.background_color;
         const color: c.SDL_FColor = if (background_color[0] == 0 and background_color[1] == 0 and background_color[2] == 0 and background_color[3] == 0)
             Color.white.toSDL()
@@ -3708,21 +3899,25 @@ pub const UI = struct {
         draw_color.g = draw_color.g * (1.0 - overlay.a) + overlay.g * overlay.a;
         draw_color.b = draw_color.b * (1.0 - overlay.a) + overlay.b * overlay.a;
 
-        window.renderer.setTextTexture(self.font_cache.texture);
+        window.renderer.setTextTexture(if (features.wasm) window.renderer.font_texture else self.font_cache.texture);
         for (layout.glyphs) |positioned| {
             const glyph = positioned.glyph;
             if (glyph.width > 0 and glyph.height > 0) {
-                window.renderer.pushTextRect(.{
-                    .x = cmd.bounding_box.x + (positioned.pen_x + @as(f32, @floatFromInt(glyph.offset_x))) / scale,
-                    .y = cmd.bounding_box.y + (positioned.baseline_y - @as(f32, @floatFromInt(glyph.offset_y))) / scale,
-                    .w = @as(f32, @floatFromInt(glyph.width)) / scale,
-                    .h = @as(f32, @floatFromInt(glyph.height)) / scale,
-                }, draw_color, .{
-                    .x = @as(f32, @floatFromInt(glyph.atlas_x)) / atlas_size,
-                    .y = @as(f32, @floatFromInt(glyph.atlas_y)) / atlas_size,
-                    .w = @as(f32, @floatFromInt(glyph.width)) / atlas_size,
-                    .h = @as(f32, @floatFromInt(glyph.height)) / atlas_size,
-                });
+                window.renderer.pushTextRect(
+                    .{
+                        .x = cmd.bounding_box.x + (positioned.pen_x + @as(f32, @floatFromInt(glyph.offset_x))) / scale,
+                        .y = cmd.bounding_box.y + (positioned.baseline_y - @as(f32, @floatFromInt(glyph.offset_y))) / scale,
+                        .w = @as(f32, @floatFromInt(glyph.width)) / scale,
+                        .h = @as(f32, @floatFromInt(glyph.height)) / scale,
+                    },
+                    draw_color,
+                    .{
+                        .x = @as(f32, @floatFromInt(glyph.atlas_x)) / atlas_size,
+                        .y = @as(f32, @floatFromInt(glyph.atlas_y)) / atlas_size,
+                        .w = @as(f32, @floatFromInt(glyph.width)) / atlas_size,
+                        .h = @as(f32, @floatFromInt(glyph.height)) / atlas_size,
+                    },
+                );
             }
         }
     }

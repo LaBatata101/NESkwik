@@ -80,8 +80,8 @@ pub fn decode(alloc: std.mem.Allocator, encoded: []const u8) !*System.Snapshot {
 
 /// Hashes only the emulation state represented on the network. In particular,
 /// changing `Snapshot.saved_at` cannot affect this digest.
-pub fn digest(snapshot: *const System.Snapshot) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+pub fn digest(alloc: std.mem.Allocator, snapshot: *const System.Snapshot) !protocol.Digest {
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
     defer buffer.deinit();
 
     try writeCanonicalRef(&buffer.writer, CPU.Snapshot, &snapshot.cpu);
@@ -97,17 +97,17 @@ pub fn digest(snapshot: *const System.Snapshot) !protocol.Digest {
 
 /// Diagnostic hashes using the same canonical encoders as the full netplay
 /// digest. They identify a divergent subsystem without additional wire data.
-pub fn componentDigests(snapshot: *const System.Snapshot) !ComponentDigests {
+pub fn componentDigests(alloc: std.mem.Allocator, snapshot: *const System.Snapshot) !ComponentDigests {
     return .{
-        .cpu = try digestCanonical(CPU.Snapshot, &snapshot.cpu),
-        .bus = try digestCanonicalBus(&snapshot.bus),
-        .ppu = try digestCanonical(PPU.Snapshot, &snapshot.ppu),
-        .apu = try digestCanonicalApu(&snapshot.apu),
+        .cpu = try digestCanonical(CPU.Snapshot, alloc, &snapshot.cpu),
+        .bus = try digestCanonicalBus(alloc, &snapshot.bus),
+        .ppu = try digestCanonical(PPU.Snapshot, alloc, &snapshot.ppu),
+        .apu = try digestCanonicalApu(alloc, &snapshot.apu),
     };
 }
 
-fn digestCanonical(comptime T: type, value: *const T) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+fn digestCanonical(comptime T: type, alloc: std.mem.Allocator, value: *const T) !protocol.Digest {
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
     defer buffer.deinit();
 
     try writeCanonicalRef(&buffer.writer, T, value);
@@ -117,8 +117,8 @@ fn digestCanonical(comptime T: type, value: *const T) !protocol.Digest {
     return result;
 }
 
-fn digestCanonicalBus(value: *const Bus.Snapshot) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+fn digestCanonicalBus(alloc: std.mem.Allocator, value: *const Bus.Snapshot) !protocol.Digest {
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
     defer buffer.deinit();
 
     try writeCanonicalBus(&buffer.writer, value);
@@ -128,8 +128,8 @@ fn digestCanonicalBus(value: *const Bus.Snapshot) !protocol.Digest {
     return result;
 }
 
-fn digestCanonicalApu(value: *const APU.Snapshot) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+fn digestCanonicalApu(alloc: std.mem.Allocator, value: *const APU.Snapshot) !protocol.Digest {
+    var buffer: std.Io.Writer.Allocating = .init(alloc);
     defer buffer.deinit();
 
     try writeCanonicalApuDigest(&buffer.writer, value.*);
@@ -542,8 +542,8 @@ test "canonical network snapshot encode decode" {
     try std.testing.expectEqual(@as(i64, 0), decoded.saved_at);
     try std.testing.expectEqual(snapshot.cpu.pc, decoded.cpu.pc);
     try std.testing.expectEqual(snapshot.bus.cycles, decoded.bus.cycles);
-    try std.testing.expectEqual(try digest(&snapshot), try digest(decoded));
-    try std.testing.expectEqual(try componentDigests(&snapshot), try componentDigests(decoded));
+    try std.testing.expectEqual(try digest(alloc, &snapshot), try digest(alloc, decoded));
+    try std.testing.expectEqual(try componentDigests(alloc, &snapshot), try componentDigests(alloc, decoded));
 
     var bad = try alloc.dupe(u8, encoded);
     defer alloc.free(bad);
@@ -567,14 +567,14 @@ test "network representation ignores saved_at" {
 
     const baseline_encoded = try encode(alloc, &snapshot);
     defer alloc.free(baseline_encoded);
-    const baseline_digest = try digest(&snapshot);
+    const baseline_digest = try digest(alloc, &snapshot);
 
     snapshot.saved_at = 1_750_000_000;
     const timestamped_encoded = try encode(alloc, &snapshot);
     defer alloc.free(timestamped_encoded);
 
     try std.testing.expectEqualSlices(u8, baseline_encoded, timestamped_encoded);
-    try std.testing.expectEqual(baseline_digest, try digest(&snapshot));
+    try std.testing.expectEqual(baseline_digest, try digest(alloc, &snapshot));
 }
 
 test "canonical network snapshot supports every mapper variant" {
@@ -634,11 +634,12 @@ test "canonical network snapshot supports every mapper variant" {
         }
 
         try std.testing.expectEqual(std.meta.activeTag(mapper), std.meta.activeTag(decoded.bus.rom.mapper));
-        try std.testing.expectEqual(try digest(&snapshot), try digest(decoded));
+        try std.testing.expectEqual(try digest(alloc, &snapshot), try digest(alloc, decoded));
     }
 }
 
 test "netplay digest excludes presentation-only APU bookkeeping" {
+    const alloc = std.testing.allocator;
     var snapshot: System.Snapshot = undefined;
     initTestSnapshot(&snapshot);
 
@@ -651,7 +652,7 @@ test "netplay digest excludes presentation-only APU bookkeeping" {
     snapshot.ppu.sprite_data = &sprite_data;
     snapshot.ppu.frame_buffer = &frame_buffer;
 
-    const baseline = try digest(&snapshot);
+    const baseline = try digest(alloc, &snapshot);
 
     snapshot.apu.next_transfer_cyc = 1234;
     snapshot.apu.last_frame_cyc = 5678;
@@ -660,9 +661,9 @@ test "netplay digest excludes presentation-only APU bookkeeping" {
     snapshot.apu.triangle.waveform_last_amp = 13;
     snapshot.apu.noise.waveform_last_amp = 14;
     snapshot.apu.dmc.waveform_last_amp = 15;
-    try std.testing.expectEqual(baseline, try digest(&snapshot));
+    try std.testing.expectEqual(baseline, try digest(alloc, &snapshot));
 
     snapshot.apu.global_cycle = 1;
-    const changed = try digest(&snapshot);
+    const changed = try digest(alloc, &snapshot);
     try std.testing.expect(!std.mem.eql(u8, &baseline, &changed));
 }

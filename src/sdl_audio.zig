@@ -135,7 +135,7 @@ pub const SDLAudioOut = struct {
         }
 
         if (self.buffer.too_slow) {
-            std.log.warn("SDL: Audio transfer can't keep up", .{});
+            // std.log.warn("SDL: Audio transfer can't keep up", .{});
             self.buffer.too_slow = false;
         }
 
@@ -156,8 +156,7 @@ pub const SDLAudioOut = struct {
         self.buffer.input_samples += in_len;
     }
 
-    pub fn sampleRate(self: *const Self) f64 {
-        _ = self;
+    pub fn sampleRate(_: *const Self) f64 {
         return @floatFromInt(OUT_SAMPLE_RATE);
     }
 
@@ -169,7 +168,7 @@ pub const SDLAudioOut = struct {
             self.buffer.input_samples = 0;
             self.buffer.input_counter = self.buffer.playback_counter;
             self.buffer.too_slow = false;
-            self.cond.signal(self.io);
+            self.cond.broadcast(self.io);
         }
         _ = c.SDL_ClearAudioStream(self.stream);
     }
@@ -178,23 +177,20 @@ pub const SDLAudioOut = struct {
 fn audio_stream_callback(
     userdata: ?*anyopaque,
     stream_arg: ?*c.SDL_AudioStream,
-    additional_amount: c_int,
-    total_amount: c_int,
+    _: c_int,
+    total_bytes: c_int,
 ) callconv(.c) void {
-    _ = additional_amount;
     const stream: *c.SDL_AudioStream = @ptrCast(stream_arg.?);
     const this: *SDLAudioOut = @ptrCast(@alignCast(userdata.?));
 
     this.mutex.lockUncancelable(this.io);
     defer this.mutex.unlock(this.io);
 
-    const sample_size: usize = @sizeOf(Sample);
-    const total_bytes = total_amount;
+    const sample_size: i32 = @sizeOf(Sample);
     const max_bytes = this.buffer.input_samples * sample_size;
-    const transferred_bytes_usize: usize = @intCast(@min(max_bytes, total_bytes));
+    const transferred_bytes = @min(max_bytes, total_bytes);
 
-    const transferred_bytes: c_int = @intCast(transferred_bytes_usize);
-    const transferred_samples: usize = @divExact(transferred_bytes_usize, sample_size);
+    const transferred_samples = @divExact(@as(usize, @intCast(transferred_bytes)), sample_size);
 
     if (transferred_bytes < total_bytes) {
         this.buffer.too_slow = true;

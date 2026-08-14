@@ -32,6 +32,7 @@ pub fn getConfigDir(alloc: std.mem.Allocator) ![]u8 {
             const home_dir = env.get("HOME") orelse return error.AppConfigDirUnavailable;
             return std.fs.path.join(alloc, &.{ home_dir, ".config", APP_NAME });
         },
+        .emscripten => return std.fs.path.join(alloc, &.{ "/storage", "config" }),
         else => @compileError("Unsupported OS"),
     }
 }
@@ -57,6 +58,7 @@ pub fn getDataDir(alloc: std.mem.Allocator) ![]u8 {
                 const home_dir = env.get("HOME") orelse return error.AppDataDirUnavailable;
                 return std.fs.path.join(alloc, &.{ home_dir, ".local", "share", APP_NAME });
             },
+            .emscripten => return std.fs.path.join(alloc, &.{ "/storage", "data" }),
             else => @compileError("Unsupported OS"),
         }
     }
@@ -87,6 +89,7 @@ pub fn getLogDir(alloc: std.mem.Allocator) ![]u8 {
             const home_dir = env.get("HOME") orelse return error.AppLogDirUnavailable;
             return std.fs.path.join(alloc, &.{ home_dir, ".local", "state", APP_NAME, "logs" });
         },
+        .emscripten => return std.fs.path.join(alloc, &.{ "/storage", "logs" }),
         else => @compileError("Unsupported OS"),
     }
 }
@@ -114,6 +117,7 @@ pub fn getCacheDir(alloc: std.mem.Allocator) ![]u8 {
             const home_dir = env.get("HOME") orelse return error.AppCacheDirUnavailable;
             return std.fs.path.join(alloc, &.{ home_dir, ".cache", APP_NAME });
         },
+        .emscripten => return std.fs.path.join(alloc, &.{ "/storage", "cache" }),
         else => @compileError("Unsupported OS"),
     }
 }

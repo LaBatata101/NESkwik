@@ -1,11 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const features = @import("features");
 const c = @import("../../root.zig").c;
 const clay = @import("clay.zig");
 const Color = @import("color.zig").Color;
 pub const ui = @import("ui.zig");
 pub const UIContext = ui.UIContext;
 const viewport = @import("viewport.zig");
+const Texture = if (!features.wasm) c.SDL_GPUTexture else @import("../../wasm/renderer.zig").Texture;
 
 pub const CustomData = union(enum) {
     canvas: Canvas,
@@ -802,7 +804,7 @@ pub const Button = struct {
         id: ?[]const u8 = null,
         text: []const u8,
         icon: ?struct {
-            icon: ?*c.SDL_GPUTexture,
+            icon: ?*Texture,
             size: f32 = 32,
             overlay_color: Color = Color.transparent,
             gap: u16 = 0,
@@ -961,7 +963,7 @@ pub const Icon = struct {
 
     pub const Params = struct {
         id: ?[]const u8 = null,
-        icon: ?*c.SDL_GPUTexture,
+        icon: ?*Texture,
         size: f32 = 32,
         overlay_color: Color = Color.transparent,
     };
@@ -992,7 +994,7 @@ pub const IconButton = struct {
 
     pub const Params = struct {
         id: ?[]const u8 = null,
-        icon: ?*c.SDL_GPUTexture,
+        icon: ?*Texture,
         size: u16 = 32,
         enabled: bool = true,
         bg_color: Color = Color.transparent,
@@ -2029,7 +2031,9 @@ pub fn Combobox(comptime Option: type) type {
                         .parentId = element_id.id,
                         .attach_points = .{ .element = attach_element, .parent = attach_parent },
                         .offset = .{ .x = 0, .y = offset_y },
-                        .z_index = 1,
+                        // Floating z-indices are global: the list must also cover
+                        // the floating dialog the combobox may be in.
+                        .z_index = std.math.maxInt(i16),
                     },
                     .transition = floating_panel_transition,
                 });

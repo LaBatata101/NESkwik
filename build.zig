@@ -7,12 +7,22 @@ pub fn build(b: *std.Build) !void {
     const exe_name = "neskwik";
     const package_name = "com.labatata.neskwik";
 
-    const root_target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{});
+    if (isWasmTarget(target)) {
+        target.query.cpu_features_add.addFeatureSet(std.Target.wasm.featureSet(&.{
+            .atomics,
+            .bulk_memory,
+        }));
+        target = b.resolveTargetQuery(target.query);
+    }
     const optimize = b.standardOptimizeOption(.{});
     const iroh_lib_dir = b.option([]const u8, "iroh-lib-dir", "Directory containing a prebuilt iroh-ffi static archive");
-    const android_targets = android.standardTargets(b, root_target, android_api_level);
+    const wasm = isWasmTarget(target);
+    if (wasm) try applyZigStdlibPatches(b);
+    const wasm_sdk = if (wasm) resolveWasmSdk(b) else null;
+    const android_targets = android.standardTargets(b, target, android_api_level);
 
-    var root_target_single = [_]std.Build.ResolvedTarget{root_target};
+    var root_target_single = [_]std.Build.ResolvedTarget{target};
     const targets: []std.Build.ResolvedTarget = if (android_targets.len == 0)
         root_target_single[0..]
     else
@@ -48,26 +58,27 @@ pub fn build(b: *std.Build) !void {
         break :blk apk;
     };
 
-    for (targets) |target| {
-        if (target.result.cpu.arch == .x86 or target.result.cpu.arch == .arm) continue;
+    for (targets) |resolved_target| {
+        if (resolved_target.result.cpu.arch == .x86 or resolved_target.result.cpu.arch == .arm) continue;
 
-        const deps = try createNessModule(b, target, optimize, iroh_lib_dir);
+        const deps = try createNessModule(b, resolved_target, optimize, iroh_lib_dir, wasm_sdk);
 
         const app_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
-            .target = target,
+            .target = resolved_target,
             .optimize = optimize,
+            .single_threaded = false,
             .strip = optimize == .ReleaseFast,
             .imports = &.{
                 .{ .name = "ness", .module = deps.mod },
             },
         });
 
-        if (target.result.abi.isAndroid()) {
+        if (resolved_target.result.abi.isAndroid()) {
             const apk = android_apk orelse @panic("Android APK should be initialized");
             const android_dep = b.dependency("android", .{
                 .optimize = optimize,
-                .target = target,
+                .target = resolved_target,
             });
             app_module.addImport("android", android_dep.module("android"));
 
@@ -80,6 +91,8 @@ pub fn build(b: *std.Build) !void {
             linkAppLibraries(app_lib, deps);
             app_lib.root_module.linkSystemLibrary("c++_shared", .{});
             apk.addArtifact(app_lib);
+        } else if (wasm) {
+            try addWasmApp(b, app_module, optimize, wasm_sdk.?);
         } else {
             const exe = b.addExecutable(.{
                 .name = exe_name,
@@ -87,13 +100,13 @@ pub fn build(b: *std.Build) !void {
                 .root_module = app_module,
             });
 
-            if (target.result.os.tag == .windows) {
+            if (resolved_target.result.os.tag == .windows) {
                 exe.subsystem = .Windows;
             }
 
             linkAppLibraries(exe, deps);
 
-            if (target.result.os.tag == .macos) {
+            if (resolved_target.result.os.tag == .macos) {
                 exe.root_module.addObjectFile(b.path("third-party/MoltenVK/libMoltenVK.a"));
 
                 // SDL finds a statically linked MoltenVK using:
@@ -124,7 +137,7 @@ pub fn build(b: *std.Build) !void {
                 .use_llvm = true,
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("src/profiler.zig"),
-                    .target = target,
+                    .target = resolved_target,
                     .optimize = optimize,
                     .imports = &.{
                         .{ .name = "ness", .module = deps.mod },
@@ -148,7 +161,7 @@ pub fn build(b: *std.Build) !void {
             }
             profiler_step.dependOn(&run_profiler.step);
 
-            addTestStep(b, target, optimize, deps, exe);
+            addTestStep(b, resolved_target, optimize, deps, exe);
         }
     }
 
@@ -205,38 +218,287 @@ const NessDeps = struct {
     spirv_cross_lib: *std.Build.Step.Compile,
 };
 
+const WasmSdk = struct {
+    /// Emscripten's system headers.
+    include_dir: []const u8,
+    /// Project-local Emscripten cache holding the sysroot, unless the sysroot
+    /// was given with `--sysroot`.
+    cache_dir: ?[]const u8,
+    /// Generates the sysroot in `cache_dir`; everything compiled against its
+    /// headers must wait for it.
+    prepare: ?*std.Build.Step.Run,
+};
+
+/// Flags for C++ libraries using threads. Zig does not configure libc++ for
+/// Emscripten's pthreads on its own.
+const wasm_cxx_thread_flags = [_][]const u8{
+    "-pthread",
+    "-D__EMSCRIPTEN_PTHREADS__=1",
+    "-D_LIBCPP_HAS_THREADS=1",
+    "-D_LIBCPP_HAS_THREAD_API_PTHREAD=1",
+    "-D_LIBCPP_HAS_MONOTONIC_CLOCK=1",
+};
+
+fn isWasmTarget(target: std.Build.ResolvedTarget) bool {
+    return target.result.cpu.arch == .wasm32 and target.result.os.tag == .emscripten;
+}
+
+fn applyZigStdlibPatches(b: *std.Build) !void {
+    const io = b.graph.io;
+    const zig_exe = if (std.fs.path.isAbsolute(b.graph.zig_exe))
+        try std.Io.Dir.realPathFileAbsoluteAlloc(io, b.graph.zig_exe, b.allocator)
+    else
+        try std.Io.Dir.cwd().realPathFileAlloc(io, b.graph.zig_exe, b.allocator);
+    const zig_dir = std.fs.path.dirname(zig_exe) orelse return error.InvalidZigExecutablePath;
+    const std_dir = b.pathJoin(&.{ zig_dir, "lib", "std" });
+    const stdlib_dir = try std.Io.Dir.openDirAbsolute(io, std_dir, .{});
+    defer stdlib_dir.close(io);
+
+    try replaceInFile(b, stdlib_dir, "Io/Threaded.zig", &.{
+        .{
+            .old = "            const to: i64 = if (timeout_ns) |ns| ns else -1;",
+            .new = "            const to: i64 = if (timeout_ns) |ns| std.math.cast(i64, ns) orelse std.math.maxInt(i64) else -1;",
+        },
+        .{
+            .old = "fn doNothingSignalHandler(_: posix.SIG) callconv(.c) void {}",
+            .new = "const SignalHandler = if (builtin.os.tag == .emscripten) c_int else posix.SIG;\n" ++
+                "fn doNothingSignalHandler(_: SignalHandler) callconv(.c) void {}",
+        },
+    });
+    try replaceInFile(b, stdlib_dir, "os/emscripten.zig", &.{
+        .{
+            .old = "    pub fn STOPSIG(s: u32) u32 {",
+            .new = "    pub fn STOPSIG(s: u32) SIG {",
+        },
+    });
+}
+
+const Replacement = struct {
+    old: []const u8,
+    new: []const u8,
+};
+
+fn replaceInFile(b: *std.Build, dir: std.Io.Dir, path: []const u8, replacements: []const Replacement) !void {
+    var contents = try dir.readFileAlloc(b.graph.io, path, b.allocator, .unlimited);
+    var changed = false;
+
+    for (replacements) |replacement| {
+        if (std.mem.indexOf(u8, contents, replacement.old) != null) {
+            contents = try std.mem.replaceOwned(u8, b.allocator, contents, replacement.old, replacement.new);
+            changed = true;
+        } else if (std.mem.indexOf(u8, contents, replacement.new) == null) {
+            std.log.err("Zig stdlib patch does not match '{s}'", .{path});
+            return error.ZigStdlibPatchDoesNotApply;
+        }
+    }
+
+    if (changed) {
+        try dir.writeFile(b.graph.io, .{ .sub_path = path, .data = contents });
+        std.log.info("patched Zig stdlib file '{s}'", .{path});
+    }
+}
+
+fn resolveWasmSdk(b: *std.Build) WasmSdk {
+    if (b.sysroot) |path| return .{
+        .include_dir = b.pathJoin(&.{ path, "include" }),
+        .cache_dir = null,
+        .prepare = null,
+    };
+
+    _ = b.findProgram(&.{"em-config"}, &.{}) catch
+        @panic("wasm32-emscripten requires an activated Emscripten installation (em-config was not found)");
+    const embuilder = b.findProgram(&.{"embuilder"}, &.{}) catch
+        @panic("wasm32-emscripten requires embuilder in PATH");
+    const cache = b.pathFromRoot(".zig-cache/emscripten");
+    const prepare = b.addSystemCommand(&.{ embuilder, "build", "sysroot" });
+    prepare.setEnvironmentVariable("EM_CACHE", cache);
+    return .{
+        .include_dir = b.pathJoin(&.{ cache, "sysroot", "include" }),
+        .cache_dir = cache,
+        .prepare = prepare,
+    };
+}
+
+fn addCFlags(
+    b: *std.Build,
+    compile: *std.Build.Step.Compile,
+    flags: []const []const u8,
+) void {
+    for (compile.root_module.link_objects.items) |link_object| switch (link_object) {
+        .c_source_file => |source| source.flags = appendStrings(b, source.flags, flags),
+        .c_source_files => |sources| sources.flags = appendStrings(b, sources.flags, flags),
+        .other_step => |dependency| addCFlags(b, dependency, flags),
+        else => {},
+    };
+}
+
+fn addWasmApp(
+    b: *std.Build,
+    app_module: *std.Build.Module,
+    optimize: std.builtin.OptimizeMode,
+    sdk: WasmSdk,
+) !void {
+    app_module.link_libc = true;
+    app_module.addIncludePath(b.path("third-party/SDL/include"));
+
+    const app_object = b.addLibrary(.{
+        .name = "neskwik-wasm",
+        .root_module = app_module,
+        .linkage = .static,
+    });
+
+    // Zig only compiles; emcc links the app and every archive it depends on
+    // and generates the JavaScript runtime.
+    const emcc = b.findProgram(&.{"emcc"}, &.{}) catch
+        @panic("wasm32-emscripten requires emcc in PATH");
+    const link = b.addSystemCommand(&.{emcc});
+    if (sdk.cache_dir) |cache| link.setEnvironmentVariable("EM_CACHE", cache);
+
+    var graph: WasmGraph = .{ .b = b, .sdk = sdk, .link = link };
+    try graph.visitCompile(app_object);
+
+    link.addArg("-o");
+    const js_output = link.addOutputFileArg("neskwik.js");
+    link.addArgs(&.{
+        switch (optimize) {
+            .Debug => "-O0",
+            .ReleaseSafe => "-O2",
+            .ReleaseFast => "-O3",
+            .ReleaseSmall => "-Oz",
+        },
+        if (optimize == .Debug) "-sASSERTIONS=1" else "-sASSERTIONS=0",
+        "-pthread",
+        // The emulation thread plus the shader presets compiling at once; see
+        // `compileJobs` in src/wasm/gles_backend.zig.
+        "-sPTHREAD_POOL_SIZE=8",
+        "-sALLOW_MEMORY_GROWTH=1",
+        "-sSTACK_SIZE=1048576",
+        "-sFORCE_FILESYSTEM=1",
+        "-sSUPPORT_LONGJMP=emscripten",
+        "-sDISABLE_EXCEPTION_CATCHING=0",
+        "-sENVIRONMENT=web",
+        "-sMAX_WEBGL_VERSION=2",
+        "-sDEFAULT_TO_CXX=1",
+        "-sEXPORTED_FUNCTIONS=['_main', '_neskwik_request_rom_load', '_neskwik_request_rom_unload', '_neskwik_shader_directory_imported']",
+        "-sEXPORTED_RUNTIME_METHODS=['ccall']",
+        "-lidbfs.js",
+        "--pre-js",
+    });
+    link.addFileArg(b.path("web/bridge.js"));
+    link.addArg("--js-library");
+    link.addFileArg(b.path("web/lib.js"));
+
+    const install_assets = b.addInstallDirectory(.{
+        .source_dir = js_output.dirname(),
+        .install_dir = .prefix,
+        .install_subdir = "web",
+        .include_extensions = &.{ ".js", ".wasm" },
+    });
+    const install_html = b.addInstallFileWithDir(b.path("web/index.html"), .prefix, "web/index.html");
+    const install_favicon = b.addInstallFileWithDir(b.path("resources/icons/nes-icon-64x64.png"), .prefix, "web/favicon.png");
+    b.getInstallStep().dependOn(&install_assets.step);
+    b.getInstallStep().dependOn(&install_html.step);
+    b.getInstallStep().dependOn(&install_favicon.step);
+
+    const run_step = b.step("run", "Serve the browser build with emrun");
+    const emrun = b.findProgram(&.{"emrun"}, &.{}) catch
+        @panic("zig build run for wasm32-emscripten requires emrun in PATH");
+    const serve = b.addSystemCommand(&.{ emrun, b.getInstallPath(.prefix, "web/index.html") });
+    serve.step.dependOn(b.getInstallStep());
+    run_step.dependOn(&serve.step);
+}
+
+/// Walks the module graph of the app to prepare every module and library for
+/// Emscripten: all of them compile against the sysroot headers (and so wait
+/// for embuilder to generate them), and every library is passed to emcc.
+const WasmGraph = struct {
+    b: *std.Build,
+    sdk: WasmSdk,
+    link: *std.Build.Step.Run,
+    visited_modules: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty,
+    visited_compiles: std.AutoHashMapUnmanaged(*std.Build.Step.Compile, void) = .empty,
+
+    fn visitCompile(self: *WasmGraph, compile: *std.Build.Step.Compile) std.mem.Allocator.Error!void {
+        if ((try self.visited_compiles.getOrPut(self.b.allocator, compile)).found_existing) return;
+        if (self.sdk.prepare) |prepare| compile.step.dependOn(&prepare.step);
+        self.link.addFileArg(compile.getEmittedBin());
+        try self.visitModule(compile.root_module);
+    }
+
+    fn visitModule(self: *WasmGraph, module: *std.Build.Module) std.mem.Allocator.Error!void {
+        if ((try self.visited_modules.getOrPut(self.b.allocator, module)).found_existing) return;
+        module.addSystemIncludePath(.{ .cwd_relative = self.sdk.include_dir });
+        for (module.link_objects.items) |link_object| switch (link_object) {
+            .other_step => |compile| try self.visitCompile(compile),
+            .static_path => |path| self.link.addFileArg(path),
+            else => {},
+        };
+        for (module.import_table.values()) |import| try self.visitModule(import);
+    }
+};
+
+fn appendStrings(
+    b: *std.Build,
+    existing: []const []const u8,
+    additions: []const []const u8,
+) []const []const u8 {
+    const result = b.allocator.alloc([]const u8, existing.len + additions.len) catch @panic("OOM");
+    @memcpy(result[0..existing.len], existing);
+    @memcpy(result[existing.len..], additions);
+    return result;
+}
+
 fn createNessModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     iroh_lib_dir: ?[]const u8,
+    wasm_sdk: ?WasmSdk,
 ) !NessDeps {
+    const wasm = isWasmTarget(target);
     const preferred_linkage: std.builtin.LinkMode = if (target.result.abi.isAndroid()) .dynamic else .static;
     const enable_pic: ?bool = if (target.result.abi.isAndroid()) true else null;
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .single_threaded = false,
     });
+    const feature_options = b.addOptions();
+    feature_options.addOption(bool, "wasm", wasm);
+    mod.addOptions("features", feature_options);
     addAndroidCImportMacros(b, target, mod);
 
-    const sdl_dep = b.dependency("sdl", .{
-        .target = target,
-        .optimize = optimize,
-        .preferred_linkage = preferred_linkage,
-    });
+    const sdl_dep = if (wasm_sdk) |sdk|
+        b.dependency("sdl", .{
+            .target = target,
+            .optimize = optimize,
+            .preferred_linkage = preferred_linkage,
+            .system_include_path = std.Build.LazyPath{ .cwd_relative = sdk.include_dir },
+            .emscripten_pthreads = false,
+        })
+    else
+        b.dependency("sdl", .{
+            .target = target,
+            .optimize = optimize,
+            .preferred_linkage = preferred_linkage,
+        });
     const sdl_lib = sdl_dep.artifact("SDL3");
     mod.linkLibrary(sdl_lib);
 
     const blip_buf_lib = b.addLibrary(
-        .{ .name = "blip_buf", .linkage = .static, .root_module = b.createModule(
-            .{
-                .target = target,
-                .optimize = optimize,
-                .pic = enable_pic,
-                .link_libc = true,
-            },
-        ) },
+        .{
+            .name = "blip_buf",
+            .linkage = .static,
+            .root_module = b.createModule(
+                .{
+                    .target = target,
+                    .optimize = optimize,
+                    .pic = enable_pic,
+                    .link_libc = true,
+                },
+            ),
+        },
     );
     blip_buf_lib.root_module.addCSourceFile(.{ .file = b.path("third-party/blip_buf-1.1.0/blip_buf.c") });
     mod.addIncludePath(b.path("third-party/blip_buf-1.1.0"));
@@ -282,21 +544,29 @@ fn createNessModule(
         @panic("font_raster module did not link its FreeType artifact");
     };
 
-    const glslang_dep = b.dependency("glslang", .{
+    const glslang_lib = b.dependency("glslang", .{
         .target = target,
         .optimize = optimize,
         .enable_pic = true,
-    });
-    const glslang_lib = glslang_dep.artifact("glslang");
+    }).artifact("glslang");
     mod.linkLibrary(glslang_lib);
 
-    const spirv_cross_dep = b.dependency("spirv_cross", .{
+    const spirv_cross_lib = b.dependency("spirv_cross", .{
         .target = target,
         .optimize = optimize,
         .pic = true,
-    });
-    const spirv_cross_lib = spirv_cross_dep.artifact("spirv-cross-c");
+    }).artifact("spirv-cross-c");
     mod.linkLibrary(spirv_cross_lib);
+
+    if (wasm) {
+        // These C archives bypass emcc's compile driver, so apply the
+        // transforms emcc would: FreeType's setjmp/longjmp calls, and the C++
+        // exceptions SPIRV-Cross reports unsupported shaders with (its C API
+        // turns them into error codes instead of aborting the program).
+        addCFlags(b, font_raster_lib, &.{ "-mllvm", "-enable-emscripten-sjlj" });
+        addCFlags(b, glslang_lib, &wasm_cxx_thread_flags);
+        addCFlags(b, spirv_cross_lib, &(wasm_cxx_thread_flags ++ [_][]const u8{ "-mllvm", "-enable-emscripten-cxx-exceptions" }));
+    }
 
     const zeit_dep = b.dependency("zeit", .{
         .target = target,
@@ -304,23 +574,31 @@ fn createNessModule(
     });
     mod.addImport("zeit", zeit_dep.module("zeit"));
 
-    const vk_headers = b.dependency("vulkan_headers", .{});
-    mod.addIncludePath(vk_headers.path("include"));
+    if (!wasm) {
+        const vk_headers = b.dependency("vulkan_headers", .{});
+        mod.addIncludePath(vk_headers.path("include"));
 
-    const iroh_dep = if (iroh_lib_dir) |lib_dir|
-        b.dependency("iroh", .{
-            .target = target,
-            .optimize = optimize,
-            .iroh_lib_dir = lib_dir,
-        })
-    else
-        b.dependency("iroh", .{
-            .target = target,
-            .optimize = optimize,
-        });
-    const iroh_mod = iroh_dep.module("iroh");
-    addAndroidCImportMacros(b, target, iroh_mod);
-    mod.addImport("iroh", iroh_mod);
+        const iroh_dep = if (iroh_lib_dir) |lib_dir|
+            b.dependency("iroh", .{
+                .target = target,
+                .optimize = optimize,
+                .iroh_lib_dir = lib_dir,
+            })
+        else
+            b.dependency("iroh", .{
+                .target = target,
+                .optimize = optimize,
+            });
+        const iroh_mod = iroh_dep.module("iroh");
+        addAndroidCImportMacros(b, target, iroh_mod);
+        mod.addImport("iroh", iroh_mod);
+        if (target.result.os.tag == .linux and !target.result.abi.isAndroid()) {
+            // Rust's static standard library uses the platform unwinder. Shader
+            // builds also pull this in through libc++, but netplay must not rely
+            // on that incidental dependency.
+            mod.linkSystemLibrary("unwind", .{});
+        }
+    }
 
     mod.addAnonymousImport("pixeloid_font", .{ .root_source_file = b.path("resources/fonts/PixeloidSans.ttf") });
     mod.addAnonymousImport("nes_controller_img", .{ .root_source_file = b.path("resources/images/nes-controller.png") });

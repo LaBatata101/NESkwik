@@ -2,6 +2,7 @@ const std = @import("std");
 const sdlError = @import("utils/sdl.zig").sdlError;
 const c = @import("root.zig").c;
 const paths = @import("utils/paths.zig");
+const features = @import("features");
 
 pub const THUMBNAIL_WIDTH: u32 = 256;
 pub const THUMBNAIL_HEIGHT: u32 = 224;
@@ -70,40 +71,65 @@ pub const GameHistory = struct {
         var hist_dir = std.Io.Dir.openDirAbsolute(self.io, hist_dir_path, .{ .iterate = true }) catch return;
         defer hist_dir.close(self.io);
 
-        var it = hist_dir.iterate();
-        while (try it.next(self.io)) |entry| {
-            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+        if (features.wasm) {
+            const path_z = try alloc.dupeZ(u8, hist_dir_path);
+            defer alloc.free(path_z);
 
-            const stem = entry.name[0 .. entry.name.len - ".json".len];
-            const json_bytes = hist_dir.readFileAlloc(self.io, entry.name, alloc, .limited(64 * 1024)) catch continue;
+            const dir = std.c.opendir(path_z.ptr) orelse @panic("Failed to open game history diretory!");
+            defer _ = std.c.closedir(dir);
 
-            const Meta = struct {
-                name: []const u8,
-                rom_path: []const u8,
-                play_time_secs: u64,
-                last_played: i64 = 0,
-            };
-            const parsed = std.json.parseFromSlice(Meta, alloc, json_bytes, .{}) catch continue;
+            while (std.c.readdir(dir)) |entry| {
+                const name = std.mem.sliceTo(&entry.name, 0);
+                if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..") or
+                    entry.type != c.DT_REG or !std.mem.endsWith(u8, name, ".json")) continue;
 
-            const thumbnail = blk: {
-                const png_path = try std.fs.path.join(
-                    alloc,
-                    &.{ hist_dir_path, try std.fmt.allocPrint(alloc, "{s}.png", .{stem}) },
-                );
-                if (loadThumbnailPng(self.alloc, png_path)) |png| break :blk png;
+                self.readEntry(&hist_dir, hist_dir_path, name) catch @panic("Failed to read game history entry!");
+            }
+        } else {
+            var it = hist_dir.iterate();
+            while (try it.next(self.io)) |entry| {
+                if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
 
-                break :blk try createPlaceholderThumbnail(self.alloc);
-            };
-
-            try self.entries.append(self.alloc, .{
-                .alloc = self.alloc,
-                .name = try self.alloc.dupe(u8, parsed.value.name),
-                .rom_path = try self.alloc.dupe(u8, parsed.value.rom_path),
-                .play_time_secs = parsed.value.play_time_secs,
-                .last_played = parsed.value.last_played,
-                .thumbnail = thumbnail,
-            });
+                self.readEntry(&hist_dir, hist_dir_path, entry.name) catch @panic("Failed to read game history entry!");
+            }
         }
+    }
+
+    fn readEntry(
+        self: *GameHistory,
+        hist_dir: *std.Io.Dir,
+        hist_dir_path: []const u8,
+        name: []const u8,
+    ) !void {
+        const stem = name[0 .. name.len - ".json".len];
+        const json_bytes = try hist_dir.readFileAlloc(self.io, name, self.alloc, .limited(64 * 1024));
+
+        const Meta = struct {
+            name: []const u8,
+            rom_path: []const u8,
+            play_time_secs: u64,
+            last_played: i64 = 0,
+        };
+        const parsed = try std.json.parseFromSlice(Meta, self.alloc, json_bytes, .{});
+
+        const thumbnail = blk: {
+            const png_path = try std.fs.path.join(
+                self.alloc,
+                &.{ hist_dir_path, try std.fmt.allocPrint(self.alloc, "{s}.png", .{stem}) },
+            );
+            if (loadThumbnailPng(self.alloc, png_path)) |png| break :blk png;
+
+            break :blk try createPlaceholderThumbnail(self.alloc);
+        };
+
+        try self.entries.append(self.alloc, .{
+            .alloc = self.alloc,
+            .name = try self.alloc.dupe(u8, parsed.value.name),
+            .rom_path = try self.alloc.dupe(u8, parsed.value.rom_path),
+            .play_time_secs = parsed.value.play_time_secs,
+            .last_played = parsed.value.last_played,
+            .thumbnail = thumbnail,
+        });
     }
 
     pub fn save(

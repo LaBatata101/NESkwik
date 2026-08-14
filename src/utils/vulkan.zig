@@ -35,7 +35,10 @@ fn detect_vulkan_version_impl() c_uint {
 }
 
 pub fn vk_to_glslang_version(vk_version: usize) c_uint {
-    return switch (c.VK_VERSION_MINOR(vk_version)) {
+    // Equivalent to VK_VERSION_MINOR, spelled out so this also builds for
+    // targets without the Vulkan headers (WebAssembly).
+    const minor = (vk_version >> 12) & 0x3FF;
+    return switch (minor) {
         1 => c.GLSLANG_TARGET_VULKAN_1_1,
         2 => c.GLSLANG_TARGET_VULKAN_1_2,
         3 => c.GLSLANG_TARGET_VULKAN_1_3,

@@ -17,6 +17,14 @@ pub const std_options: std.Options = .{
     .logFn = if (builtin.abi.isAndroid()) androidAndFileLogFn else logging.logFn,
 };
 
+/// std.debug defaults to page_allocator, whose multithreaded WASM backend is
+/// not implemented in Zig 0.16. Emscripten's libc allocator is thread-safe.
+pub const debug = if (ness.features.wasm) struct {
+    pub fn getDebugInfoAllocator() std.mem.Allocator {
+        return std.heap.c_allocator;
+    }
+} else struct {};
+
 pub const panic = std.debug.FullPanic(customPanic);
 
 // Handles window resizes on Windows.
@@ -45,7 +53,12 @@ fn androidAndFileLogFn(
 
 comptime {
     if (builtin.abi.isAndroid()) {
-        @export(&SDL_main, .{ .name = "SDL_main", .linkage = .strong });
+        @export(&SDL_main, .{ .name = "SDL_main" });
+    }
+    if (ness.features.wasm) {
+        @export(&ness.wasm.exportedLoadRom, .{ .name = "neskwik_request_rom_load" });
+        @export(&ness.wasm.exportedUnloadRom, .{ .name = "neskwik_request_rom_unload" });
+        @export(&ness.wasm.shaderDirectoryImported, .{ .name = "neskwik_shader_directory_imported" });
     }
 }
 
@@ -62,13 +75,20 @@ fn SDL_main() callconv(.c) void {
     };
 }
 
-pub fn main(init: std.process.Init) !void {
-    ness.env.init(init.environ_map);
+const Init = if (ness.features.wasm) std.process.Init.Minimal else std.process.Init;
+pub fn main(init: Init) !void {
+    const args = if (!ness.features.wasm) blk: {
+        ness.env.init(init.environ_map);
 
-    var args = try init.minimal.args.iterateAllocator(init.gpa);
-    defer args.deinit();
+        var args = try init.minimal.args.iterateAllocator(init.gpa);
+        defer args.deinit();
+        break :blk args;
+    } else null;
 
-    try appMain(init.gpa, init.io, &args);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+
+    try appMain(std.heap.c_allocator, threaded.io(), if (ness.features.wasm) null else @constCast(&args));
 }
 
 fn appMain(allocator: std.mem.Allocator, io: std.Io, cli_args: ?*std.process.Args.Iterator) !void {
@@ -78,53 +98,74 @@ fn appMain(allocator: std.mem.Allocator, io: std.Io, cli_args: ?*std.process.Arg
     defer logging.deinit(allocator);
 
     var ui = try UI.init(allocator, io, "NESkwik", 1280, 720);
-    defer ui.deinit();
-    var app_state = gui.AppState.init(allocator, io, ui);
-    defer app_state.deinit();
+    defer if (!ness.features.wasm) ui.deinit();
+    var app_state = try gui.AppState.init(allocator, io, ui);
+    defer if (!ness.features.wasm) app_state.deinit();
 
-    var live_resize_ctx = CallbackParams{ .ui = ui, .app_state = &app_state };
-    if (builtin.os.tag == .windows) sdlError(c.SDL_AddEventWatch(handleWindowsResize, &live_resize_ctx));
-    defer if (builtin.os.tag == .windows) c.SDL_RemoveEventWatch(handleWindowsResize, &live_resize_ctx);
+    if (ness.features.wasm) {
+        ness.wasm.wasm_app_state = app_state;
+    }
+
+    var cb_params = CallbackParams{ .ui = ui, .app_state = app_state };
+    if (builtin.os.tag == .windows) sdlError(c.SDL_AddEventWatch(handleWindowsResize, &cb_params));
+    defer if (builtin.os.tag == .windows) c.SDL_RemoveEventWatch(handleWindowsResize, &cb_params);
 
     ui.setVSync(app_state.settings.vsync);
-
-    if (cli_args) |args| {
-        _ = args.skip();
-        if (args.next()) |arg0| {
-            if (std.mem.eql(u8, arg0, "--debug")) {
-                app_state.toggleDebug();
-
-                if (args.next()) |arg1| {
-                    try app_state.loadRom(arg1);
-                } else {
-                    std.debug.print("ROM file path not provided\n", .{});
-                    std.process.exit(1);
-                }
-            } else {
-                try app_state.loadRom(arg0);
-            }
-            app_state.render_home_ui = false;
-        }
-    }
     ui.setFramerate(.unlimited);
 
-    // Load the "snow" shader to be displayed in the home screen
-    try ui.loadShaderPreset("snow", "builtin://border-shaders/snow.slangp");
-    var result = ui.pollShaderLoad("snow");
-    while (result != .done) {
-        result = ui.pollShaderLoad("snow");
+    if (ness.features.wasm) {
+        std.os.emscripten.emscripten_set_main_loop_arg(mainloop, @ptrCast(&cb_params), 0, 1);
+    } else {
+        if (cli_args) |args| {
+            _ = args.skip();
+            if (args.next()) |arg0| {
+                if (std.mem.eql(u8, arg0, "--debug")) {
+                    app_state.toggleDebug();
+
+                    if (args.next()) |arg1| {
+                        try app_state.loadRom(arg1);
+                    } else {
+                        std.debug.print("ROM file path not provided\n", .{});
+                        std.process.exit(1);
+                    }
+                } else {
+                    try app_state.loadRom(arg0);
+                }
+                app_state.render_home_ui = false;
+            }
+        }
+
+        while (!ui.shouldClose()) {
+            app_state.update();
+
+            ui.beginFrame();
+            gui.drawGUI(ui, app_state);
+            ui.endFrame();
+        }
+    }
+}
+
+fn mainloop(args: ?*anyopaque) callconv(.c) void {
+    const params: *CallbackParams = @ptrCast(@alignCast(args));
+
+    if (params.ui.shouldClose()) {
+        ness.wasm.requestShutdown();
     }
 
-    ui.setShaderParam("snow", "A", 0.0);
-    ui.setShaderParam("snow", "LAYERS", 10.0);
-    ui.setShaderParam("snow", "SPEED", 0.005);
-    ui.setShaderParam("snow", "FALL_DIRECTION", 0.0);
-
-    while (!ui.shouldClose()) {
-        app_state.update();
-
-        ui.beginFrame();
-        gui.drawGUI(ui, &app_state);
-        ui.endFrame();
+    const shutdown_ready = ness.wasm.poll();
+    if (ness.wasm.isShutdownRequested()) {
+        if (shutdown_ready) {
+            ness.wasm.wasm_app_state = null;
+            std.os.emscripten.emscripten_cancel_main_loop();
+            params.app_state.deinit();
+            params.ui.deinit();
+        }
+        return;
     }
+
+    params.app_state.update();
+
+    params.ui.beginFrame();
+    gui.drawGUI(params.ui, params.app_state);
+    params.ui.endFrame();
 }

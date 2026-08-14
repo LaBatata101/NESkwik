@@ -210,7 +210,12 @@ pub const ShaderPass = struct {
     }
 };
 
-pub const LutEntry = struct { path: []const u8 = "", linear: bool = false };
+pub const LutEntry = struct {
+    path: []const u8 = "",
+    linear: bool = false,
+    wrap_mode: WrapMode = .clamp_to_edge,
+    mipmap: bool = false,
+};
 pub const Luts = std.StringHashMap(LutEntry);
 
 pub const ShaderConfig = struct {
@@ -315,10 +320,16 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
                     }
                 } else if (std.mem.endsWith(u8, field, "_wrap_mode")) {
                     const base = field[0 .. field.len - "_wrap_mode".len];
-                    if (textures.contains(base)) continue;
+                    if (textures.getEntry(base)) |entry| {
+                        entry.value_ptr.*.wrap_mode = WrapMode.fromSlice(value_tok.value);
+                        continue;
+                    }
                 } else if (std.mem.endsWith(u8, field, "_mipmap")) {
                     const base = field[0 .. field.len - "_mipmap".len];
-                    if (textures.contains(base)) continue;
+                    if (textures.getEntry(base)) |entry| {
+                        entry.value_ptr.*.mipmap = std.mem.eql(u8, value_tok.value, "true");
+                        continue;
+                    }
                 }
 
                 if (is_shader_param(field)) {
@@ -565,8 +576,8 @@ test "parse_slangp_with_textures" {
         \\BACKGROUND_linear = true
         \\SamplerLUT1 = shaders/guest/advanced/lut/trinitron-lut.png
         \\SamplerLUT1_linear = true
-        \\SamplerLUT1_wrap_mode = clamp_to_edge
-        \\SamplerLUT1_mipmap = false
+        \\SamplerLUT1_wrap_mode = repeat
+        \\SamplerLUT1_mipmap = true
     ;
     var shader_config = try parse_slangp(alloc, source);
     defer shader_config.deinit(alloc);
@@ -584,4 +595,7 @@ test "parse_slangp_with_textures" {
         try std.testing.expect(std.mem.eql(u8, value.?.path, entry[1]));
         try std.testing.expectEqual(entry[2], value.?.linear);
     }
+    const sampler_lut = shader_config.textures.get("SamplerLUT1").?;
+    try std.testing.expectEqual(WrapMode.repeat, sampler_lut.wrap_mode);
+    try std.testing.expect(sampler_lut.mipmap);
 }

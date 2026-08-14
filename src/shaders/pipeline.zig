@@ -2,123 +2,29 @@
 ///
 /// Supports multi-pass `.slangp` preset files with full SPIR-V compilation,
 /// shader reflection, feedback loops, LUT textures, and frame history.
+///
+/// Everything here is independent of the graphics API: `Pipeline` is
+/// instantiated with a backend that creates and binds the GPU objects
+/// (`sdl_gpu_backend.zig` natively, `wasm/gles_backend.zig` for WebGL 2).
 const std = @import("std");
 const builtin = @import("builtin");
+const features = @import("features");
 
 const c = @import("../root.zig").c;
 const builtin_shaders = @import("builtin.zig");
 const slangp = @import("slangp.zig");
 const parser = @import("parser.zig");
 const ShaderCache = @import("cache.zig").ShaderCache;
-const SpirvPair = @import("cache.zig").SpirvPair;
+pub const SpirvPair = @import("cache.zig").SpirvPair;
 const ThreadPool = @import("../utils/pool.zig");
-const sdlError = @import("../utils/sdl.zig").sdlError;
 const vulkan = @import("../utils/vulkan.zig");
 
-const Vertex = struct {
-    x: f32,
-    y: f32,
-    z: f32,
-    u: f32,
-    v: f32,
-};
-
-// Full-screen quad vertices (NDC space, UV flipped vertically for Vulkan).
-const QUAD_VERTICES = [_]Vertex{
-    .{ .x = -1, .y = -1, .z = 0, .u = 0, .v = 1 }, .{ .x = 1, .y = -1, .z = 0, .u = 1, .v = 1 },
-    .{ .x = 1, .y = 1, .z = 0, .u = 1, .v = 0 },   .{ .x = -1, .y = -1, .z = 0, .u = 0, .v = 1 },
-    .{ .x = 1, .y = 1, .z = 0, .u = 1, .v = 0 },   .{ .x = -1, .y = 1, .z = 0, .u = 0, .v = 0 },
-};
+pub const ShaderPipeline = Pipeline(if (features.wasm)
+    @import("../wasm/gles_backend.zig").Backend
+else
+    @import("sdl_gpu_backend.zig").Backend);
 
 pub const Viewport = struct { x: i32, y: i32, w: u32, h: u32 };
-
-pub fn calculateLetterboxViewport(win_w: u32, win_h: u32, desired_aspect: f32) Viewport {
-    const device_aspect = @as(f32, @floatFromInt(win_w)) / @as(f32, @floatFromInt(win_h));
-
-    var x: i32 = 0;
-    var y: i32 = 0;
-    var viewport_w: u32 = win_w;
-    var viewport_h: u32 = win_h;
-
-    if (@abs(device_aspect - desired_aspect) >= 0.0001) {
-        if (device_aspect > desired_aspect) {
-            const delta = (desired_aspect / device_aspect - 1.0) / 2.0 + 0.5;
-            x = @intFromFloat(@round(@as(f32, @floatFromInt(win_w)) * (0.5 - delta)));
-            viewport_w = @intFromFloat(@round(2.0 * @as(f32, @floatFromInt(win_w)) * delta));
-        } else {
-            const delta = (device_aspect / desired_aspect - 1.0) / 2.0 + 0.5;
-            y = @intFromFloat(@round(@as(f32, @floatFromInt(win_h)) * (0.5 - delta)));
-            viewport_h = @intFromFloat(@round(2.0 * @as(f32, @floatFromInt(win_h)) * delta));
-        }
-    }
-
-    return .{ .x = x, .y = y, .w = viewport_w, .h = viewport_h };
-}
-
-pub const Texture = struct {
-    alloc: std.mem.Allocator,
-    ptr: ?*c.SDL_GPUTexture = null,
-    width: u32 = 0,
-    height: u32 = 0,
-    format: c.SDL_GPUTextureFormat = c.SDL_GPU_TEXTUREFORMAT_INVALID,
-    num_levels: u32 = 1,
-    refcount: u32 = 0,
-
-    pub fn init(
-        alloc: std.mem.Allocator,
-        ptr: ?*c.SDL_GPUTexture,
-        w: u32,
-        h: u32,
-        format: c.SDL_GPUTextureFormat,
-        num_levels: u32,
-    ) !*Texture {
-        const obj = try alloc.create(Texture);
-        obj.* = .{
-            .alloc = alloc,
-            .ptr = ptr,
-            .width = w,
-            .height = h,
-            .format = format,
-            .num_levels = num_levels,
-            .refcount = 1,
-        };
-        return obj;
-    }
-
-    pub fn matches(self: *const Texture, w: u32, h: u32, format: c.SDL_GPUTextureFormat, num_levels: u32) bool {
-        return self.ptr != null and
-            self.width == w and
-            self.height == h and
-            self.format == format and
-            self.num_levels == num_levels;
-    }
-
-    pub fn release(self: *Texture, device: ?*c.SDL_GPUDevice) void {
-        if (self.refcount > 0) self.refcount -= 1;
-        if (self.refcount == 0) {
-            if (self.ptr != null) {
-                c.SDL_ReleaseGPUTexture(device, self.ptr);
-                self.ptr = null;
-            }
-            self.alloc.destroy(self);
-        }
-    }
-
-    pub fn ref(self: *Texture) *Texture {
-        self.refcount += 1;
-        return self;
-    }
-
-    /// Returns `[width, height, 1/width, 1/height]` as expected by RetroArch uniforms.
-    pub fn sizeVec4(self: Texture) [4]f32 {
-        return [_]f32{
-            @floatFromInt(self.width),
-            @floatFromInt(self.height),
-            1.0 / @as(f32, @floatFromInt(self.width)),
-            1.0 / @as(f32, @floatFromInt(self.height)),
-        };
-    }
-};
 
 const BuiltinUniforms = struct {
     MVP: [16]f32 = .{
@@ -221,10 +127,10 @@ const DescriptorSetInfo = struct {
     }
 };
 
-const ShaderReflection = struct {
-    descriptor_sets: std.ArrayList(DescriptorSetInfo),
+pub const ShaderReflection = struct {
+    descriptor_sets: std.ArrayList(DescriptorSetInfo) = .empty,
 
-    fn deinit(self: *ShaderReflection, alloc: std.mem.Allocator) void {
+    pub fn deinit(self: *ShaderReflection, alloc: std.mem.Allocator) void {
         for (self.descriptor_sets.items) |*set| {
             set.deinit(alloc);
         }
@@ -232,84 +138,6 @@ const ShaderReflection = struct {
     }
 };
 
-/// Look-up texture
-const Lut = struct {
-    texture: *Texture,
-    sampler: ?*c.SDL_GPUSampler,
-};
-
-/// Per-pass GPU state
-const ShaderPass = struct {
-    /// Set to true only after the pass is fully initialized by a worker.
-    /// Guards against calling deinit on uninitialized passes.
-    initialized: bool = false,
-    id: usize,
-    pipeline: ?*c.SDL_GPUGraphicsPipeline,
-    sampler: ?*c.SDL_GPUSampler,
-    output_texture: ?*Texture,
-    fb_feedback: ?*Texture,
-    scale_params: struct {
-        scale_type: ?slangp.ScaleType = null,
-        scale_type_x: ?slangp.ScaleType = null,
-        scale_type_y: ?slangp.ScaleType = null,
-        scale: ?f32 = null,
-        scale_x: ?f32 = null,
-        scale_y: ?f32 = null,
-    },
-    wrap_mode: c.SDL_GPUSamplerAddressMode,
-    mipmap_input: bool,
-    float_framebuffer: bool,
-    srgb_framebuffer: bool,
-    frame_count_mod: ?u32,
-    alias: ?[]const u8, // owned
-    feedback_alias: ?[]const u8, // owned
-    texture_format: c.SDL_GPUTextureFormat,
-    filter: c.SDL_GPUFilter,
-    vertex_reflection: ShaderReflection,
-    fragment_reflection: ShaderReflection,
-
-    fn deinit(self: *ShaderPass, alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
-        if (!self.initialized) return;
-        c.SDL_ReleaseGPUGraphicsPipeline(device, self.pipeline);
-        c.SDL_ReleaseGPUSampler(device, self.sampler);
-        if (self.output_texture) |t| t.release(device);
-        if (self.fb_feedback) |t| t.release(device);
-        if (self.alias) |a| alloc.free(a);
-        if (self.feedback_alias) |a| alloc.free(a);
-        self.vertex_reflection.deinit(alloc);
-        self.fragment_reflection.deinit(alloc);
-    }
-
-    fn calculateOutputSize(
-        self: *const ShaderPass,
-        input_w: u32,
-        input_h: u32,
-        viewport_w: u32,
-        viewport_h: u32,
-    ) struct { w: u32, h: u32 } {
-        const scale_type_x = self.scale_params.scale_type_x orelse
-            self.scale_params.scale_type orelse .source;
-        const sx = self.scale_params.scale_x orelse self.scale_params.scale orelse 1.0;
-        const out_w: u32 = switch (scale_type_x) {
-            .source => @intFromFloat(@as(f32, @floatFromInt(input_w)) * sx),
-            .viewport => @intFromFloat(@as(f32, @floatFromInt(viewport_w)) * sx),
-            .absolute => @intFromFloat(sx),
-        };
-
-        const scale_type_y = self.scale_params.scale_type_y orelse
-            self.scale_params.scale_type orelse .source;
-        const sy = self.scale_params.scale_y orelse self.scale_params.scale orelse 1.0;
-        const out_h: u32 = switch (scale_type_y) {
-            .source => @intFromFloat(@as(f32, @floatFromInt(input_h)) * sy),
-            .viewport => @intFromFloat(@as(f32, @floatFromInt(viewport_h)) * sy),
-            .absolute => @intFromFloat(sy),
-        };
-
-        return .{ .w = out_w, .h = out_h };
-    }
-};
-
-/// Public metadata for a single shader parameter, used by the UI.
 pub const ParamInfo = struct {
     /// Key used to read/write the value (points into pass reflection data).
     name: []const u8,
@@ -319,54 +147,6 @@ pub const ParamInfo = struct {
     max: f32,
     step: ?f32,
 };
-
-const LoadedPreset = struct {
-    passes: []ShaderPass,
-    /// Parameter name -> bytes of the f32 value.
-    param_data: std.StringHashMap([]u8),
-    /// Ordered list of parameter metadata for UI display.
-    param_meta: std.ArrayList(ParamInfo) = .empty,
-    luts: std.StringHashMap(Lut),
-
-    fn deinit(self: *LoadedPreset, alloc: std.mem.Allocator, device: ?*c.SDL_GPUDevice) void {
-        for (self.passes) |*pass| {
-            pass.deinit(alloc, device);
-        }
-        alloc.free(self.passes);
-
-        var pd_it = self.param_data.iterator();
-        while (pd_it.next()) |entry| {
-            alloc.free(entry.value_ptr.*);
-        }
-        self.param_data.deinit();
-
-        for (self.param_meta.items) |info| alloc.free(info.display_name);
-        self.param_meta.deinit(alloc);
-
-        var lut_it = self.luts.iterator();
-        while (lut_it.next()) |entry| {
-            alloc.free(entry.key_ptr.*);
-            entry.value_ptr.texture.release(device);
-            if (entry.value_ptr.sampler) |s| c.SDL_ReleaseGPUSampler(device, s);
-        }
-        self.luts.deinit();
-    }
-};
-
-fn parseTextureFormat(fmt: []const u8) c.SDL_GPUTextureFormat {
-    if (std.mem.eql(u8, fmt, "R8_UNORM")) return c.SDL_GPU_TEXTUREFORMAT_R8_UNORM;
-    if (std.mem.eql(u8, fmt, "R8G8B8A8_UNORM")) return c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    if (std.mem.eql(u8, fmt, "R8G8B8A8_SRGB")) return c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB;
-    if (std.mem.eql(u8, fmt, "R16_SFLOAT")) return c.SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    if (std.mem.eql(u8, fmt, "R16G16_SFLOAT")) return c.SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
-    if (std.mem.eql(u8, fmt, "R16G16B16A16_SFLOAT")) return c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-    if (std.mem.eql(u8, fmt, "R32_SFLOAT")) return c.SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-    if (std.mem.eql(u8, fmt, "R32G32_SFLOAT")) return c.SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT;
-    if (std.mem.eql(u8, fmt, "R32G32B32A32_SFLOAT")) return c.SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
-    if (std.mem.eql(u8, fmt, "A2B10G10R10_UNORM_PACK32")) return c.SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM;
-    std.log.warn("Unknown texture format '{s}', defaulting to R8G8B8A8_UNORM", .{fmt});
-    return c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-}
 
 fn spvcError(result: c.spvc_result) void {
     switch (result) {
@@ -624,7 +404,7 @@ fn classifySamplerName(name: []const u8) SamplerType {
 }
 
 fn reflectShaderInfo(alloc: std.mem.Allocator, spirv: []const u8) !ShaderReflection {
-    var reflection = ShaderReflection{ .descriptor_sets = .empty };
+    var reflection: ShaderReflection = .{};
     errdefer reflection.deinit(alloc);
 
     var context: c.spvc_context = undefined;
@@ -656,51 +436,6 @@ fn reflectShaderInfo(alloc: std.mem.Allocator, spirv: []const u8) !ShaderReflect
 
     return reflection;
 }
-
-fn countBindings(reflection: *const ShaderReflection) struct { samplers: u32, ubos: u32 } {
-    var samplers: u32 = 0;
-    var ubos: u32 = 0;
-    for (reflection.descriptor_sets.items) |set| {
-        for (set.bindings.items) |binding| {
-            switch (binding.binding_type) {
-                .UBO, .push_params => ubos += 1,
-                .sampler2D => samplers += 1,
-            }
-        }
-    }
-    return .{ .samplers = samplers, .ubos = ubos };
-}
-
-fn createGPUShader(
-    device: ?*c.SDL_GPUDevice,
-    spirv: []const u8,
-    stage: c.SDL_GPUShaderStage,
-    reflection: *const ShaderReflection,
-) ?*c.SDL_GPUShader {
-    const counts = countBindings(reflection);
-    return sdlError(c.SDL_CreateGPUShader(device, &.{
-        .code_size = spirv.len,
-        .code = spirv.ptr,
-        .entrypoint = "main",
-        .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
-        .stage = stage,
-        .num_samplers = counts.samplers,
-        .num_uniform_buffers = counts.ubos,
-        .num_storage_buffers = 0,
-        .num_storage_textures = 0,
-    }));
-}
-
-const CompilePassResult = struct {
-    pipeline: ?*c.SDL_GPUGraphicsPipeline,
-    params: []Param, // caller owns
-    alias: ?[]const u8, // caller owns
-    texture_format: c.SDL_GPUTextureFormat,
-    reflection: struct {
-        vertex: ShaderReflection,
-        fragment: ShaderReflection,
-    },
-};
 
 const Param = struct {
     name: []const u8, // borrowed from reflection (not owned here)
@@ -741,258 +476,6 @@ fn getOrCompileSpirv(
     return .{ .vert = vert, .frag = frag };
 }
 
-fn compileAndCreatePipeline(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    device: ?*c.SDL_GPUDevice,
-    vk_version: c_uint,
-    path: []const u8,
-    pass_id: usize,
-    texture_format: c.SDL_GPUTextureFormat,
-    shader_cache: *ShaderCache,
-) !CompilePassResult {
-    const embedded_source = builtin_shaders.sourceForPath(path);
-    const raw_source = if (embedded_source) |source| source else blk: {
-        break :blk try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
-    };
-    defer if (embedded_source == null) alloc.free(raw_source);
-
-    var shader = try parser.parseShader(alloc, io, std.fs.path.dirname(path).?, raw_source);
-    defer shader.deinit(alloc);
-
-    const spirv = try getOrCompileSpirv(alloc, vk_version, &shader, shader_cache, path, pass_id);
-    defer spirv.deinit(alloc);
-
-    const vert_reflection = try reflectShaderInfo(alloc, spirv.vert);
-    const frag_reflection = try reflectShaderInfo(alloc, spirv.frag);
-
-    // Collect shader parameters defined via `#pragma parameter`
-    var params = std.ArrayList(Param).empty;
-    if (shader.config) |config| {
-        for (vert_reflection.descriptor_sets.items) |set_info| {
-            for (set_info.bindings.items) |binding| {
-                switch (binding.binding_type) {
-                    .push_params, .UBO => |layout| {
-                        for (layout.members.items) |member| {
-                            if (member.field_type == .Other) {
-                                const pname = member.field_type.Other;
-                                const field = config.getPtr(pname) orelse blk: {
-                                    std.log.warn("UBO field '{s}' has no #pragma parameter, defaulting to 0", .{pname});
-                                    break :blk &parser.ShaderParam{ .option_name = pname };
-                                };
-                                try params.append(alloc, .{
-                                    .name = pname,
-                                    .display_name = try alloc.dupe(u8, field.option_name),
-                                    .value = field.initial,
-                                    .min = field.min,
-                                    .max = field.max,
-                                    .step = field.step,
-                                });
-                            }
-                        }
-                    },
-                    .sampler2D => {},
-                }
-            }
-        }
-    }
-
-    const vert_shader = createGPUShader(device, spirv.vert, c.SDL_GPU_SHADERSTAGE_VERTEX, &vert_reflection);
-    const frag_shader = createGPUShader(device, spirv.frag, c.SDL_GPU_SHADERSTAGE_FRAGMENT, &frag_reflection);
-    defer {
-        c.SDL_ReleaseGPUShader(device, vert_shader);
-        c.SDL_ReleaseGPUShader(device, frag_shader);
-    }
-
-    const format = if (shader.texture_format) |fmt_name|
-        parseTextureFormat(fmt_name)
-    else
-        texture_format;
-
-    const color_desc = c.SDL_GPUColorTargetDescription{
-        .format = format,
-        .blend_state = .{ .enable_blend = false },
-    };
-    const vertex_attrs = [_]c.SDL_GPUVertexAttribute{
-        .{ .location = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, .offset = 0 },
-        .{ .location = 1, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = 12 },
-    };
-    const vb_desc = c.SDL_GPUVertexBufferDescription{
-        .slot = 0,
-        .pitch = @sizeOf(Vertex),
-        .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX,
-    };
-    const pipeline = sdlError(c.SDL_CreateGPUGraphicsPipeline(device, &.{
-        .vertex_shader = vert_shader,
-        .fragment_shader = frag_shader,
-        .vertex_input_state = .{
-            .vertex_buffer_descriptions = &vb_desc,
-            .num_vertex_buffers = 1,
-            .vertex_attributes = &vertex_attrs,
-            .num_vertex_attributes = vertex_attrs.len,
-        },
-        .primitive_type = c.SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
-        .target_info = .{ .color_target_descriptions = &color_desc, .num_color_targets = 1 },
-    }));
-
-    const alias: ?[]u8 = if (shader.alias) |a| try alloc.dupe(u8, a) else null;
-
-    return .{
-        .pipeline = pipeline,
-        .params = try params.toOwnedSlice(alloc),
-        .alias = alias,
-        .texture_format = format,
-        .reflection = .{
-            .fragment = frag_reflection,
-            .vertex = vert_reflection,
-        },
-    };
-}
-
-const WorkerArgs = struct {
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    preset: *LoadedPreset,
-    shader_dir: []const u8,
-    pass: *slangp.ShaderPass,
-    device: ?*c.SDL_GPUDevice,
-    vk_version: c_uint,
-    swapchain_format: c.SDL_GPUTextureFormat,
-    initial_values: *const std.StringHashMap(slangp.TypeUnion),
-    mutex: *std.Io.Mutex,
-    had_error: *bool,
-    compile_progress: *std.atomic.Value(u32),
-    shader_cache: *ShaderCache,
-};
-
-fn compilePassWorker(args: WorkerArgs) void {
-    compilePassWorkerInner(args) catch |err| {
-        std.log.err("Failed to compile shader pass {}: {s}", .{ args.pass.id, @errorName(err) });
-        args.mutex.lockUncancelable(args.io);
-        args.had_error.* = true;
-        args.mutex.unlock(args.io);
-    };
-}
-
-fn compilePassWorkerInner(args: WorkerArgs) !void {
-    const pass_path = if (std.mem.eql(u8, args.shader_dir, builtin_shaders.border_shader_dir))
-        try builtin_shaders.joinBorderShaderPath(args.alloc, args.pass.path)
-    else
-        try std.fs.path.resolve(args.alloc, &.{ args.shader_dir, args.pass.path });
-    defer args.alloc.free(pass_path);
-
-    const target_format: c.SDL_GPUTextureFormat = if (args.pass.params.float_framebuffer orelse false)
-        c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
-    else if (args.pass.params.srgb_framebuffer orelse false)
-        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
-    else
-        args.swapchain_format;
-
-    const result = try compileAndCreatePipeline(
-        args.alloc,
-        args.io,
-        args.device,
-        args.vk_version,
-        pass_path,
-        args.pass.id,
-        target_format,
-        args.shader_cache,
-    );
-    defer args.alloc.free(result.params);
-
-    const wrap_mode: c_uint = if (args.pass.params.wrap_mode) |wm| switch (wm) {
-        .clamp_to_border => c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .clamp_to_edge => c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .repeat => c.SDL_GPU_SAMPLERADDRESSMODE_REPEAT,
-        .mirrored_repeat => c.SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT,
-    } else c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-
-    const filter: c.SDL_GPUFilter = if (args.pass.params.filter_linear orelse false)
-        c.SDL_GPU_FILTER_LINEAR
-    else
-        c.SDL_GPU_FILTER_NEAREST;
-
-    const sampler = sdlError(c.SDL_CreateGPUSampler(args.device, &.{
-        .min_filter = filter,
-        .mag_filter = filter,
-        .mipmap_mode = if (args.pass.params.mipmap_input orelse false)
-            c.SDL_GPU_SAMPLERMIPMAPMODE_LINEAR
-        else
-            c.SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
-        .address_mode_u = wrap_mode,
-        .address_mode_v = wrap_mode,
-        .address_mode_w = wrap_mode,
-    }));
-
-    const alias = result.alias orelse if (args.pass.params.alias) |a|
-        try args.alloc.dupe(u8, a)
-    else
-        null;
-    const feedback_alias = if (alias) |a|
-        try std.fmt.allocPrint(args.alloc, "{s}Feedback", .{a})
-    else
-        null;
-
-    args.mutex.lockUncancelable(args.io);
-    defer args.mutex.unlock(args.io);
-
-    for (result.params) |param| {
-        const bytes = if (args.initial_values.get(param.name)) |initial|
-            try args.alloc.dupe(u8, initial.bytes())
-        else
-            try args.alloc.dupe(u8, std.mem.asBytes(&param.value));
-
-        if (try args.preset.param_data.fetchPut(param.name, bytes)) |old| {
-            // Parameter was already registered by another pass — just update
-            // the value bytes and discard the duplicate display_name.
-            args.alloc.free(old.value);
-            args.alloc.free(param.display_name);
-        } else {
-            // First time we see this parameter — record its full metadata.
-            try args.preset.param_meta.append(args.alloc, .{
-                .name = param.name,
-                .display_name = param.display_name, // ownership transferred
-                .min = param.min,
-                .max = param.max,
-                .step = param.step,
-            });
-        }
-    }
-
-    args.preset.passes[args.pass.id] = .{
-        .initialized = true,
-        .id = args.pass.id,
-        .pipeline = result.pipeline,
-        .sampler = sampler,
-        .output_texture = null,
-        .fb_feedback = null,
-        .vertex_reflection = result.reflection.vertex,
-        .fragment_reflection = result.reflection.fragment,
-        .scale_params = .{
-            .scale_type = args.pass.params.scale_type,
-            .scale_type_x = args.pass.params.scale_type_x,
-            .scale_type_y = args.pass.params.scale_type_y,
-            .scale = args.pass.params.scale,
-            .scale_x = args.pass.params.scale_x,
-            .scale_y = args.pass.params.scale_y,
-        },
-        .wrap_mode = wrap_mode,
-        .mipmap_input = args.pass.params.mipmap_input orelse false,
-        .float_framebuffer = args.pass.params.float_framebuffer orelse false,
-        .srgb_framebuffer = args.pass.params.srgb_framebuffer orelse false,
-        .frame_count_mod = args.pass.params.frame_count_mod,
-        .alias = alias,
-        .feedback_alias = feedback_alias,
-        .texture_format = result.texture_format,
-        .filter = filter,
-    };
-    _ = args.compile_progress.fetchAdd(1, .monotonic);
-}
-
-/// Holds a parsed `.slangp` preset file before GPU compilation begins.
-/// `content` must outlive `shader_config` because `ShaderPass.path` values
-/// are slices into `content` (not separately allocated).
-/// `dir` is an owned copy of the preset's containing directory path.
 const ParsedPreset = struct {
     content: []u8,
     shader_config: slangp.ShaderConfig,
@@ -1039,371 +522,149 @@ fn parsePresetFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !Pars
     return .{ .content = content, .shader_config = shader_config, .dir = dir };
 }
 
-/// Load LUT textures and compile all shader passes from an already-parsed preset.
-fn compilePreset(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    parsed: *ParsedPreset,
-    vk_version: c_uint,
-    device: ?*c.SDL_GPUDevice,
-    swapchain_format: c.SDL_GPUTextureFormat,
-    progress: *std.atomic.Value(u32),
-    shader_cache: *ShaderCache,
-) !LoadedPreset {
-    const dir = parsed.dir;
-    const shader_config = &parsed.shader_config;
 
-    // Load LUT textures
-    var luts: std.StringHashMap(Lut) = .init(alloc);
-    errdefer {
-        var it = luts.iterator();
-        while (it.next()) |entry| {
-            alloc.free(entry.key_ptr.*);
-            entry.value_ptr.texture.release(device);
-            if (entry.value_ptr.sampler) |s| c.SDL_ReleaseGPUSampler(device, s);
+/// Format of a render target or texture. `default` is the backend's
+/// presentation format (the swapchain format on SDL GPU, RGBA8 on GLES).
+pub const TextureFormat = enum {
+    default,
+    r8_unorm,
+    rgba8_unorm,
+    rgba8_srgb,
+    r16_float,
+    rg16_float,
+    rgba16_float,
+    r32_float,
+    rg32_float,
+    rgba32_float,
+    rgb10a2_unorm,
+
+    fn parse(name: []const u8) TextureFormat {
+        const names = [_]struct { []const u8, TextureFormat }{
+            .{ "R8_UNORM", .r8_unorm },
+            .{ "R8G8B8A8_UNORM", .rgba8_unorm },
+            .{ "R8G8B8A8_SRGB", .rgba8_srgb },
+            .{ "R16_SFLOAT", .r16_float },
+            .{ "R16G16_SFLOAT", .rg16_float },
+            .{ "R16G16B16A16_SFLOAT", .rgba16_float },
+            .{ "R32_SFLOAT", .r32_float },
+            .{ "R32G32_SFLOAT", .rg32_float },
+            .{ "R32G32B32A32_SFLOAT", .rgba32_float },
+            .{ "A2B10G10R10_UNORM_PACK32", .rgb10a2_unorm },
+        };
+        for (names) |entry| {
+            if (std.mem.eql(u8, name, entry[0])) return entry[1];
         }
-        luts.deinit();
+        std.log.warn("Unknown texture format '{s}', defaulting to R8G8B8A8_UNORM", .{name});
+        return .rgba8_unorm;
+    }
+};
+
+/// How a pass samples its inputs.
+pub const SamplerDesc = struct {
+    linear: bool = false,
+    wrap_mode: slangp.WrapMode = .clamp_to_edge,
+    /// The pass reads its input with mipmapping (`mipmap_input`).
+    mipmaps: bool = false,
+};
+
+const ScaleParams = struct {
+    scale_type: ?slangp.ScaleType = null,
+    scale_type_x: ?slangp.ScaleType = null,
+    scale_type_y: ?slangp.ScaleType = null,
+    scale: ?f32 = null,
+    scale_x: ?f32 = null,
+    scale_y: ?f32 = null,
+
+    fn outputSize(self: ScaleParams, input_w: u32, input_h: u32, viewport_w: u32, viewport_h: u32) struct { w: u32, h: u32 } {
+        const out_w = scaleAxis(self.scale_type_x orelse self.scale_type, self.scale_x orelse self.scale, input_w, viewport_w);
+        const out_h = scaleAxis(self.scale_type_y orelse self.scale_type, self.scale_y orelse self.scale, input_h, viewport_h);
+        // Zero-sized targets cannot be created, e.g. while a window is collapsed.
+        return .{ .w = @max(1, out_w), .h = @max(1, out_h) };
     }
 
-    var tex_it = shader_config.textures.iterator();
-    while (tex_it.next()) |entry| {
-        const tex_path = try std.fs.path.resolve(alloc, &.{ dir, entry.value_ptr.path });
-        defer alloc.free(tex_path);
-        std.log.info("Loading LUT '{s}': {s}", .{ entry.key_ptr.*, tex_path });
+    fn scaleAxis(scale_type: ?slangp.ScaleType, scale: ?f32, input: u32, viewport: u32) u32 {
+        const factor = scale orelse 1.0;
+        return switch (scale_type orelse .source) {
+            .source => @intFromFloat(@as(f32, @floatFromInt(input)) * factor),
+            .viewport => @intFromFloat(@as(f32, @floatFromInt(viewport)) * factor),
+            .absolute => @intFromFloat(factor),
+        };
+    }
+};
 
-        const tex_path_z = try alloc.dupeZ(u8, tex_path);
-        defer alloc.free(tex_path_z);
+/// RGBA8 pixels of a decoded look-up texture.
+const LutImage = struct {
+    pixels: []u8,
+    width: u32,
+    height: u32,
+};
 
-        var surface = c.SDL_LoadPNG(tex_path_z.ptr) orelse {
-            std.log.err("Failed to decode LUT PNG '{s}' ({s}): {s}", .{ entry.key_ptr.*, tex_path, c.SDL_GetError() });
+fn decodeLut(alloc: std.mem.Allocator, name: []const u8, path: []const u8) !LutImage {
+    const path_z = try alloc.dupeZ(u8, path);
+    defer alloc.free(path_z);
+
+    var surface = c.SDL_LoadPNG(path_z.ptr) orelse {
+        std.log.err("Failed to decode LUT PNG '{s}' ({s}): {s}", .{ name, path, c.SDL_GetError() });
+        return error.FailedToLoadLutTexture;
+    };
+    defer c.SDL_DestroySurface(surface);
+
+    if (surface.*.format != c.SDL_PIXELFORMAT_RGBA32) {
+        const converted = c.SDL_ConvertSurface(surface, c.SDL_PIXELFORMAT_RGBA32) orelse {
+            std.log.err("Failed to convert LUT '{s}' to RGBA: {s}", .{ name, c.SDL_GetError() });
             return error.FailedToLoadLutTexture;
         };
-
-        defer c.SDL_DestroySurface(surface);
-
-        var texture_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);
-        if (texture_fmt == c.SDL_GPU_TEXTUREFORMAT_INVALID) {
-            const new_surface = sdlError(c.SDL_ConvertSurface(surface, c.SDL_PIXELFORMAT_RGBA32));
-            c.SDL_DestroySurface(surface);
-            surface = new_surface;
-            texture_fmt = c.SDL_GetGPUTextureFormatFromPixelFormat(surface.*.format);
-        }
-
-        const w: u32 = @intCast(surface.*.w);
-        const h: u32 = @intCast(surface.*.h);
-        const gpu_texture = sdlError(c.SDL_CreateGPUTexture(device, &.{
-            .type = c.SDL_GPU_TEXTURETYPE_2D,
-            .format = texture_fmt,
-            .width = w,
-            .height = h,
-            .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-        }));
-
-        const size: u32 = @intCast(surface.*.h * surface.*.pitch);
-        const tb = sdlError(c.SDL_CreateGPUTransferBuffer(
-            device,
-            &.{ .size = size, .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD },
-        ));
-        _ = c.SDL_memcpy(c.SDL_MapGPUTransferBuffer(device, tb, false), @ptrCast(surface.*.pixels), size);
-        c.SDL_UnmapGPUTransferBuffer(device, tb);
-        const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(device));
-        const copy = sdlError(c.SDL_BeginGPUCopyPass(cmd));
-        c.SDL_UploadToGPUTexture(
-            copy,
-            &.{ .transfer_buffer = tb, .pixels_per_row = w, .rows_per_layer = h },
-            &.{ .texture = gpu_texture, .w = w, .h = h, .d = 1 },
-            false,
-        );
-        c.SDL_EndGPUCopyPass(copy);
-        sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
-        c.SDL_ReleaseGPUTransferBuffer(device, tb);
-
-        const sampler: ?*c.SDL_GPUSampler = if (entry.value_ptr.linear)
-            sdlError(c.SDL_CreateGPUSampler(device, &.{
-                .min_filter = c.SDL_GPU_FILTER_LINEAR,
-                .mag_filter = c.SDL_GPU_FILTER_LINEAR,
-                .mipmap_mode = c.SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
-                .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-                .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-                .address_mode_w = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-            }))
-        else
-            null;
-
-        try luts.put(
-            try alloc.dupe(u8, entry.key_ptr.*),
-            .{ .texture = try Texture.init(alloc, gpu_texture, w, h, texture_fmt, 1), .sampler = sampler },
-        );
+        c.SDL_DestroySurface(surface);
+        surface = converted;
     }
 
-    var preset = LoadedPreset{
-        .passes = try alloc.alloc(ShaderPass, shader_config.total_passes),
-        .param_data = .init(alloc),
-        .luts = luts.move(),
-    };
-    errdefer preset.deinit(alloc, device);
-
-    // Zero-initialize passes so deinit is safe even for passes that never run.
-    for (preset.passes) |*p| p.* = .{
-        .initialized = false,
-        .id = 0,
-        .pipeline = null,
-        .sampler = null,
-        .output_texture = null,
-        .fb_feedback = null,
-        .scale_params = .{},
-        .wrap_mode = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .mipmap_input = false,
-        .float_framebuffer = false,
-        .srgb_framebuffer = false,
-        .frame_count_mod = null,
-        .alias = null,
-        .feedback_alias = null,
-        .texture_format = c.SDL_GPU_TEXTUREFORMAT_INVALID,
-        .filter = c.SDL_GPU_FILTER_NEAREST,
-        .vertex_reflection = undefined,
-        .fragment_reflection = undefined,
-    };
-
-    var pool: ThreadPool = undefined;
-    try pool.init(.{ .allocator = alloc, .io = io, .n_jobs = std.Thread.getCpuCount() catch 4 });
-    defer pool.deinit();
-
-    var mutex: std.Io.Mutex = .init;
-    var wg = ThreadPool.WaitGroup.init(io);
-    var had_error: bool = false;
-    for (shader_config.passes) |*pass| {
-        pool.spawnWg(&wg, compilePassWorker, .{WorkerArgs{
-            .alloc = alloc,
-            .io = io,
-            .preset = &preset,
-            .shader_dir = dir,
-            .pass = pass,
-            .device = device,
-            .vk_version = vk_version,
-            .swapchain_format = swapchain_format,
-            .initial_values = &shader_config.shader_params_initial_values,
-            .mutex = &mutex,
-            .had_error = &had_error,
-            .compile_progress = progress,
-            .shader_cache = shader_cache,
-        }});
+    const w: u32 = @intCast(surface.*.w);
+    const h: u32 = @intCast(surface.*.h);
+    const row_size = w * 4;
+    const pixels = try alloc.alloc(u8, row_size * h);
+    const src: [*]const u8 = @ptrCast(surface.*.pixels);
+    const pitch: usize = @intCast(surface.*.pitch);
+    for (0..h) |row| {
+        @memcpy(pixels[row * row_size ..][0..row_size], src[row * pitch ..][0..row_size]);
     }
-    wg.wait();
-
-    if (had_error) return error.ShaderCompilationFailed;
-    resolveUniformParamRefs(&preset);
-
-    return preset;
+    return .{ .pixels = pixels, .width = w, .height = h };
 }
 
-fn loadPresetFile(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    path: []const u8,
-    vk_version: c_uint,
-    device: ?*c.SDL_GPUDevice,
-    swapchain_format: c.SDL_GPUTextureFormat,
-    progress: *std.atomic.Value(u32),
-    shader_cache: *ShaderCache,
-) !LoadedPreset {
-    var parsed = try parsePresetFile(alloc, io, path);
-    defer parsed.deinit(alloc);
-    return compilePreset(alloc, io, &parsed, vk_version, device, swapchain_format, progress, shader_cache);
-}
-
-fn resolveUniformLayoutParamRefs(preset: *LoadedPreset, layout: *UniformBufferLayout) void {
-    for (layout.members.items) |*member| {
-        member.param_data = switch (member.field_type) {
-            .Other => |name| preset.param_data.get(name),
-            else => null,
-        };
+/// Collect the parameters defined via `#pragma parameter` that the shader's
+/// uniform blocks use. The display names are owned by the caller.
+fn collectParams(alloc: std.mem.Allocator, shader: *const parser.ParsedShader, reflection: *const ShaderReflection) ![]Param {
+    var params = std.ArrayList(Param).empty;
+    errdefer {
+        for (params.items) |param| alloc.free(param.display_name);
+        params.deinit(alloc);
     }
-}
-
-fn resolveReflectionParamRefs(preset: *LoadedPreset, reflection: *ShaderReflection) void {
-    for (reflection.descriptor_sets.items) |*set_info| {
-        for (set_info.bindings.items) |*binding| {
+    const config = shader.config orelse return params.toOwnedSlice(alloc);
+    for (reflection.descriptor_sets.items) |set_info| {
+        for (set_info.bindings.items) |binding| {
             switch (binding.binding_type) {
-                .push_params, .UBO => |*layout| resolveUniformLayoutParamRefs(preset, layout),
-                .sampler2D => {},
-            }
-        }
-    }
-}
-
-fn resolveUniformParamRefs(preset: *LoadedPreset) void {
-    for (preset.passes) |*pass| {
-        if (!pass.initialized) continue;
-        resolveReflectionParamRefs(preset, &pass.vertex_reflection);
-        resolveReflectionParamRefs(preset, &pass.fragment_reflection);
-    }
-}
-
-fn prepareUniformPayload(
-    payload: []u8,
-    preset: *const LoadedPreset,
-    layout: *const UniformBufferLayout,
-    source_tex: *Texture,
-    original_tex: *Texture,
-    uniforms: *const BuiltinUniforms,
-    aliases: *const std.StringHashMap(*Texture),
-    history: []*Texture,
-    pass_feedback: []const ?*Texture,
-    pass_output: []const ?*Texture,
-) []u8 {
-    const payload_size: usize = @intCast(layout.size);
-    std.debug.assert(payload.len >= payload_size);
-    const out = payload[0..payload_size];
-
-    for (layout.members.items) |member| {
-        const dest = out[member.offset .. member.offset + member.size];
-        const src: []const u8 = switch (member.field_type) {
-            .MVP => std.mem.asBytes(&uniforms.MVP),
-            .OriginalSize => std.mem.asBytes(&uniforms.OriginalSize),
-            .SourceSize => std.mem.asBytes(&uniforms.SourceSize),
-            .OutputSize => std.mem.asBytes(&uniforms.OutputSize),
-            .FinalViewportSize => std.mem.asBytes(&uniforms.FinalViewportSize),
-            .FrameCount => std.mem.asBytes(&uniforms.FrameCount),
-            .Other => |name| member.param_data orelse preset.param_data.get(name) orelse &[_]u8{0} ** 4,
-            .SizeVariant => |name| blk: {
-                const tex = aliases.get(name) orelse source_tex;
-                break :blk std.mem.asBytes(&tex.sizeVec4());
-            },
-            .SizeVariantWithId => |field| blk: {
-                if (std.mem.eql(u8, field.name, "PassFeedback")) {
-                    const tex = passTextureAt(pass_feedback, field.id) orelse source_tex;
-                    break :blk std.mem.asBytes(&tex.sizeVec4());
-                } else if (std.mem.eql(u8, field.name, "OriginalHistory")) {
-                    const tex = if (field.id == 0) original_tex else history[field.id - 1];
-                    break :blk std.mem.asBytes(&tex.sizeVec4());
-                } else if (std.mem.eql(u8, field.name, "PassOutput")) {
-                    const tex = passTextureAt(pass_output, field.id) orelse source_tex;
-                    break :blk std.mem.asBytes(&tex.sizeVec4());
-                } else {
-                    break :blk &[_]u8{0} ** 16;
-                }
-            },
-            else => &[_]u8{0} ** 16,
-        };
-        @memcpy(dest, src[0..@min(src.len, dest.len)]);
-    }
-    return out;
-}
-
-fn bindShaderResources(
-    rp: ?*c.SDL_GPURenderPass,
-    cmd: ?*c.SDL_GPUCommandBuffer,
-    pass: *ShaderPass,
-    original_tex: *Texture,
-    source_tex: *Texture,
-    uniforms: *const BuiltinUniforms,
-    preset: *const LoadedPreset,
-    aliases: *const std.StringHashMap(*Texture),
-    history: []*Texture,
-    pass_feedback: []const ?*Texture,
-    pass_output: []const ?*Texture,
-) !void {
-    for (pass.vertex_reflection.descriptor_sets.items) |*set_info| {
-        for (set_info.bindings.items) |*binding| {
-            switch (binding.binding_type) {
-                .push_params, .UBO => |*layout| {
-                    const payload = prepareUniformPayload(
-                        binding.uniform_payload,
-                        preset,
-                        layout,
-                        source_tex,
-                        original_tex,
-                        uniforms,
-                        aliases,
-                        history,
-                        pass_feedback,
-                        pass_output,
-                    );
-                    c.SDL_PushGPUVertexUniformData(cmd, binding.binding, @ptrCast(payload), @intCast(layout.size));
+                .push_params, .UBO => |layout| {
+                    for (layout.members.items) |member| {
+                        if (member.field_type != .Other) continue;
+                        const pname = member.field_type.Other;
+                        const field = config.getPtr(pname) orelse blk: {
+                            std.log.warn("UBO field '{s}' has no #pragma parameter, defaulting to 0", .{pname});
+                            break :blk &parser.ShaderParam{ .option_name = pname };
+                        };
+                        try params.append(alloc, .{
+                            .name = pname,
+                            .display_name = try alloc.dupe(u8, field.option_name),
+                            .value = field.initial,
+                            .min = field.min,
+                            .max = field.max,
+                            .step = field.step,
+                        });
+                    }
                 },
                 .sampler2D => {},
             }
         }
     }
-
-    var lut_sampler: ?*c.SDL_GPUSampler = null;
-    for (pass.fragment_reflection.descriptor_sets.items) |*set_info| {
-        for (set_info.bindings.items) |*binding| {
-            switch (binding.binding_type) {
-                .push_params, .UBO => |*layout| {
-                    const payload = prepareUniformPayload(
-                        binding.uniform_payload,
-                        preset,
-                        layout,
-                        source_tex,
-                        original_tex,
-                        uniforms,
-                        aliases,
-                        history,
-                        pass_feedback,
-                        pass_output,
-                    );
-                    c.SDL_PushGPUFragmentUniformData(cmd, binding.binding, @ptrCast(payload), @intCast(layout.size));
-                },
-                .sampler2D => |sampler_type| {
-                    const tex: *Texture = switch (sampler_type) {
-                        .Original => original_tex,
-                        .Source => source_tex,
-                        .OriginalHistory => |id| if (id == 0) original_tex else history[id - 1],
-                        .PassFeedback => |id| passTextureAt(pass_feedback, id) orelse source_tex,
-                        .PassOutput => |id| passTextureAt(pass_output, id) orelse source_tex,
-                        .Alias => |alias| blk: {
-                            if (aliases.get(alias)) |t| break :blk t;
-                            if (preset.luts.get(alias)) |lut| {
-                                lut_sampler = lut.sampler;
-                                break :blk lut.texture;
-                            }
-                            std.log.warn("No texture for alias '{s}', using source", .{alias});
-                            break :blk source_tex;
-                        },
-                    };
-                    c.SDL_BindGPUFragmentSamplers(
-                        rp,
-                        binding.binding,
-                        &.{ .texture = tex.ptr, .sampler = lut_sampler orelse pass.sampler },
-                        1,
-                    );
-                    lut_sampler = null;
-                },
-            }
-        }
-    }
-}
-
-fn passTextureAt(slots: []const ?*Texture, id: usize) ?*Texture {
-    if (id >= slots.len) return null;
-    return slots[id];
-}
-
-fn setRetainedPassTextureSlot(slot: *?*Texture, tex: ?*Texture, device: ?*c.SDL_GPUDevice) void {
-    if (tex) |new_tex| {
-        if (slot.*) |old_tex| {
-            if (old_tex == new_tex) return;
-            old_tex.release(device);
-        }
-        slot.* = new_tex.ref();
-    } else {
-        if (slot.*) |old_tex| old_tex.release(device);
-        slot.* = null;
-    }
-}
-
-fn clearPassTextureSlots(device: ?*c.SDL_GPUDevice, slots: []?*Texture) void {
-    for (slots) |*slot| {
-        if (slot.*) |tex| {
-            tex.release(device);
-            slot.* = null;
-        }
-    }
+    return params.toOwnedSlice(alloc);
 }
 
 fn calcMipLevels(w: u32, h: u32) u32 {
@@ -1413,606 +674,1051 @@ fn calcMipLevels(w: u32, h: u32) u32 {
     return levels;
 }
 
-fn createRenderTarget(
-    alloc: std.mem.Allocator,
-    device: ?*c.SDL_GPUDevice,
-    slot: *?*Texture,
-    w: u32,
-    h: u32,
-    format: c.SDL_GPUTextureFormat,
-    num_levels: u32,
-) !*Texture {
-    if (slot.*) |tex| {
-        if (tex.matches(w, h, format, num_levels)) return tex;
-        tex.release(device);
-        slot.* = null;
-    }
-
-    const gpu_tex = sdlError(c.SDL_CreateGPUTexture(device, &.{
-        .type = c.SDL_GPU_TEXTURETYPE_2D,
-        .format = format,
-        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        .width = w,
-        .height = h,
-        .layer_count_or_depth = 1,
-        .num_levels = num_levels,
-        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-    }));
-    slot.* = try Texture.init(alloc, gpu_tex, w, h, format, num_levels);
-    return slot.*.?;
-}
-
-// Main render loop for one preset
-fn renderPasses(
-    alloc: std.mem.Allocator,
-    device: ?*c.SDL_GPUDevice,
-    cmd: ?*c.SDL_GPUCommandBuffer,
-    vertex_buffer: ?*c.SDL_GPUBuffer,
-    preset: *LoadedPreset,
-    uniforms: *BuiltinUniforms,
-    original_tex: *Texture,
-    source_tex: **Texture,
-    swapchain_format: c.SDL_GPUTextureFormat,
-    current_w: *u32,
-    current_h: *u32,
-    viewport: Viewport,
-    frame_count: u32,
-    pass_output: []?*Texture,
-    aliases: *std.StringHashMap(*Texture),
-    pass_feedback: []?*Texture,
-    history: []*Texture,
-    uses_pass_output: bool,
-    uses_pass_feedback: bool,
-) !void {
-    for (preset.passes, 0..) |*pass, i| {
-        const last_pass = (i == preset.passes.len - 1);
-        const output_size = pass.calculateOutputSize(
-            current_w.*,
-            current_h.*,
-            viewport.w,
-            viewport.h,
-        );
-
-        const format: c.SDL_GPUTextureFormat = if (pass.texture_format != c.SDL_GPU_TEXTUREFORMAT_INVALID)
-            pass.texture_format
-        else if (pass.float_framebuffer)
-            c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
-        else if (pass.srgb_framebuffer)
-            c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
-        else
-            swapchain_format;
-        const num_levels = if (pass.mipmap_input) calcMipLevels(output_size.w, output_size.h) else 1;
-
-        const needs_feedback = uses_pass_feedback or (pass.alias != null);
-        if (needs_feedback) {
-            const previous_output = pass.output_texture;
-            pass.output_texture = pass.fb_feedback;
-            pass.fb_feedback = previous_output;
-
-            if (pass.fb_feedback) |feedback| {
-                if (!feedback.matches(output_size.w, output_size.h, format, num_levels)) {
-                    feedback.release(device);
-                    pass.fb_feedback = null;
-                }
-            }
-        }
-
-        const target_tex = try createRenderTarget(
-            alloc,
-            device,
-            &pass.output_texture,
-            output_size.w,
-            output_size.h,
-            format,
-            num_levels,
-        );
-
-        if (uses_pass_feedback) {
-            if (i < pass_feedback.len) setRetainedPassTextureSlot(&pass_feedback[i], pass.fb_feedback, device);
-        }
-
-        if (uses_pass_output) {
-            if (i < pass_output.len) setRetainedPassTextureSlot(&pass_output[i], target_tex, device);
-        }
-
-        // Handle named aliases for feedback loops
-        if (pass.alias) |alias| {
-            if (try aliases.fetchPut(alias, target_tex.ref())) |old| {
-                old.value.release(device);
-            }
-            if (pass.feedback_alias) |fb_alias| {
-                const fb_tex = pass.fb_feedback orelse original_tex;
-                if (try aliases.fetchPut(fb_alias, fb_tex.ref())) |old| {
-                    old.value.release(device);
-                }
-            }
-        }
-
-        // Begin GPU render pass for this shader pass
-        const color_target = c.SDL_GPUColorTargetInfo{
-            .texture = target_tex.ptr,
-            .load_op = c.SDL_GPU_LOADOP_CLEAR,
-            .store_op = c.SDL_GPU_STOREOP_STORE,
-            .clear_color = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
-        };
-        const rp = c.SDL_BeginGPURenderPass(cmd, &color_target, 1, null);
-        c.SDL_BindGPUGraphicsPipeline(rp, pass.pipeline);
-        c.SDL_BindGPUVertexBuffers(rp, 0, &.{ .buffer = vertex_buffer }, 1);
-        c.SDL_SetGPUViewport(rp, &c.SDL_GPUViewport{
-            .x = 0,
-            .y = 0,
-            .w = @floatFromInt(output_size.w),
-            .h = @floatFromInt(output_size.h),
-            .min_depth = 0.0,
-            .max_depth = 1.0,
-        });
-        c.SDL_SetGPUScissor(rp, &c.SDL_Rect{
-            .x = 0,
-            .y = 0,
-            .w = @intCast(output_size.w),
-            .h = @intCast(output_size.h),
-        });
-
-        uniforms.FrameCount = if (pass.frame_count_mod) |m| frame_count % m else frame_count;
-        uniforms.SourceSize = blk: {
-            const sv = [4]f32{
-                @floatFromInt(current_w.*),
-                @floatFromInt(current_h.*),
-                1.0 / @as(f32, @floatFromInt(current_w.*)),
-                1.0 / @as(f32, @floatFromInt(current_h.*)),
-            };
-            break :blk sv;
-        };
-        uniforms.OutputSize = blk: {
-            const ov = [4]f32{
-                @floatFromInt(output_size.w),
-                @floatFromInt(output_size.h),
-                1.0 / @as(f32, @floatFromInt(output_size.w)),
-                1.0 / @as(f32, @floatFromInt(output_size.h)),
-            };
-            break :blk ov;
-        };
-
-        try bindShaderResources(
-            rp,
-            cmd,
-            pass,
-            original_tex,
-            source_tex.*,
-            uniforms,
-            preset,
-            aliases,
-            history,
-            pass_feedback,
-            pass_output,
-        );
-
-        c.SDL_DrawGPUPrimitives(rp, 6, 1, 0, 0);
-        c.SDL_EndGPURenderPass(rp);
-
-        if (!last_pass) {
-            source_tex.* = pass.output_texture.?;
-            current_w.* = output_size.w;
-            current_h.* = output_size.h;
-        }
-    }
-}
-
-pub const ShaderPipeline = struct {
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    device: ?*c.SDL_GPUDevice,
-    vk_version: c_uint,
-
-    vertex_buffer: ?*c.SDL_GPUBuffer,
-
-    preset: ?LoadedPreset = null,
-    preset_path: ?[]u8 = null,
-    cache: ShaderCache,
-
-    // Async compile state
-    compile_progress: std.atomic.Value(u32) = .init(0),
-    compile_total: u32 = 0,
-    compile_thread: ?std.Thread = null,
-    compile_mutex: std.Io.Mutex = .init,
-    compile_failed: bool = false,
-    compile_error_msg: ?[]u8 = null,
-    compile_done: std.atomic.Value(bool) = .init(false),
-
-    // Usage flags derived from preset reflection at load time
-    uses_pass_output: bool = false,
-    uses_pass_feedback: bool = false,
-    max_frame_history: usize = 0,
-
-    // Per-frame accumulation state
-    frame_count: u32 = 0,
-    pass_output: []?*Texture = &.{},
-    pass_feedback: []?*Texture = &.{},
-    texture_aliases: std.StringHashMap(*Texture),
-    frame_history: std.ArrayList(*Texture),
-
-    const Self = @This();
-
-    pub fn init(
+/// The shader pipeline, parameterized by the graphics API `Backend`. All of
+/// the RetroArch semantics live here; the backend only creates and binds GPU
+/// objects. Backends must provide:
+///
+/// - `TextureHandle`, `Sampler`, `PassObjects` (default-initializable),
+///   `Frame` (per-frame context), `RenderPass` and `InitArgs` types;
+/// - a `vk_version` field (the Vulkan version shaders are compiled for);
+/// - `init`, `deinit`, `compileJobs`;
+/// - `compilePass` (runs on worker threads), `activatePass` (main thread),
+///   `destroyPass`;
+/// - `createTexture`, `destroyTexture`, `uploadTexture`, `copyTexture`,
+///   `generateMipmaps`, `createSampler`, `destroySampler`;
+/// - `beginPasses`, `endPasses`, `beginPass`, `pushUniforms`, `bindTexture`,
+///   `endPass`.
+pub fn Pipeline(comptime BackendType: type) type {
+    return struct {
         alloc: std.mem.Allocator,
         io: std.Io,
-        device: ?*c.SDL_GPUDevice,
-        vk_version: c_uint,
-    ) !*Self {
-        const self = try alloc.create(Self);
+        backend: Backend,
 
-        const vb_size = @sizeOf(Vertex) * QUAD_VERTICES.len;
-        const vb_info = c.SDL_GPUBufferCreateInfo{
-            .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
-            .size = vb_size,
-        };
-        const vertex_buffer = sdlError(c.SDL_CreateGPUBuffer(device, &vb_info));
+        preset: ?LoadedPreset = null,
+        preset_path: ?[]u8 = null,
+        cache: ShaderCache,
 
-        // Upload the quad vertices
-        {
-            const tb = sdlError(c.SDL_CreateGPUTransferBuffer(
-                device,
-                &.{ .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = vb_size },
-            ));
-            const map = c.SDL_MapGPUTransferBuffer(device, tb, false);
-            @memcpy(@as([*]Vertex, @ptrCast(@alignCast(map)))[0..QUAD_VERTICES.len], &QUAD_VERTICES);
-            c.SDL_UnmapGPUTransferBuffer(device, tb);
+        // Async compile state
+        compile_progress: std.atomic.Value(u32) = .init(0),
+        compile_total: u32 = 0,
+        compile_thread: ?std.Thread = null,
+        compile_mutex: std.Io.Mutex = .init,
+        compile_failed: bool = false,
+        compile_error_msg: ?[]u8 = null,
+        compile_done: std.atomic.Value(bool) = .init(false),
+        /// Preset finished by the compile thread; `pollLoadResult` activates it
+        /// on the rendering thread.
+        compiled_preset: ?LoadedPreset = null,
+        compiled_path: ?[]u8 = null,
 
-            const cmd = sdlError(c.SDL_AcquireGPUCommandBuffer(device));
-            const copy = sdlError(c.SDL_BeginGPUCopyPass(cmd));
-            c.SDL_UploadToGPUBuffer(
-                copy,
-                &.{ .transfer_buffer = tb },
-                &.{ .buffer = vertex_buffer, .size = vb_size },
-                false,
-            );
-            c.SDL_EndGPUCopyPass(copy);
-            sdlError(c.SDL_SubmitGPUCommandBuffer(cmd));
-            c.SDL_ReleaseGPUTransferBuffer(device, tb);
-        }
+        // Usage flags derived from preset reflection at load time
+        uses_pass_output: bool = false,
+        uses_pass_feedback: bool = false,
 
-        self.* = .{
-            .alloc = alloc,
-            .io = io,
-            .device = device,
-            .vk_version = vk_version,
-            .vertex_buffer = vertex_buffer,
-            .texture_aliases = .init(alloc),
-            .frame_history = .empty,
-            .cache = try ShaderCache.init(alloc, io),
-        };
-        return self;
-    }
+        // Per-frame accumulation state
+        frame_count: u32 = 0,
+        pass_output: []?*Texture = &.{},
+        pass_feedback: []?*Texture = &.{},
+        texture_aliases: std.StringHashMap(*Texture),
+        /// Copies of previous frames; slot N holds the frame from N + 1 frames ago.
+        frame_history: std.ArrayList(?*Texture) = .empty,
 
-    fn resizePassTextureSlots(self: *Self, pass_count: usize) !void {
-        const next_output = try self.alloc.alloc(?*Texture, pass_count);
-        @memset(next_output, null);
+        const Self = @This();
+        pub const Backend = BackendType;
 
-        const next_feedback = try self.alloc.alloc(?*Texture, pass_count);
-        @memset(next_feedback, null);
+        pub const Texture = struct {
+            alloc: std.mem.Allocator,
+            ptr: ?Backend.TextureHandle = null,
+            width: u32 = 0,
+            height: u32 = 0,
+            format: TextureFormat = .default,
+            num_levels: u32 = 1,
+            refcount: u32 = 0,
 
-        clearPassTextureSlots(self.device, self.pass_output);
-        clearPassTextureSlots(self.device, self.pass_feedback);
-        self.alloc.free(self.pass_output);
-        self.alloc.free(self.pass_feedback);
-        self.pass_output = next_output;
-        self.pass_feedback = next_feedback;
-    }
-
-    pub fn deinit(self: *Self) void {
-        if (self.compile_thread) |t| {
-            t.join();
-            self.compile_thread = null;
-        }
-        {
-            self.compile_mutex.lockUncancelable(self.io);
-            defer self.compile_mutex.unlock(self.io);
-            if (self.compile_error_msg) |m| self.alloc.free(m);
-        }
-        self.clearAccumulationState();
-        self.alloc.free(self.pass_output);
-        self.alloc.free(self.pass_feedback);
-        self.texture_aliases.deinit();
-        self.frame_history.deinit(self.alloc);
-        if (self.preset) |*p| p.deinit(self.alloc, self.device);
-        if (self.preset_path) |path| self.alloc.free(path);
-        c.SDL_ReleaseGPUBuffer(self.device, self.vertex_buffer);
-        self.cache.deinit();
-        self.alloc.destroy(self);
-    }
-
-    /// Unload the current preset and reset all GPU state.
-    /// If an async load is in progress it is joined first.
-    pub fn unloadPreset(self: *Self) void {
-        if (self.compile_thread) |t| {
-            t.join();
-            self.compile_thread = null;
-        }
-        {
-            self.compile_mutex.lockUncancelable(self.io);
-            defer self.compile_mutex.unlock(self.io);
-            if (self.compile_error_msg) |m| {
-                self.alloc.free(m);
-                self.compile_error_msg = null;
+            fn init(
+                alloc: std.mem.Allocator,
+                ptr: ?Backend.TextureHandle,
+                w: u32,
+                h: u32,
+                format: TextureFormat,
+                num_levels: u32,
+            ) !*Texture {
+                const obj = try alloc.create(Texture);
+                obj.* = .{
+                    .alloc = alloc,
+                    .ptr = ptr,
+                    .width = w,
+                    .height = h,
+                    .format = format,
+                    .num_levels = num_levels,
+                    .refcount = 1,
+                };
+                return obj;
             }
-            self.compile_failed = false;
-        }
-        self.compile_progress.store(0, .monotonic);
-        self.compile_total = 0;
-        self.compile_done.store(false, .monotonic);
 
-        self.clearAccumulationState();
-        self.alloc.free(self.pass_output);
-        self.alloc.free(self.pass_feedback);
-        self.pass_output = &.{};
-        self.pass_feedback = &.{};
-        if (self.preset) |*p| {
-            p.deinit(self.alloc, self.device);
-            self.preset = null;
-        }
-        if (self.preset_path) |path| {
-            self.alloc.free(path);
-            self.preset_path = null;
-        }
-        self.frame_count = 0;
-        self.uses_pass_output = false;
-        self.uses_pass_feedback = false;
-        self.max_frame_history = 0;
-        self.frame_history.clearRetainingCapacity();
-    }
+            fn matches(self: *const Texture, w: u32, h: u32, format: TextureFormat, num_levels: u32) bool {
+                return self.ptr != null and
+                    self.width == w and
+                    self.height == h and
+                    self.format == format and
+                    self.num_levels == num_levels;
+            }
 
-    pub fn isActive(self: *const Self) bool {
-        return self.preset != null;
-    }
+            fn release(self: *Texture, backend: *Backend) void {
+                if (self.refcount > 0) self.refcount -= 1;
+                if (self.refcount == 0) {
+                    if (self.ptr) |ptr| backend.destroyTexture(ptr);
+                    self.alloc.destroy(self);
+                }
+            }
 
-    pub fn getPresetPath(self: *const Self) ?[]const u8 {
-        return self.preset_path;
-    }
+            fn ref(self: *Texture) *Texture {
+                self.refcount += 1;
+                return self;
+            }
 
-    /// Returns the ordered list of tunable parameters for the active preset.
-    pub fn getParamInfos(self: *const Self) []const ParamInfo {
-        const p = self.preset orelse return &.{};
-        return p.param_meta.items;
-    }
-
-    /// Read the current f32 value of a parameter by name.
-    pub fn getParam(self: *const Self, name: []const u8) f32 {
-        const p = self.preset orelse return 0;
-        const bytes = p.param_data.get(name) orelse return 0;
-        return std.mem.bytesAsValue(f32, bytes[0..4]).*;
-    }
-
-    /// Write a new f32 value for a parameter by name.  No-op if the preset
-    /// is not loaded or the parameter does not exist.
-    pub fn setParam(self: *Self, name: []const u8, value: f32) void {
-        const p = &(self.preset orelse return);
-        if (p.param_data.getPtr(name)) |bytes_ptr| {
-            @memcpy(bytes_ptr.*[0..4], std.mem.asBytes(&value));
-        }
-    }
-
-    pub fn isCompiling(self: *const Self) bool {
-        return self.compile_thread != null and !self.compile_done.load(.acquire);
-    }
-
-    /// Start an asynchronous shader preset load.  Progress can be tracked
-    /// via `compile_progress` / `compile_total`, and the result retrieved
-    /// by calling `pollLoadResult` each frame.
-    pub fn loadPreset(self: *Self, path: []const u8, swapchain_format: c.SDL_GPUTextureFormat) !void {
-        // unloadPreset joins any in-progress thread and resets all state.
-        self.unloadPreset();
-
-        var parsed = try parsePresetFile(self.alloc, self.io, path);
-        errdefer parsed.deinit(self.alloc);
-        self.compile_total = @intCast(parsed.shader_config.total_passes);
-
-        const ctx = try self.alloc.create(AsyncLoadCtx);
-        errdefer self.alloc.destroy(ctx);
-        ctx.* = .{
-            .pipeline = self,
-            .path = try self.alloc.dupe(u8, path),
-            .swapchain_format = swapchain_format,
-            .parsed = parsed, // ownership transferred; freed by asyncLoadFn
+            /// Returns `[width, height, 1/width, 1/height]` as expected by RetroArch uniforms.
+            fn sizeVec4(self: Texture) [4]f32 {
+                return sizeVec4From(self.width, self.height);
+            }
         };
-        errdefer self.alloc.free(ctx.path);
 
-        self.compile_thread = try std.Thread.spawn(.{}, asyncLoadFn, .{ctx});
-    }
+        /// Look-up texture
+        const Lut = struct {
+            /// Created on the main thread by `activatePreset`.
+            texture: ?*Texture = null,
+            sampler: ?Backend.Sampler = null,
+            /// Decoded by the compile thread and freed once uploaded.
+            image: ?LutImage = null,
+            sampler_desc: SamplerDesc,
 
-    /// The result of a `pollLoadResult` call.
-    pub const ShaderLoadPoll = union(enum) {
-        /// No async load has been started.
-        idle,
-        /// Compilation is in progress; `completed`/`total` indicate how many
-        /// passes have finished.
-        compiling: struct { completed: u32, total: u32 },
-        /// Compilation succeeded and the preset is now active.
-        done,
-        /// Compilation failed; the slice is the error message (owned by the
-        /// pipeline — do not free it).
-        failed: []const u8,
-    };
+            fn deinit(self: *Lut, alloc: std.mem.Allocator, backend: *Backend) void {
+                if (self.texture) |t| t.release(backend);
+                if (self.sampler) |s| backend.destroySampler(s);
+                if (self.image) |image| alloc.free(image.pixels);
+            }
+        };
 
-    // TODO: decouple the compilation  from ShaderPipeline?
-    /// Poll the status of an async `startLoadPreset` call.
-    /// When `.done` or `.failed` is returned the compile thread has been
-    /// joined and the pipeline has been updated.
-    pub fn pollLoadResult(self: *Self) ShaderLoadPoll {
-        if (self.compile_thread == null) return .idle;
+        const ShaderPass = struct {
+            id: usize = 0,
+            gpu: Backend.PassObjects = .{},
+            output_texture: ?*Texture = null,
+            fb_feedback: ?*Texture = null,
+            scale_params: ScaleParams = .{},
+            sampler: SamplerDesc = .{},
+            frame_count_mod: ?u32 = null,
+            alias: ?[]const u8 = null, // owned
+            feedback_alias: ?[]const u8 = null, // owned
+            format: TextureFormat = .default,
+            vertex_reflection: ShaderReflection = .{},
+            fragment_reflection: ShaderReflection = .{},
 
-        if (!self.compile_done.load(.acquire)) {
-            return .{ .compiling = .{
-                .completed = self.compile_progress.load(.monotonic),
-                .total = self.compile_total,
-            } };
-        }
+            fn deinit(self: *ShaderPass, alloc: std.mem.Allocator, backend: *Backend) void {
+                backend.destroyPass(alloc, &self.gpu);
+                if (self.output_texture) |t| t.release(backend);
+                if (self.fb_feedback) |t| t.release(backend);
+                if (self.alias) |a| alloc.free(a);
+                if (self.feedback_alias) |a| alloc.free(a);
+                self.vertex_reflection.deinit(alloc);
+                self.fragment_reflection.deinit(alloc);
+            }
+        };
 
-        // Compilation finished — join the thread.
-        if (self.compile_thread) |t| {
-            t.join();
-            self.compile_thread = null;
-        }
+        const LoadedPreset = struct {
+            passes: []ShaderPass,
+            /// Parameter name -> bytes of the f32 value.
+            param_data: std.StringHashMap([]u8),
+            /// Ordered list of parameter metadata for UI display.
+            param_meta: std.ArrayList(ParamInfo) = .empty,
+            luts: std.StringHashMap(Lut),
 
-        self.compile_mutex.lockUncancelable(self.io);
-        defer self.compile_mutex.unlock(self.io);
+            fn deinit(self: *LoadedPreset, alloc: std.mem.Allocator, backend: *Backend) void {
+                for (self.passes) |*pass| pass.deinit(alloc, backend);
+                alloc.free(self.passes);
 
-        if (self.compile_failed) {
-            return .{ .failed = self.compile_error_msg orelse "Unknown error" };
-        }
+                var pd_it = self.param_data.valueIterator();
+                while (pd_it.next()) |bytes| alloc.free(bytes.*);
+                self.param_data.deinit();
 
-        return .done;
-    }
+                for (self.param_meta.items) |info| alloc.free(info.display_name);
+                self.param_meta.deinit(alloc);
 
-    /// Context passed to the async compilation thread.
-    const AsyncLoadCtx = struct {
-        pipeline: *ShaderPipeline,
-        /// Owned copy of the preset path (used only to store as `preset_path`).
-        path: []u8,
-        swapchain_format: c.SDL_GPUTextureFormat,
-        /// Already-parsed preset data; ownership transferred from `startLoadPreset`.
-        parsed: ParsedPreset,
-    };
+                var lut_it = self.luts.iterator();
+                while (lut_it.next()) |entry| {
+                    alloc.free(entry.key_ptr.*);
+                    entry.value_ptr.deinit(alloc, backend);
+                }
+                self.luts.deinit();
+            }
 
-    fn asyncLoadFn(ctx: *AsyncLoadCtx) void {
-        const self = ctx.pipeline;
-        defer {
-            ctx.parsed.deinit(self.alloc);
-            self.alloc.free(ctx.path);
-            self.alloc.destroy(ctx);
-        }
+            /// Add the parameters of a pass, taking ownership of their display
+            /// names. Parameters shared by several passes are registered once.
+            fn registerParams(
+                self: *LoadedPreset,
+                alloc: std.mem.Allocator,
+                params: []const Param,
+                initial_values: *const std.StringHashMap(slangp.TypeUnion),
+            ) !void {
+                for (params) |param| {
+                    const bytes = if (initial_values.get(param.name)) |initial|
+                        try alloc.dupe(u8, initial.bytes())
+                    else
+                        try alloc.dupe(u8, std.mem.asBytes(&param.value));
 
-        if (compilePreset(
-            self.alloc,
-            self.io,
-            &ctx.parsed,
-            self.vk_version,
-            self.device,
-            ctx.swapchain_format,
-            &self.compile_progress,
-            &self.cache,
-        )) |preset| {
-            self.compile_mutex.lockUncancelable(self.io);
-            defer self.compile_mutex.unlock(self.io);
-
-            self.preset = preset;
-            self.preset_path = ctx.path;
-
-            for (self.preset.?.passes) |pass| {
-                for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
-                    for (set_info.bindings.items) |binding| {
-                        switch (binding.binding_type) {
-                            .sampler2D => |st| switch (st) {
-                                .PassOutput => self.uses_pass_output = true,
-                                .PassFeedback => self.uses_pass_feedback = true,
-                                .OriginalHistory => |id| self.max_frame_history = @max(id, self.max_frame_history),
-                                else => {},
-                            },
-                            else => {},
-                        }
+                    if (try self.param_data.fetchPut(param.name, bytes)) |old| {
+                        alloc.free(old.value);
+                        alloc.free(param.display_name);
+                    } else {
+                        try self.param_meta.append(alloc, .{
+                            .name = param.name,
+                            .display_name = param.display_name,
+                            .min = param.min,
+                            .max = param.max,
+                            .step = param.step,
+                        });
                     }
                 }
             }
 
-            self.frame_history.resize(self.alloc, self.max_frame_history) catch @panic("OOM");
-
-            std.log.info("Loaded shader preset: {s} ({} pass(es))", .{
-                self.preset_path.?, self.preset.?.passes.len,
-            });
-
-            // Prevent the defer above from double-freeing `ctx.path` now that ownership has moved to `self.preset_path`.
-            ctx.path = &.{};
-        } else |err| {
-            self.compile_mutex.lockUncancelable(self.io);
-            defer self.compile_mutex.unlock(self.io);
-            self.compile_failed = true;
-            self.compile_error_msg = std.fmt.allocPrint(
-                self.alloc,
-                "Load failed: {s}",
-                .{@errorName(err)},
-            ) catch null;
-        }
-
-        self.compile_done.store(true, .release);
-    }
-
-    pub fn renderFrame(
-        self: *Self,
-        input_texture: ?*c.SDL_GPUTexture,
-        src_w: u32,
-        src_h: u32,
-        viewport: Viewport,
-        cmd: ?*c.SDL_GPUCommandBuffer,
-        win_w: u32,
-        win_h: u32,
-        swapchain_format: c.SDL_GPUTextureFormat,
-    ) !?*Texture {
-        const preset = &self.preset.?;
-
-        const input = try Texture.init(self.alloc, input_texture, src_w, src_h, c.SDL_GPU_TEXTUREFORMAT_INVALID, 1);
-        defer {
-            input.ptr = null; // caller owns input_texture — don't SDL-release it
-            input.release(self.device);
-        }
-
-        var uniforms = BuiltinUniforms{};
-        uniforms.OriginalSize = input.sizeVec4();
-        uniforms.FinalViewportSize = [4]f32{
-            @floatFromInt(win_w),
-            @floatFromInt(win_h),
-            1.0 / @as(f32, @floatFromInt(win_w)),
-            1.0 / @as(f32, @floatFromInt(win_h)),
+            /// Point uniform members at their parameter value so rendering
+            /// does not look them up by name every frame.
+            fn resolveUniformParamRefs(self: *LoadedPreset) void {
+                for (self.passes) |*pass| {
+                    for ([_]*ShaderReflection{ &pass.vertex_reflection, &pass.fragment_reflection }) |reflection| {
+                        for (reflection.descriptor_sets.items) |*set_info| {
+                            for (set_info.bindings.items) |*binding| switch (binding.binding_type) {
+                                .push_params, .UBO => |*layout| for (layout.members.items) |*member| {
+                                    member.param_data = switch (member.field_type) {
+                                        .Other => |name| self.param_data.get(name),
+                                        else => null,
+                                    };
+                                },
+                                .sampler2D => {},
+                            };
+                        }
+                    }
+                }
+            }
         };
 
-        var source_tex: *Texture = input;
-        var current_w = src_w;
-        var current_h = src_h;
+        const WorkerArgs = struct {
+            alloc: std.mem.Allocator,
+            io: std.Io,
+            backend: *Backend,
+            preset: *LoadedPreset,
+            shader_dir: []const u8,
+            pass: *slangp.ShaderPass,
+            initial_values: *const std.StringHashMap(slangp.TypeUnion),
+            mutex: *std.Io.Mutex,
+            had_error: *bool,
+            compile_progress: *std.atomic.Value(u32),
+            shader_cache: *ShaderCache,
+        };
 
-        try renderPasses(
-            self.alloc,
-            self.device,
-            cmd,
-            self.vertex_buffer,
-            preset,
-            &uniforms,
-            input,
-            &source_tex,
-            swapchain_format,
-            &current_w,
-            &current_h,
-            viewport,
-            self.frame_count,
-            self.pass_output,
-            &self.texture_aliases,
-            self.pass_feedback,
-            self.frame_history.items,
-            self.uses_pass_output,
-            self.uses_pass_feedback,
-        );
+        fn compilePassWorker(args: WorkerArgs) void {
+            compilePassWorkerInner(args) catch |err| {
+                std.log.err("Failed to compile shader pass {}: {s}", .{ args.pass.id, @errorName(err) });
+                args.mutex.lockUncancelable(args.io);
+                args.had_error.* = true;
+                args.mutex.unlock(args.io);
+            };
+        }
 
-        // Update frame history for OriginalHistory# uniforms
-        if (self.max_frame_history > 0) {
-            const history_index = self.frame_count % self.frame_history.items.len;
-            if (self.frame_history.items[history_index].ptr != null) {
-                self.frame_history.items[history_index].release(self.device);
+        fn compilePassWorkerInner(args: WorkerArgs) !void {
+            const alloc = args.alloc;
+            const pass_params = &args.pass.params;
+
+            const path = if (std.mem.eql(u8, args.shader_dir, builtin_shaders.border_shader_dir))
+                try builtin_shaders.joinBorderShaderPath(alloc, args.pass.path)
+            else
+                try std.fs.path.resolve(alloc, &.{ args.shader_dir, args.pass.path });
+            defer alloc.free(path);
+
+            const embedded_source = builtin_shaders.sourceForPath(path);
+            const raw_source = embedded_source orelse
+                try std.Io.Dir.cwd().readFileAlloc(args.io, path, alloc, .limited(1024 * 1024));
+            defer if (embedded_source == null) alloc.free(raw_source);
+
+            var shader = try parser.parseShader(alloc, args.io, std.fs.path.dirname(path).?, raw_source);
+            defer shader.deinit(alloc);
+
+            const spirv = try getOrCompileSpirv(alloc, args.backend.vk_version, &shader, args.shader_cache, path, args.pass.id);
+            defer spirv.deinit(alloc);
+
+            var vertex_reflection = try reflectShaderInfo(alloc, spirv.vert);
+            errdefer vertex_reflection.deinit(alloc);
+            var fragment_reflection = try reflectShaderInfo(alloc, spirv.frag);
+            errdefer fragment_reflection.deinit(alloc);
+
+            const params = try collectParams(alloc, &shader, &vertex_reflection);
+            defer alloc.free(params);
+            var params_owned = true;
+            errdefer if (params_owned) for (params) |param| alloc.free(param.display_name);
+
+            const format: TextureFormat = if (shader.texture_format) |name|
+                TextureFormat.parse(name)
+            else if (pass_params.float_framebuffer orelse false)
+                .rgba16_float
+            else if (pass_params.srgb_framebuffer orelse false)
+                .rgba8_srgb
+            else
+                .default;
+            const sampler: SamplerDesc = .{
+                .linear = pass_params.filter_linear orelse false,
+                .wrap_mode = pass_params.wrap_mode orelse .clamp_to_edge,
+                .mipmaps = pass_params.mipmap_input orelse false,
+            };
+
+            var gpu = try args.backend.compilePass(
+                alloc,
+                spirv,
+                &vertex_reflection,
+                &fragment_reflection,
+                format,
+                sampler,
+                args.pass.id,
+            );
+            errdefer args.backend.destroyPass(alloc, &gpu);
+
+            const alias: ?[]const u8 = if (shader.alias orelse pass_params.alias) |a| try alloc.dupe(u8, a) else null;
+            errdefer if (alias) |a| alloc.free(a);
+            const feedback_alias = if (alias) |a| try std.fmt.allocPrint(alloc, "{s}Feedback", .{a}) else null;
+            errdefer if (feedback_alias) |a| alloc.free(a);
+
+            args.mutex.lockUncancelable(args.io);
+            defer args.mutex.unlock(args.io);
+
+            params_owned = false;
+            try args.preset.registerParams(alloc, params, args.initial_values);
+
+            args.preset.passes[args.pass.id] = .{
+                .id = args.pass.id,
+                .gpu = gpu,
+                .scale_params = .{
+                    .scale_type = pass_params.scale_type,
+                    .scale_type_x = pass_params.scale_type_x,
+                    .scale_type_y = pass_params.scale_type_y,
+                    .scale = pass_params.scale,
+                    .scale_x = pass_params.scale_x,
+                    .scale_y = pass_params.scale_y,
+                },
+                .sampler = sampler,
+                .frame_count_mod = pass_params.frame_count_mod,
+                .alias = alias,
+                .feedback_alias = feedback_alias,
+                .format = format,
+                .vertex_reflection = vertex_reflection,
+                .fragment_reflection = fragment_reflection,
+            };
+            _ = args.compile_progress.fetchAdd(1, .monotonic);
+        }
+
+        /// Decode the LUTs and compile all shader passes of a parsed preset.
+        /// Runs on the compile thread; GPU objects that must be created on the
+        /// rendering thread are created later by `activatePreset`.
+        fn compilePreset(
+            alloc: std.mem.Allocator,
+            io: std.Io,
+            backend: *Backend,
+            parsed: *ParsedPreset,
+            progress: *std.atomic.Value(u32),
+            shader_cache: *ShaderCache,
+        ) !LoadedPreset {
+            const shader_config = &parsed.shader_config;
+
+            var preset = LoadedPreset{
+                .passes = try alloc.alloc(ShaderPass, shader_config.total_passes),
+                .param_data = .init(alloc),
+                .luts = .init(alloc),
+            };
+            @memset(preset.passes, .{});
+            errdefer preset.deinit(alloc, backend);
+
+            var tex_it = shader_config.textures.iterator();
+            while (tex_it.next()) |entry| {
+                const tex_path = try std.fs.path.resolve(alloc, &.{ parsed.dir, entry.value_ptr.path });
+                defer alloc.free(tex_path);
+                std.log.info("Loading LUT '{s}': {s}", .{ entry.key_ptr.*, tex_path });
+
+                const image = try decodeLut(alloc, entry.key_ptr.*, tex_path);
+                errdefer alloc.free(image.pixels);
+                const name = try alloc.dupe(u8, entry.key_ptr.*);
+                errdefer alloc.free(name);
+                try preset.luts.put(name, .{ .image = image, .sampler_desc = .{
+                    .linear = entry.value_ptr.linear,
+                    .wrap_mode = entry.value_ptr.wrap_mode,
+                } });
             }
-            self.frame_history.items[history_index] = input.ref();
+
+            var mutex: std.Io.Mutex = .init;
+            var had_error: bool = false;
+            var args = WorkerArgs{
+                .alloc = alloc,
+                .io = io,
+                .backend = backend,
+                .preset = &preset,
+                .shader_dir = parsed.dir,
+                .pass = undefined,
+                .initial_values = &shader_config.shader_params_initial_values,
+                .mutex = &mutex,
+                .had_error = &had_error,
+                .compile_progress = progress,
+                .shader_cache = shader_cache,
+            };
+
+            const jobs = @min(Backend.compileJobs(), shader_config.passes.len);
+            if (jobs <= 1) {
+                // Not worth extra threads (which are a limited resource on WASM).
+                for (shader_config.passes) |*pass| {
+                    args.pass = pass;
+                    compilePassWorker(args);
+                }
+            } else {
+                var pool: ThreadPool = undefined;
+                try pool.init(.{ .allocator = alloc, .io = io, .n_jobs = jobs });
+                defer pool.deinit();
+
+                var wg = ThreadPool.WaitGroup.init(io);
+                for (shader_config.passes) |*pass| {
+                    args.pass = pass;
+                    pool.spawnWg(&wg, compilePassWorker, .{args});
+                }
+                wg.wait();
+            }
+
+            if (had_error) return error.ShaderCompilationFailed;
+            preset.resolveUniformParamRefs();
+            return preset;
         }
 
-        // Release pass_output textures if no feedback is needed
-        if (self.uses_pass_output and !self.uses_pass_feedback) {
-            clearPassTextureSlots(self.device, self.pass_output);
+        fn prepareUniformPayload(
+            payload: []u8,
+            preset: *const LoadedPreset,
+            layout: *const UniformBufferLayout,
+            source_tex: *Texture,
+            original_tex: *Texture,
+            uniforms: *const BuiltinUniforms,
+            aliases: *const std.StringHashMap(*Texture),
+            history: []const ?*Texture,
+            pass_feedback: []const ?*Texture,
+            pass_output: []const ?*Texture,
+        ) []u8 {
+            const payload_size: usize = @intCast(layout.size);
+            std.debug.assert(payload.len >= payload_size);
+            const out = payload[0..payload_size];
+
+            for (layout.members.items) |member| {
+                const dest = out[member.offset .. member.offset + member.size];
+                const src: []const u8 = switch (member.field_type) {
+                    .MVP => std.mem.asBytes(&uniforms.MVP),
+                    .OriginalSize => std.mem.asBytes(&uniforms.OriginalSize),
+                    .SourceSize => std.mem.asBytes(&uniforms.SourceSize),
+                    .OutputSize => std.mem.asBytes(&uniforms.OutputSize),
+                    .FinalViewportSize => std.mem.asBytes(&uniforms.FinalViewportSize),
+                    .FrameCount => std.mem.asBytes(&uniforms.FrameCount),
+                    .Other => |name| member.param_data orelse preset.param_data.get(name) orelse &[_]u8{0} ** 4,
+                    .SizeVariant => |name| blk: {
+                        const tex = aliases.get(name) orelse source_tex;
+                        break :blk std.mem.asBytes(&tex.sizeVec4());
+                    },
+                    .SizeVariantWithId => |field| blk: {
+                        const tex = if (std.mem.eql(u8, field.name, "PassFeedback"))
+                            passTextureAt(pass_feedback, field.id) orelse source_tex
+                        else if (std.mem.eql(u8, field.name, "OriginalHistory"))
+                            historyTextureAt(history, original_tex, field.id)
+                        else if (std.mem.eql(u8, field.name, "PassOutput"))
+                            passTextureAt(pass_output, field.id) orelse source_tex
+                        else
+                            break :blk &[_]u8{0} ** 16;
+                        break :blk std.mem.asBytes(&tex.sizeVec4());
+                    },
+                    else => &[_]u8{0} ** 16,
+                };
+                @memcpy(dest, src[0..@min(src.len, dest.len)]);
+            }
+            return out;
         }
 
-        self.frame_count += 1;
-        return preset.passes[preset.passes.len - 1].output_texture;
-    }
+        fn bindShaderResources(
+            backend: *Backend,
+            frame: Backend.Frame,
+            render_pass: *Backend.RenderPass,
+            pass: *ShaderPass,
+            original_tex: *Texture,
+            source_tex: *Texture,
+            uniforms: *const BuiltinUniforms,
+            preset: *const LoadedPreset,
+            aliases: *const std.StringHashMap(*Texture),
+            history: []const ?*Texture,
+            pass_feedback: []const ?*Texture,
+            pass_output: []const ?*Texture,
+        ) !void {
+            const stages = [_]struct { parser.ShaderStage, *ShaderReflection }{
+                .{ .Vertex, &pass.vertex_reflection },
+                .{ .Fragment, &pass.fragment_reflection },
+            };
+            for (stages) |entry| {
+                const stage, const reflection = entry;
+                for (reflection.descriptor_sets.items) |*set_info| {
+                    for (set_info.bindings.items) |*binding| switch (binding.binding_type) {
+                        .push_params, .UBO => |*layout| {
+                            const payload = prepareUniformPayload(
+                                binding.uniform_payload,
+                                preset,
+                                layout,
+                                source_tex,
+                                original_tex,
+                                uniforms,
+                                aliases,
+                                history,
+                                pass_feedback,
+                                pass_output,
+                            );
+                            backend.pushUniforms(frame, render_pass, &pass.gpu, stage, binding.binding, payload);
+                        },
+                        .sampler2D => |sampler_type| {
+                            // Only fragment shaders sample textures.
+                            if (stage != .Fragment) continue;
 
-    fn clearAccumulationState(self: *Self) void {
-        clearPassTextureSlots(self.device, self.pass_output);
-        clearPassTextureSlots(self.device, self.pass_feedback);
+                            var lut_sampler: ?Backend.Sampler = null; // null: the pass sampler
+                            const tex: *Texture = switch (sampler_type) {
+                                .Original => original_tex,
+                                .Source => source_tex,
+                                .OriginalHistory => |id| historyTextureAt(history, original_tex, id),
+                                .PassFeedback => |id| passTextureAt(pass_feedback, id) orelse source_tex,
+                                .PassOutput => |id| passTextureAt(pass_output, id) orelse source_tex,
+                                .Alias => |alias| blk: {
+                                    if (aliases.get(alias)) |t| break :blk t;
+                                    if (preset.luts.get(alias)) |lut| {
+                                        lut_sampler = lut.sampler;
+                                        break :blk lut.texture.?;
+                                    }
+                                    std.log.warn("No texture for alias '{s}', using source", .{alias});
+                                    break :blk source_tex;
+                                },
+                            };
+                            try backend.bindTexture(render_pass, &pass.gpu, binding.binding, tex.ptr, lut_sampler);
+                        },
+                    };
+                }
+            }
+        }
 
-        var alias_it = self.texture_aliases.valueIterator();
-        while (alias_it.next()) |t| t.*.release(self.device);
-        self.texture_aliases.clearRetainingCapacity();
-    }
-};
+        fn passTextureAt(slots: []const ?*Texture, id: usize) ?*Texture {
+            if (id >= slots.len) return null;
+            return slots[id];
+        }
+
+        /// `OriginalHistory0` is the current frame, `OriginalHistoryN` the frame
+        /// from N frames ago. Frames that have not been rendered yet fall back to
+        /// the current one.
+        fn historyTextureAt(history: []const ?*Texture, original_tex: *Texture, id: usize) *Texture {
+            if (id == 0 or id > history.len) return original_tex;
+            return history[id - 1] orelse original_tex;
+        }
+
+        fn setRetainedPassTextureSlot(backend: *Backend, slot: *?*Texture, tex: ?*Texture) void {
+            if (tex) |new_tex| {
+                if (slot.*) |old_tex| {
+                    if (old_tex == new_tex) return;
+                    old_tex.release(backend);
+                }
+                slot.* = new_tex.ref();
+            } else {
+                if (slot.*) |old_tex| old_tex.release(backend);
+                slot.* = null;
+            }
+        }
+
+        fn clearPassTextureSlots(backend: *Backend, slots: []?*Texture) void {
+            for (slots) |*slot| {
+                if (slot.*) |tex| tex.release(backend);
+                slot.* = null;
+            }
+        }
+
+        fn createRenderTarget(
+            alloc: std.mem.Allocator,
+            backend: *Backend,
+            slot: *?*Texture,
+            w: u32,
+            h: u32,
+            format: TextureFormat,
+            num_levels: u32,
+        ) !*Texture {
+            if (slot.*) |tex| {
+                if (tex.matches(w, h, format, num_levels)) return tex;
+                tex.release(backend);
+                slot.* = null;
+            }
+
+            const handle = try backend.createTexture(w, h, format, num_levels);
+            errdefer backend.destroyTexture(handle);
+            slot.* = try Texture.init(alloc, handle, w, h, format, num_levels);
+            return slot.*.?;
+        }
+
+        // Main render loop for one preset
+        fn renderPasses(
+            self: *Self,
+            frame: Backend.Frame,
+            preset: *LoadedPreset,
+            uniforms: *BuiltinUniforms,
+            original_tex: *Texture,
+            viewport: Viewport,
+        ) !void {
+            const backend = &self.backend;
+            var source_tex = original_tex;
+            var current_w = original_tex.width;
+            var current_h = original_tex.height;
+
+            for (preset.passes, 0..) |*pass, i| {
+                const last_pass = (i == preset.passes.len - 1);
+                const output_size = pass.scale_params.outputSize(current_w, current_h, viewport.w, viewport.h);
+                // `mipmap_input` asks for the input of a pass to be mipmapped, so
+                // the levels live on the output of the pass that feeds it.
+                const next_mipmap_input = !last_pass and preset.passes[i + 1].sampler.mipmaps;
+                const num_levels = if (next_mipmap_input) calcMipLevels(output_size.w, output_size.h) else 1;
+
+                const needs_feedback = self.uses_pass_feedback or (pass.alias != null);
+                if (needs_feedback) {
+                    const previous_output = pass.output_texture;
+                    pass.output_texture = pass.fb_feedback;
+                    pass.fb_feedback = previous_output;
+
+                    if (pass.fb_feedback) |feedback| {
+                        if (!feedback.matches(output_size.w, output_size.h, pass.format, num_levels)) {
+                            feedback.release(backend);
+                            pass.fb_feedback = null;
+                        }
+                    }
+                }
+
+                const target_tex = try createRenderTarget(
+                    self.alloc,
+                    backend,
+                    &pass.output_texture,
+                    output_size.w,
+                    output_size.h,
+                    pass.format,
+                    num_levels,
+                );
+
+                if (self.uses_pass_feedback and i < self.pass_feedback.len) {
+                    setRetainedPassTextureSlot(backend, &self.pass_feedback[i], pass.fb_feedback);
+                }
+                if (self.uses_pass_output and i < self.pass_output.len) {
+                    setRetainedPassTextureSlot(backend, &self.pass_output[i], target_tex);
+                }
+
+                // Handle named aliases for feedback loops
+                if (pass.alias) |alias| {
+                    if (try self.texture_aliases.fetchPut(alias, target_tex.ref())) |old| {
+                        old.value.release(backend);
+                    }
+                    if (pass.feedback_alias) |fb_alias| {
+                        const fb_tex = pass.fb_feedback orelse original_tex;
+                        if (try self.texture_aliases.fetchPut(fb_alias, fb_tex.ref())) |old| {
+                            old.value.release(backend);
+                        }
+                    }
+                }
+
+                if (pass.sampler.mipmaps and source_tex.num_levels > 1) {
+                    backend.generateMipmaps(frame, source_tex.ptr.?);
+                }
+
+                var render_pass = try backend.beginPass(frame, &pass.gpu, target_tex.ptr.?, output_size.w, output_size.h);
+
+                uniforms.FrameCount = if (pass.frame_count_mod) |m| self.frame_count % m else self.frame_count;
+                uniforms.SourceSize = sizeVec4From(current_w, current_h);
+                uniforms.OutputSize = sizeVec4From(output_size.w, output_size.h);
+
+                bindShaderResources(
+                    backend,
+                    frame,
+                    &render_pass,
+                    pass,
+                    original_tex,
+                    source_tex,
+                    uniforms,
+                    preset,
+                    &self.texture_aliases,
+                    self.frame_history.items,
+                    self.pass_feedback,
+                    self.pass_output,
+                ) catch |err| {
+                    backend.endPass(frame, &render_pass, &pass.gpu, false);
+                    return err;
+                };
+                backend.endPass(frame, &render_pass, &pass.gpu, true);
+
+                if (!last_pass) {
+                    source_tex = pass.output_texture.?;
+                    current_w = output_size.w;
+                    current_h = output_size.h;
+                }
+            }
+        }
+
+        pub fn init(alloc: std.mem.Allocator, io: std.Io, backend_args: Backend.InitArgs) !*Self {
+            const self = try alloc.create(Self);
+            errdefer alloc.destroy(self);
+
+            var cache = try ShaderCache.init(alloc, io);
+            errdefer cache.deinit();
+
+            self.* = .{
+                .alloc = alloc,
+                .io = io,
+                .backend = try Backend.init(alloc, backend_args),
+                .cache = cache,
+                .texture_aliases = .init(alloc),
+            };
+            return self;
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.unloadPreset();
+            self.texture_aliases.deinit();
+            self.frame_history.deinit(self.alloc);
+            self.backend.deinit();
+            self.cache.deinit();
+            self.alloc.destroy(self);
+        }
+
+        /// Unload the current preset and reset all GPU state.
+        /// If an async load is in progress it is joined first.
+        pub fn unloadPreset(self: *Self) void {
+            if (self.compile_thread) |t| {
+                t.join();
+                self.compile_thread = null;
+            }
+            {
+                self.compile_mutex.lockUncancelable(self.io);
+                defer self.compile_mutex.unlock(self.io);
+                if (self.compile_error_msg) |m| {
+                    self.alloc.free(m);
+                    self.compile_error_msg = null;
+                }
+                self.compile_failed = false;
+                if (self.compiled_preset) |*p| {
+                    p.deinit(self.alloc, &self.backend);
+                    self.compiled_preset = null;
+                }
+                if (self.compiled_path) |path| {
+                    self.alloc.free(path);
+                    self.compiled_path = null;
+                }
+            }
+            self.compile_progress.store(0, .monotonic);
+            self.compile_total = 0;
+            self.compile_done.store(false, .monotonic);
+
+            clearPassTextureSlots(&self.backend, self.pass_output);
+            clearPassTextureSlots(&self.backend, self.pass_feedback);
+            self.alloc.free(self.pass_output);
+            self.alloc.free(self.pass_feedback);
+            self.pass_output = &.{};
+            self.pass_feedback = &.{};
+
+            var alias_it = self.texture_aliases.valueIterator();
+            while (alias_it.next()) |t| t.*.release(&self.backend);
+            self.texture_aliases.clearRetainingCapacity();
+
+            for (self.frame_history.items) |tex| {
+                if (tex) |t| t.release(&self.backend);
+            }
+            self.frame_history.clearRetainingCapacity();
+
+            if (self.preset) |*p| {
+                p.deinit(self.alloc, &self.backend);
+                self.preset = null;
+            }
+            if (self.preset_path) |path| {
+                self.alloc.free(path);
+                self.preset_path = null;
+            }
+            self.frame_count = 0;
+            self.uses_pass_output = false;
+            self.uses_pass_feedback = false;
+        }
+
+        pub fn isActive(self: *const Self) bool {
+            return self.preset != null;
+        }
+
+        pub fn getPresetPath(self: *const Self) ?[]const u8 {
+            return self.preset_path;
+        }
+
+        /// Returns the ordered list of tunable parameters for the active preset.
+        pub fn getParamInfos(self: *const Self) []const ParamInfo {
+            const p = self.preset orelse return &.{};
+            return p.param_meta.items;
+        }
+
+        /// Read the current f32 value of a parameter by name.
+        pub fn getParam(self: *const Self, name: []const u8) f32 {
+            const p = self.preset orelse return 0;
+            const bytes = p.param_data.get(name) orelse return 0;
+            return std.mem.bytesAsValue(f32, bytes[0..4]).*;
+        }
+
+        /// Write a new f32 value for a parameter by name.  No-op if the preset
+        /// is not loaded or the parameter does not exist.
+        pub fn setParam(self: *Self, name: []const u8, value: f32) void {
+            const p = &(self.preset orelse return);
+            if (p.param_data.getPtr(name)) |bytes_ptr| {
+                @memcpy(bytes_ptr.*[0..4], std.mem.asBytes(&value));
+            }
+        }
+
+        pub fn isCompiling(self: *const Self) bool {
+            return self.compile_thread != null and !self.compile_done.load(.acquire);
+        }
+
+        /// Start an asynchronous shader preset load.  Progress can be tracked
+        /// via `compile_progress` / `compile_total`, and the result retrieved
+        /// by calling `pollLoadResult` each frame.
+        pub fn loadPreset(self: *Self, path: []const u8) !void {
+            // unloadPreset joins any in-progress thread and resets all state.
+            self.unloadPreset();
+
+            var parsed = try parsePresetFile(self.alloc, self.io, path);
+            errdefer parsed.deinit(self.alloc);
+            self.compile_total = @intCast(parsed.shader_config.total_passes);
+
+            const ctx = try self.alloc.create(AsyncLoadCtx);
+            errdefer self.alloc.destroy(ctx);
+            ctx.* = .{
+                .pipeline = self,
+                .path = try self.alloc.dupe(u8, path),
+                .parsed = parsed, // ownership transferred; freed by asyncLoadFn
+            };
+            errdefer self.alloc.free(ctx.path);
+
+            self.compile_thread = try std.Thread.spawn(.{}, asyncLoadFn, .{ctx});
+        }
+
+        /// The result of a `pollLoadResult` call.
+        pub const ShaderLoadPoll = union(enum) {
+            /// No async load has been started.
+            idle,
+            /// Compilation is in progress; `completed`/`total` indicate how many
+            /// passes have finished.
+            compiling: struct { completed: u32, total: u32 },
+            /// Compilation succeeded and the preset is now active.
+            done,
+            /// Compilation failed; the slice is the error message (owned by the
+            /// pipeline — do not free it).
+            failed: []const u8,
+        };
+
+        /// Poll the status of an async `loadPreset` call. Must be called from
+        /// the rendering thread, which activates the compiled preset.
+        /// When `.done` or `.failed` is returned the compile thread has been
+        /// joined and the pipeline has been updated.
+        pub fn pollLoadResult(self: *Self) ShaderLoadPoll {
+            if (self.compile_thread == null) return .idle;
+
+            if (!self.compile_done.load(.acquire)) {
+                return .{ .compiling = .{
+                    .completed = self.compile_progress.load(.monotonic),
+                    .total = self.compile_total,
+                } };
+            }
+
+            // Compilation finished — join the thread.
+            if (self.compile_thread) |t| {
+                t.join();
+                self.compile_thread = null;
+            }
+
+            self.compile_mutex.lockUncancelable(self.io);
+            defer self.compile_mutex.unlock(self.io);
+
+            if (!self.compile_failed) {
+                var preset = self.compiled_preset.?;
+                const path = self.compiled_path.?;
+                self.compiled_preset = null;
+                self.compiled_path = null;
+
+                self.activatePreset(&preset, path) catch |err| {
+                    preset.deinit(self.alloc, &self.backend);
+                    self.alloc.free(path);
+                    self.setCompileError(err);
+                };
+            }
+
+            if (self.compile_failed) {
+                return .{ .failed = self.compile_error_msg orelse "Unknown error" };
+            }
+            return .done;
+        }
+
+        /// Record a failed load. Must be called with `compile_mutex` held.
+        fn setCompileError(self: *Self, err: anyerror) void {
+            self.compile_failed = true;
+            self.compile_error_msg = std.fmt.allocPrint(self.alloc, "Load failed: {s}", .{@errorName(err)}) catch null;
+        }
+
+        /// Create the remaining GPU objects of a compiled preset and make it
+        /// the active one.
+        fn activatePreset(self: *Self, preset: *LoadedPreset, path: []u8) !void {
+            var lut_it = preset.luts.valueIterator();
+            while (lut_it.next()) |lut| {
+                const image = lut.image.?;
+                const handle = try self.backend.createTexture(image.width, image.height, .rgba8_unorm, 1);
+                lut.texture = Texture.init(self.alloc, handle, image.width, image.height, .rgba8_unorm, 1) catch |err| {
+                    self.backend.destroyTexture(handle);
+                    return err;
+                };
+                try self.backend.uploadTexture(handle, image.pixels, image.width, image.height);
+                self.alloc.free(image.pixels);
+                lut.image = null;
+
+                lut.sampler = try self.backend.createSampler(lut.sampler_desc);
+            }
+
+            for (preset.passes) |*pass| {
+                try self.backend.activatePass(self.alloc, &pass.gpu, &pass.vertex_reflection, &pass.fragment_reflection, pass.id);
+            }
+
+            var uses_pass_output = false;
+            var uses_pass_feedback = false;
+            var max_frame_history: usize = 0;
+            for (preset.passes) |pass| {
+                for (pass.fragment_reflection.descriptor_sets.items) |set_info| {
+                    for (set_info.bindings.items) |binding| switch (binding.binding_type) {
+                        .sampler2D => |st| switch (st) {
+                            .PassOutput => uses_pass_output = true,
+                            .PassFeedback => uses_pass_feedback = true,
+                            .OriginalHistory => |id| max_frame_history = @max(id, max_frame_history),
+                            else => {},
+                        },
+                        else => {},
+                    };
+                }
+            }
+
+            const pass_output = try self.alloc.alloc(?*Texture, preset.passes.len);
+            errdefer self.alloc.free(pass_output);
+            const pass_feedback = try self.alloc.alloc(?*Texture, preset.passes.len);
+            errdefer self.alloc.free(pass_feedback);
+            try self.frame_history.appendNTimes(self.alloc, null, max_frame_history);
+
+            @memset(pass_output, null);
+            @memset(pass_feedback, null);
+            self.pass_output = pass_output;
+            self.pass_feedback = pass_feedback;
+            self.preset = preset.*;
+            self.preset_path = path;
+            self.uses_pass_output = uses_pass_output;
+            self.uses_pass_feedback = uses_pass_feedback;
+
+            std.log.info("Loaded shader preset: {s} ({} pass(es))", .{ path, preset.passes.len });
+        }
+
+        /// Context passed to the async compilation thread.
+        const AsyncLoadCtx = struct {
+            pipeline: *Self,
+            /// Owned copy of the preset path (stored as `compiled_path` on success).
+            path: []u8,
+            /// Already-parsed preset data; ownership transferred from `loadPreset`.
+            parsed: ParsedPreset,
+        };
+
+        fn asyncLoadFn(ctx: *AsyncLoadCtx) void {
+            const self = ctx.pipeline;
+            defer {
+                ctx.parsed.deinit(self.alloc);
+                self.alloc.free(ctx.path);
+                self.alloc.destroy(ctx);
+            }
+
+            const result = compilePreset(
+                self.alloc,
+                self.io,
+                &self.backend,
+                &ctx.parsed,
+                &self.compile_progress,
+                &self.cache,
+            );
+
+            self.compile_mutex.lockUncancelable(self.io);
+            defer self.compile_mutex.unlock(self.io);
+            if (result) |preset| {
+                self.compiled_preset = preset;
+                self.compiled_path = ctx.path;
+                // Ownership moved to `compiled_path`; keep the defer above from freeing it.
+                ctx.path = &.{};
+            } else |err| {
+                self.setCompileError(err);
+            }
+            self.compile_done.store(true, .release);
+        }
+
+        pub fn renderFrame(
+            self: *Self,
+            input_texture: ?Backend.TextureHandle,
+            src_w: u32,
+            src_h: u32,
+            viewport: Viewport,
+            frame: Backend.Frame,
+            win_w: u32,
+            win_h: u32,
+        ) !?*Texture {
+            const preset = &self.preset.?;
+            const handle = input_texture orelse return null;
+
+            const input = try Texture.init(self.alloc, handle, src_w, src_h, .default, 1);
+            defer {
+                input.ptr = null; // the caller owns input_texture
+                input.release(&self.backend);
+            }
+
+            var uniforms = BuiltinUniforms{};
+            uniforms.OriginalSize = input.sizeVec4();
+            uniforms.FinalViewportSize = sizeVec4From(win_w, win_h);
+
+            self.backend.beginPasses(frame, handle);
+            defer self.backend.endPasses(frame);
+            try self.renderPasses(frame, preset, &uniforms, input, viewport);
+
+            // Update frame history for OriginalHistory# uniforms
+            if (self.frame_history.items.len > 0) try self.pushFrameHistory(frame, input);
+
+            // Release pass_output textures if no feedback is needed
+            if (self.uses_pass_output and !self.uses_pass_feedback) {
+                clearPassTextureSlots(&self.backend, self.pass_output);
+            }
+
+            self.frame_count += 1;
+            return preset.passes[preset.passes.len - 1].output_texture;
+        }
+
+        /// Store a copy of the current frame as the most recent history entry,
+        /// reusing the texture of the oldest one. The input texture is
+        /// overwritten by the UI every frame, so it cannot be referenced directly.
+        fn pushFrameHistory(self: *Self, frame: Backend.Frame, input: *Texture) !void {
+            const history = self.frame_history.items;
+            var slot = history[history.len - 1];
+            std.mem.copyBackwards(?*Texture, history[1..], history[0 .. history.len - 1]);
+            history[0] = null;
+
+            const target = try createRenderTarget(self.alloc, &self.backend, &slot, input.width, input.height, .rgba8_unorm, 1);
+            history[0] = target;
+            self.backend.copyTexture(frame, input.ptr.?, target.ptr.?, input.width, input.height);
+        }
+    };
+}
+
+fn sizeVec4From(w: u32, h: u32) [4]f32 {
+    return .{
+        @floatFromInt(w),
+        @floatFromInt(h),
+        1.0 / @as(f32, @floatFromInt(w)),
+        1.0 / @as(f32, @floatFromInt(h)),
+    };
+}

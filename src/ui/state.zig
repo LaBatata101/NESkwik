@@ -3,9 +3,9 @@ const builtin = @import("builtin");
 
 const game_history = @import("../game_history.zig");
 const c = @import("../root.zig").c;
-const Key = @import("core/ui.zig").Key;
-const UI = @import("core/ui.zig").UI;
-const Window = @import("core/ui.zig").Window;
+const Key = ness.ui.Key;
+const UI = ness.ui.UI;
+const Window = ness.ui.Window;
 const Rom = @import("../rom.zig").Rom;
 const viewport = @import("core/viewport.zig");
 const System = @import("../system.zig").System;
@@ -23,6 +23,7 @@ const netplay_snapshot = @import("../netplay/snapshot.zig");
 const file = @import("../utils/file.zig");
 const android = @import("../utils/android.zig");
 const ness = @import("../root.zig");
+const features = ness.features;
 const clay = @import("core/clay.zig");
 const sdlError = ness.sdlError;
 const SessionManager = ness.netplay_session.SessionManager;
@@ -37,12 +38,52 @@ const NES_VISIBLE_PIXEL_BYTES = NES_WIDTH * NES_VISIBLE_HEIGHT * 4;
 const NES_CONTROLLER_IMG = @embedFile("nes_controller_img");
 const NO_FRAME: u8 = std.math.maxInt(u8);
 const CURSOR_HIDE_DELAY_MS = 3000;
-const NES_TARGET_FPS: u64 = 60;
-const SPEED_SAMPLE_MS: u64 = 1000;
+const NES_TARGET_FPS: f32 = 60.0988;
 const CONNECTION_STATS_SAMPLE_MS: i64 = 500;
 /// Keep the SDL event loop responsive when the transport delivers a burst of
 /// authoritative frames (for example after a checkpoint or scheduler stall).
 const MAX_NETPLAY_FRAMES_PER_UPDATE: usize = 4;
+
+const GameOrigin = enum {
+    local,
+    network,
+};
+
+const Game = struct {
+    rom_bytes: []u8,
+    path: []const u8,
+    rom: Rom,
+    system: System,
+    start_time_ms: i64,
+    origin: GameOrigin,
+
+    fn init(alloc: std.mem.Allocator, io: std.Io, path: []const u8, rom_bytes: []u8, origin: GameOrigin) !*@This() {
+        const game = try alloc.create(Game);
+        game.* = .{
+            .rom_bytes = rom_bytes,
+            .path = try alloc.dupe(u8, path),
+            .rom = switch (origin) {
+                .local => try Rom.init(alloc, io, game.path, game.rom_bytes),
+                .network => try Rom.initWithOptions(alloc, io, game.path, game.rom_bytes, .{ .disable_battery_ram = true }),
+            },
+            .system = try System.init(alloc, io, &game.rom, .{}),
+            .start_time_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
+            .origin = origin,
+        };
+        if (origin == .local) game.system.reset();
+        if (comptime features.wasm) game.system.apu.device.setProducerBlocking(false);
+
+        return game;
+    }
+
+    fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+        self.system.deinit();
+        self.rom.deinit();
+        alloc.free(self.path);
+        alloc.free(self.rom_bytes);
+        alloc.destroy(self);
+    }
+};
 
 const Player = bindings.Player;
 const ControllerAction = bindings.ControllerAction;
@@ -96,7 +137,6 @@ const Netplay = struct {
     connection_stats_sample_time_ms: i64 = 0,
     session_window_handle: ?*Window = null,
     active_session_role: ness.netplay_session.Role = .none,
-    network_rom: bool = false,
 
     epoch: u32 = 0,
     frame: u64 = 0,
@@ -139,25 +179,20 @@ pub const AppState = struct {
     /// Wheter to skip drawing the home screen.
     render_home_ui: bool = true,
     render_debug_ui: bool = false,
+    show_web_settings_ui: bool = false,
     show_android_settings_ui: bool = false,
     show_android_multiplayer_ui: bool = false,
     show_android_sidepanel: bool = false,
     show_android_save_state_dialog: bool = false,
     show_android_load_state_dialog: bool = false,
-    emulation_running: bool = false,
+    game: ?*Game = null,
 
     netplay: Netplay,
 
     step_mode: bool = false,
 
-    rom_bytes: ?[]u8 = null,
-    rom: ?Rom = null,
-    system: ?System = null,
-
     history: game_history.GameHistory = undefined,
-    current_rom_path: ?[]u8 = null,
     save_state_info: [save_state.SLOT_COUNT]?save_state.SlotInfo = @splat(null),
-    game_start_time_ms: i64 = 0,
 
     paused: bool = false,
     lifecycle_suspended: std.atomic.Value(bool) = .init(false),
@@ -180,6 +215,8 @@ pub const AppState = struct {
     border_shader_loading: bool = false,
     /// Last border shader load error message (owned).
     border_shader_error: ?[]u8 = null,
+    /// True while the home screen snow shader is compiling.
+    snow_shader_loading: bool = false,
     /// Background Android shader library download, if active.
     shader_download_thread: ?std.Thread = null,
     shader_download_root_path: ?[]u8 = null,
@@ -189,9 +226,10 @@ pub const AppState = struct {
     shader_download_bytes: std.atomic.Value(u64) = .init(0),
     shader_download_total_bytes: std.atomic.Value(u64) = .init(shader_download.unknown_total),
 
-    // for the custom Android file picker
+    // for the custom shader file picker
     show_custom_file_picker: bool = false,
     shader_target: settings.ParamTarget = .main,
+    shader_file_picker_root: ?[]u8 = null,
     shader_file_picker_current_dir: []u8 = &.{},
     shader_file_picker_entries: std.ArrayList(ShaderFilePickerEntry) = .empty,
     shader_file_picker_error: ?[]u8 = null,
@@ -211,8 +249,9 @@ pub const AppState = struct {
     tmp_selected_input_device: [2]InputDevice = .{ .keyboard, .keyboard },
     input_devices: std.ArrayList(InputDevice) = .empty,
 
-    emulation_thread: ?std.Thread = null,
-    emulation_stop: std.atomic.Value(bool) = .init(false),
+    emulation_thread: if (features.wasm) void else ?std.Thread = if (features.wasm) {} else null,
+    emulation_stop: std.atomic.Value(bool) = .init(true),
+    emulation_thread_exited: std.atomic.Value(bool) = .init(true),
     emulation_lock: std.Io.RwLock = .init,
     controller1_bits: std.atomic.Value(u8) = .init(0),
     controller2_bits: std.atomic.Value(u8) = .init(0),
@@ -221,8 +260,8 @@ pub const AppState = struct {
     ui_frame_idx: std.atomic.Value(u8) = .init(0),
     writing_frame_idx: std.atomic.Value(u8) = .init(NO_FRAME),
     render_frame_idx: u8 = 0,
-    emulation_speed_frame_count: std.atomic.Value(u64) = .init(0),
-    emulation_speed_percent: std.atomic.Value(u64) = .init(0),
+    emulation_speed_frame_count: std.atomic.Value(u32) = .init(0),
+    emulation_speed_percent: std.atomic.Value(u32) = .init(0),
     /// Currently selected category in the settings sidebar.
     selected_category: SettingsCategory = .general,
 
@@ -348,19 +387,24 @@ pub const AppState = struct {
         android_onscreen_controller: OnScreenController = .{},
     };
 
-    pub fn init(alloc: std.mem.Allocator, io: std.Io, ui: *UI) Self {
+    pub fn init(alloc: std.mem.Allocator, io: std.Io, ui: *UI) !*Self {
         var hist = game_history.GameHistory.init(alloc, io);
+        errdefer hist.deinit();
         hist.load();
 
         const img_bytes = c.SDL_IOFromConstMem(NES_CONTROLLER_IMG, NES_CONTROLLER_IMG.len);
         const surface = c.SDL_LoadPNG_IO(img_bytes, true);
+        errdefer c.SDL_DestroySurface(surface);
 
         const config_dir = paths.getConfigDir(alloc) catch |err| blk: {
             std.log.warn("settings directory unavailable: {s}", .{@errorName(err)});
             break :blk null;
         };
+        errdefer if (config_dir) |path| alloc.free(path);
 
-        var state: Self = .{
+        const state = try alloc.create(Self);
+
+        state.* = .{
             .alloc = alloc,
             .io = io,
             .ui = ui,
@@ -376,6 +420,13 @@ pub const AppState = struct {
 
         state.loadSettings();
         state.snapshotSettings() catch @panic("Failed to snapshot loaded settings");
+
+        // The snow effect drawn on the home screen.
+        if (ui.loadShaderPreset("snow", BorderShaderOpts.snow.presetPath().?)) {
+            state.snow_shader_loading = true;
+        } else |err| {
+            std.log.err("Failed to start the home screen snow shader load: {s}", .{@errorName(err)});
+        }
         return state;
     }
 
@@ -386,68 +437,98 @@ pub const AppState = struct {
             // an unexplained connection failure.
             self.netplay.session_manager.disconnect();
         }
-        self.stopEmulationThread();
+
+        if (comptime features.wasm) {
+            std.debug.assert(self.game == null);
+            std.debug.assert(self.emulation_thread_exited.load(.acquire));
+        } else self.unloadCurrentRom();
 
         self.netplay.deinit(self.alloc);
-
-        // Save before freeing the system.
-        if (self.emulation_running) self.saveCurrentGame();
         self.history.deinit();
 
         if (self.config_dir) |path| self.alloc.free(path);
-        if (self.current_rom_path) |p| self.alloc.free(p);
-        if (self.rom_bytes) |rom_bytes| self.alloc.free(rom_bytes);
         deinitShaderRuntimeState(self.alloc, self);
         deinitEmulatorSettings(self.alloc, &self.settings);
         deinitEmulatorSettings(self.alloc, &self.saved_settings);
         self.input_devices.deinit(self.alloc);
         c.SDL_DestroySurface(self.controller_img.raw);
 
-        if (self.emulation_running) {
-            self.rom.?.deinit();
-            self.system.?.deinit();
-        }
+        self.alloc.destroy(self);
     }
 
-    fn startEmulationThread(self: *Self) !void {
-        self.stopEmulationThread();
+    pub fn isEmulationRunning(self: *const Self) bool {
+        return self.game != null and !self.emulation_stop.load(.acquire);
+    }
+
+    pub fn hasLoadedGame(self: *const Self) bool {
+        return self.game != null;
+    }
+
+    fn startEmulationThread(self: *Self, game: *Game) !void {
+        std.debug.assert(self.emulation_stop.load(.acquire));
+        std.debug.assert(self.emulation_thread_exited.load(.acquire));
+        if (comptime !features.wasm) std.debug.assert(self.emulation_thread == null);
         self.emulation_stop.store(false, .release);
+        self.emulation_thread_exited.store(false, .release);
+        errdefer {
+            self.emulation_stop.store(true, .release);
+            self.emulation_thread_exited.store(true, .release);
+        }
         self.emulation_speed_frame_count.store(0, .release);
         self.emulation_speed_percent.store(0, .release);
-        self.emulation_thread = try std.Thread.spawn(.{}, emulationThreadMain, .{self});
-    }
-
-    pub fn stopEmulationThread(self: *Self) void {
-        if (self.emulation_thread) |thread| {
-            self.emulation_stop.store(true, .release);
-            thread.join();
-            self.emulation_thread = null;
-            self.emulation_stop.store(false, .release);
+        const thread = try std.Thread.spawn(.{}, emulationThreadMain, .{ self, game });
+        if (comptime features.wasm) {
+            thread.detach();
+        } else {
+            self.emulation_thread = thread;
         }
     }
 
-    fn emulationThreadMain(self: *Self) void {
+    pub fn requestGameStop(self: *Self) void {
+        const game = self.game orelse return;
+        if (self.emulation_stop.swap(true, .acq_rel)) return;
+        // A frame may be blocked in SDLAudioOut.play() while it still owns
+        // emulation_lock. Pausing the device clears queued samples and wakes
+        // that producer so it can observe the stop request and exit.
+        game.system.setAudioPaused(true);
+        if (comptime !features.wasm) {
+            const thread = self.emulation_thread orelse unreachable;
+            thread.join();
+            self.emulation_thread = null;
+            std.debug.assert(self.emulation_thread_exited.load(.acquire));
+        }
+    }
+
+    fn emulationThreadMain(self: *Self, game: *Game) void {
+        defer self.emulation_thread_exited.store(true, .release);
+
         var frame_acc: f32 = 0.0;
         var speed_window_start: u64 = c.SDL_GetTicks();
+        var pacing_time: u64 = speed_window_start;
 
         while (!self.emulation_stop.load(.acquire)) {
             self.emulation_lock.lockUncancelable(self.io);
-            const authoritative_client = self.netplay.active_session_role == .client and self.netplay.network_rom;
-            const can_run = self.emulation_running and
-                self.system != null and
-                !self.lifecycle_suspended.load(.acquire) and
+            const authoritative_client = self.netplay.active_session_role == .client and game.origin == .network;
+            const can_run = !self.lifecycle_suspended.load(.acquire) and
                 !self.paused and
                 !self.step_mode and
                 !self.netplay.resyncing and
                 !authoritative_client;
+
             if (can_run) {
                 const speed = self.settings.emulation_speed;
                 const multiplier = speed.multiplier();
-                frame_acc += multiplier;
+                const pacing_now = c.SDL_GetTicks();
+                const elapsed_ms = pacing_now -% pacing_time;
+                pacing_time = pacing_now;
+                const elapsed_frames = @as(f32, @floatFromInt(elapsed_ms)) *
+                    (NES_TARGET_FPS / @as(f32, @floatFromInt(c.SDL_MS_PER_SECOND))) *
+                    multiplier;
+                frame_acc += elapsed_frames;
                 const frames_to_run: u32 = @intFromFloat(frame_acc);
                 frame_acc -= @floatFromInt(frames_to_run);
 
-                self.system.?.apu.device.setSpeed(multiplier);
+                game.system.apu.device.setSpeed(multiplier);
                 for (0..frames_to_run) |_| {
                     var controllers = self.controllerSnapshot();
                     const connected_host = self.isConnectedHost();
@@ -463,7 +544,7 @@ pub const AppState = struct {
                                 });
                                 self.netplay.lead_paused = true;
                             }
-                            self.system.?.setAudioPaused(true);
+                            game.system.setAudioPaused(true);
                             break;
                         }
 
@@ -471,7 +552,7 @@ pub const AppState = struct {
                             // Use hysteresis so normal acknowledgement jitter does not
                             // alternate pause/resume for every individual frame.
                             if (frame_lead > 6) {
-                                self.system.?.setAudioPaused(true);
+                                game.system.setAudioPaused(true);
                                 break;
                             }
                             std.log.info("netplay: client caught up; host resuming emulation (epoch={d}, frame={d}, last_ack={d})", .{
@@ -481,23 +562,26 @@ pub const AppState = struct {
                             });
                             self.netplay.lead_paused = false;
                         }
-                        self.system.?.setAudioPaused(false);
+                        game.system.setAudioPaused(false);
                         controllers.player2 = @bitCast(self.netplay.remote_player2.load(.acquire));
                     }
 
-                    self.system.?.applyControllerSnapshot(controllers);
-                    self.system.?.run_frame();
-                    self.publishFrame(self.system.?.frame_buffer());
-                    if (connected_host) self.publishAuthoritativeFrame(controllers);
+                    game.system.applyControllerSnapshot(controllers);
+                    game.system.run_frame();
+                    self.publishFrame(game.system.frame_buffer());
+                    if (connected_host) self.publishAuthoritativeFrame(game, controllers);
                     _ = self.emulation_speed_frame_count.fetchAdd(1, .monotonic);
                 }
+            } else {
+                pacing_time = c.SDL_GetTicks();
+                frame_acc = 0;
             }
 
             const now = c.SDL_GetTicks();
             const diff = now -% speed_window_start;
-            if (diff >= SPEED_SAMPLE_MS) {
+            if (diff >= c.SDL_MS_PER_SECOND) {
                 const speed_frame_count = self.emulation_speed_frame_count.swap(0, .acq_rel);
-                const percent = @divFloor(speed_frame_count * c.SDL_MS_PER_SECOND * 100, diff * NES_TARGET_FPS);
+                const percent: u32 = @intCast(@divFloor(speed_frame_count * c.SDL_MS_PER_SECOND * 100, diff * @as(u64, @intFromFloat(NES_TARGET_FPS))));
                 self.emulation_speed_percent.store(percent, .release);
                 speed_window_start = now;
             }
@@ -535,18 +619,20 @@ pub const AppState = struct {
             return;
         }
 
-        if (self.emulation_running) {
+        if (self.isEmulationRunning()) {
             const main_window_active = ui.current_window == ui.main_window;
             if (main_window_active or self.sessionActive()) self.syncControllers(ui);
             if (main_window_active) {
                 const client_restricted = self.isConnectedClient();
                 if (!client_restricted and ui.isKeyPressed(self.generalBinding(.quick_save))) self.saveStateSlot(0);
                 if (!client_restricted and ui.isKeyPressed(self.generalBinding(.quick_load))) self.loadStateSlot(0);
-                if (ui.isKeyPressed(self.generalBinding(.quit))) ui.quit = true;
+                if (!features.wasm and ui.isKeyPressed(self.generalBinding(.quit))) ui.quit = true;
                 if (!client_restricted and !self.sessionActive() and ui.isKeyPressed(self.generalBinding(.toggle_step_mode))) self.toggleDebug();
                 if (!client_restricted and ui.isKeyPressed(self.generalBinding(.restart))) self.resetSystem();
                 if (!client_restricted and ui.isKeyPressed(self.generalBinding(.toggle_pause))) self.togglePause();
-                if (!client_restricted and ui.isKeyPressed(self.generalBinding(.stop))) {
+                if (!client_restricted and (ui.isKeyPressed(self.generalBinding(.stop)) or
+                    (features.wasm and ui.isKeyPressed(.ESCAPE))))
+                {
                     self.unloadCurrentRom();
                     ui.setWindowFullscreen(false);
                 }
@@ -562,24 +648,26 @@ pub const AppState = struct {
                     }
                 }
             }
+        }
 
-            if (ui.mouseMotion()) {
-                ui.setTimer("hide_cursor", CURSOR_HIDE_DELAY_MS);
-                if (self.is_cursor_hidden) {
-                    sdlError(c.SDL_ShowCursor());
-                    self.is_cursor_hidden = false;
-                }
-            }
+        self.updateCursorVisibility(ui);
+    }
 
-            if (self.settings.hide_mouse_on_inactivity and !self.render_debug_ui) {
-                if (!self.is_cursor_hidden and ui.hasTimerExpired("hide_cursor").unwrap_or(false)) {
-                    sdlError(c.SDL_HideCursor());
-                    self.is_cursor_hidden = true;
-                }
-            } else if (self.is_cursor_hidden) { // Always show cursor if not in fullscreen
-                sdlError(c.SDL_ShowCursor());
-                self.is_cursor_hidden = false;
-            }
+    /// Hide the cursor after a while without mouse movement, but only while a
+    /// game runs; it is shown again everywhere else (e.g. after the game is
+    /// closed while the cursor is hidden).
+    fn updateCursorVisibility(self: *Self, ui: *UI) void {
+        const can_hide = self.isEmulationRunning() and
+            self.settings.hide_mouse_on_inactivity and
+            !self.render_debug_ui;
+        // Restarting the timer while hiding is not allowed makes a newly
+        // started game wait the full delay too.
+        if (ui.mouseMotion() or !can_hide) ui.setTimer("hide_cursor", CURSOR_HIDE_DELAY_MS);
+
+        const hide = can_hide and ui.hasTimerExpired("hide_cursor").unwrap_or(false);
+        if (hide != self.is_cursor_hidden) {
+            sdlError(if (hide) c.SDL_HideCursor() else c.SDL_ShowCursor());
+            self.is_cursor_hidden = hide;
         }
     }
 
@@ -604,7 +692,7 @@ pub const AppState = struct {
 
         if (self.show_android_settings_ui) {
             self.show_android_settings_ui = false;
-            self.render_home_ui = !self.emulation_running;
+            self.render_home_ui = !self.hasLoadedGame();
             return;
         }
 
@@ -613,7 +701,7 @@ pub const AppState = struct {
             return;
         }
 
-        if (self.emulation_running) {
+        if (self.hasLoadedGame()) {
             self.show_android_sidepanel = true;
             // Set a timer of 250ms to avoid closing the sidepanel as soon as it's opened
             ui.setTimer("android_sidepanel", 250);
@@ -625,7 +713,7 @@ pub const AppState = struct {
 
     pub fn update(self: *Self) void {
         self.handleInput(self.ui);
-        self.updateNetplay();
+        if (comptime !features.wasm) self.updateNetplay();
         self.updateShaderState(self.ui);
 
         // Track connected/disconnected gamepads
@@ -783,6 +871,24 @@ pub const AppState = struct {
                 },
             }
         }
+
+        if (self.snow_shader_loading) {
+            switch (ui.pollShaderLoad("snow")) {
+                .compiling => {},
+                .done => {
+                    self.snow_shader_loading = false;
+                    ui.setShaderParam("snow", "A", 0.0);
+                    ui.setShaderParam("snow", "LAYERS", 10.0);
+                    ui.setShaderParam("snow", "SPEED", 0.005);
+                    ui.setShaderParam("snow", "FALL_DIRECTION", 0.0);
+                },
+                .idle => self.snow_shader_loading = false,
+                .failed => |msg| {
+                    self.snow_shader_loading = false;
+                    std.log.err("Home screen snow shader: {s}", .{msg});
+                },
+            }
+        }
     }
 
     pub fn framePixels(self: *Self, offset: usize, len: usize) []const u8 {
@@ -793,7 +899,8 @@ pub const AppState = struct {
         self.emulation_lock.lockSharedUncancelable(self.io);
         defer self.emulation_lock.unlockShared(self.io);
 
-        return DebugSnapshot.capture(&self.system.?);
+        const game = self.game.?;
+        return DebugSnapshot.capture(&game.system);
     }
 
     pub fn syncControllers(self: *Self, ui: *UI) void {
@@ -827,7 +934,7 @@ pub const AppState = struct {
         const input_device = self.selected_input_device[player_id.value()];
         if (input_device == .gamepad) {
             self.pollGamepadButtons(ui, player_id, input_device.gamepad.id, &status);
-        } else if (builtin.abi.isAndroid()) {
+        } else if (ui.isMobile()) {
             const touch_player = if (self.isConnectedClient()) Player.two else Player.one;
             if (player_id == touch_player) status.insert(ui.onScreenControllerStatus());
         } else {
@@ -870,7 +977,8 @@ pub const AppState = struct {
         self.emulation_lock.lockUncancelable(self.io);
         defer self.emulation_lock.unlock(self.io);
 
-        self.system.?.reset();
+        const game = self.game.?;
+        game.system.reset();
 
         if (self.isConnectedHost()) {
             std.log.info("netplay: host reset system; scheduling authoritative rebase", .{});
@@ -884,13 +992,15 @@ pub const AppState = struct {
     pub fn runSystemTick(self: *Self) void {
         self.emulation_lock.lockUncancelable(self.io);
         defer self.emulation_lock.unlock(self.io);
-        self.system.?.tick();
+        const game = self.game.?;
+        game.system.tick();
     }
 
     pub fn runSystemFrame(self: *Self) void {
         self.emulation_lock.lockUncancelable(self.io);
         defer self.emulation_lock.unlock(self.io);
-        self.system.?.run_frame();
+        const game = self.game.?;
+        game.system.run_frame();
     }
 
     pub fn setEmulationSpeed(self: *Self, speed: EmulationSpeed) void {
@@ -913,15 +1023,19 @@ pub const AppState = struct {
     }
 
     pub fn romDisplayName(self: *const Self) []const u8 {
+        return self.romDisplayNameFor(self.game.?);
+    }
+
+    fn romDisplayNameFor(self: *const Self, game: *const Game) []const u8 {
         return if (builtin.abi.isAndroid())
-            (android.displayName(self.alloc, self.current_rom_path.?) catch @panic("JNI error")).?
+            (android.displayName(self.alloc, game.path) catch @panic("JNI error")).?
         else
-            self.alloc.dupe(u8, std.fs.path.stem(self.current_rom_path.?)) catch @panic("OOM");
+            self.alloc.dupe(u8, std.fs.path.stem(game.path)) catch @panic("OOM");
     }
 
     pub fn saveStateSlot(self: *Self, slot: usize) void {
         if (self.isConnectedClient()) return;
-        std.debug.assert(self.current_rom_path != null);
+        std.debug.assert(self.isEmulationRunning());
         std.debug.assert(slot < save_state.SLOT_COUNT);
 
         const name = self.romDisplayName();
@@ -932,7 +1046,8 @@ pub const AppState = struct {
 
         std.log.info("Saving state to slot {} for \"{s}\"", .{ slot + 1, name });
 
-        const info = save_state.saveSlot(self.alloc, self.io, name, &self.system.?, slot) catch |err| {
+        const game = self.game.?;
+        const info = save_state.saveSlot(self.alloc, self.io, name, &game.system, slot) catch |err| {
             std.log.err("save state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
             return;
         };
@@ -943,7 +1058,7 @@ pub const AppState = struct {
 
     pub fn loadStateSlot(self: *Self, slot: usize) void {
         if (self.isConnectedClient()) return;
-        std.debug.assert(self.current_rom_path != null);
+        std.debug.assert(self.isEmulationRunning());
 
         const name = self.romDisplayName();
         defer self.alloc.free(name);
@@ -953,7 +1068,8 @@ pub const AppState = struct {
 
         std.log.info("Loading state from slot {} for \"{s}\"", .{ slot + 1, name });
 
-        save_state.loadSlot(self.alloc, self.io, name, &self.system.?, slot) catch |err| {
+        const game = self.game.?;
+        save_state.loadSlot(self.alloc, self.io, name, &game.system, slot) catch |err| {
             std.log.err("load state slot {} failed: {s}", .{ slot + 1, @errorName(err) });
         };
         if (self.isConnectedHost()) {
@@ -971,89 +1087,85 @@ pub const AppState = struct {
         return self.save_state_info[slot];
     }
 
-    pub fn loadRom(self: *Self, path: []const u8) !void {
-        if (self.sessionActive()) self.netplay.session_manager.disconnect();
-        // Save previous game's progress before replacing it.
-        if (self.emulation_running) {
-            self.stopEmulationThread();
-            self.saveCurrentGame();
-        }
-
-        if (self.rom) |*rom| rom.deinit();
-        if (self.system) |*system| system.deinit();
-
-        const rom_fullpath = if (builtin.abi.isAndroid()) path else blk: {
+    fn createLocalGame(self: *Self, path: []const u8) !*Game {
+        const resolved_rom_path: ?[]u8 = if (builtin.abi.isAndroid() or std.fs.path.isAbsolute(path)) null else blk: {
             const cwd = try std.process.currentPathAlloc(self.io, self.alloc);
             defer self.alloc.free(cwd);
-            const rom_fullpath = try std.fs.path.resolve(self.alloc, &.{ cwd, path });
-
-            break :blk rom_fullpath;
+            break :blk try std.fs.path.resolve(self.alloc, &.{ cwd, path });
         };
-        defer if (!builtin.abi.isAndroid()) self.alloc.free(rom_fullpath);
+        defer if (resolved_rom_path) |resolved| self.alloc.free(resolved);
+        const rom_fullpath = resolved_rom_path orelse path;
 
         std.log.debug("Reading file: {s}", .{rom_fullpath});
+        const rom_bytes = try file.readFile(self.alloc, self.io, rom_fullpath);
+        return Game.init(self.alloc, self.io, rom_fullpath, rom_bytes, .local);
+    }
 
-        if (self.rom_bytes) |bytes| self.alloc.free(bytes);
-        self.rom_bytes = try file.readFile(self.alloc, self.io, rom_fullpath);
-
-        self.rom = try Rom.init(self.alloc, self.io, rom_fullpath, self.rom_bytes.?);
-        self.system = try System.init(self.alloc, self.io, &self.rom.?, .{});
-        self.system.?.reset();
-        self.publishFrame(self.system.?.frame_buffer());
-        self.emulation_running = true;
-        self.netplay.network_rom = false;
+    fn installGame(self: *Self, game: *Game) !void {
+        std.debug.assert(self.game == null);
+        self.publishFrame(game.system.frame_buffer());
         self.render_home_ui = false;
         self.render_debug_ui = false;
         self.show_android_settings_ui = false;
         self.show_android_multiplayer_ui = false;
         self.show_android_sidepanel = false;
-
-        if (self.current_rom_path) |p| self.alloc.free(p);
-        self.current_rom_path = self.alloc.dupe(u8, rom_fullpath) catch null;
-        self.game_start_time_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        self.paused = false;
+        self.step_mode = false;
+        try self.startEmulationThread(game);
+        self.game = game;
         self.refreshSaveStateInfo();
-        try self.startEmulationThread();
     }
 
-    pub fn unloadCurrentRom(self: *Self) void {
-        if (self.sessionActive()) self.netplay.session_manager.disconnect();
-        self.unloadCurrentRomInternal();
-    }
-
-    fn unloadCurrentRomInternal(self: *Self) void {
-        if (!self.emulation_running) return;
-        self.clearControllerState();
-        self.stopEmulationThread();
-        if (!self.netplay.network_rom) self.saveCurrentGame();
-
-        self.rom.?.deinit();
-        self.system.?.deinit();
-        self.alloc.free(self.current_rom_path.?);
-        self.alloc.free(self.rom_bytes.?);
-
-        self.rom = null;
-        self.system = null;
-        self.rom_bytes = null;
-        self.current_rom_path = null;
-        self.emulation_running = false;
-        self.netplay.network_rom = false;
+    fn resetUiWithoutGame(self: *Self) void {
         self.render_home_ui = true;
         self.render_debug_ui = false;
-
         self.show_android_settings_ui = false;
         self.show_android_multiplayer_ui = false;
         self.show_android_sidepanel = false;
         @memset(self.save_state_info[0..], null);
+        self.paused = false;
+        self.step_mode = false;
     }
 
-    fn saveCurrentGame(self: *Self) void {
-        if (self.netplay.network_rom) return;
-        const path = self.current_rom_path orelse return;
+    pub fn loadRom(self: *Self, path: []const u8) !void {
+        if (self.sessionActive()) self.netplay.session_manager.disconnect();
+        if (self.game != null) {
+            if (comptime features.wasm) return error.GameStopRequired;
+            self.unloadCurrentRom();
+        }
 
-        const name = self.romDisplayName();
+        const game = try self.createLocalGame(path);
+        try self.installGame(game);
+    }
+
+    pub fn unloadCurrentRom(self: *Self) void {
+        if (self.sessionActive()) self.netplay.session_manager.disconnect();
+        self.clearControllerState();
+        if (self.game == null) return;
+        self.requestGameStop();
+        if (comptime !features.wasm) std.debug.assert(self.finishGameStop());
+    }
+
+    pub fn finishGameStop(self: *Self) bool {
+        const game = self.game orelse return true;
+        if (!self.emulation_stop.load(.acquire) or
+            !self.emulation_thread_exited.load(.acquire)) return false;
+
+        if (game.origin == .local) self.saveCurrentGameFor(game);
+        self.game = null;
+        game.deinit(self.alloc);
+        self.resetUiWithoutGame();
+        return true;
+    }
+
+    fn saveCurrentGameFor(self: *Self, game: *Game) void {
+        std.debug.assert(game.origin == .local);
+        const path = game.path;
+
+        const name = self.romDisplayNameFor(game);
         defer self.alloc.free(name);
 
-        const elapsed_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds() - self.game_start_time_ms;
+        const elapsed_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds() - game.start_time_ms;
         const elapsed_secs: u64 = if (elapsed_ms > 0) @intCast(@divFloor(elapsed_ms, 1000)) else 0;
 
         var existing_secs: u64 = 0;
@@ -1068,7 +1180,7 @@ pub const AppState = struct {
         self.history.save(name, path, existing_secs + elapsed_secs, pixels);
 
         // Reset so back-to-back saves (loadRom then deinit) don't double-count.
-        self.game_start_time_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        game.start_time_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
     }
 
     fn refreshSaveStateInfo(self: *Self) void {
@@ -1112,14 +1224,16 @@ pub const AppState = struct {
     }
 
     fn loadSettings(self: *Self) void {
-        settings.load(self.alloc, self.io, self.config_dir, &self.settings) catch |err|
+        const config_dir = self.config_dir orelse return;
+        settings.load(self.alloc, self.io, config_dir, &self.settings) catch |err|
             std.log.err("settings load failed: {s}", .{@errorName(err)});
         self.should_load_shader = self.settings.shader_preset_path != null;
         self.should_load_border_shader = self.settings.border_shader != .none;
     }
 
     fn saveSettingsImpl(self: *Self) !void {
-        try settings.save(self.alloc, self.io, self.config_dir, self.settings);
+        const config_dir = self.config_dir orelse return error.SettingsDirectoryUnavailable;
+        try settings.save(self.alloc, self.io, config_dir, self.settings);
     }
 
     fn snapshotSettings(self: *Self) !void {
@@ -1156,18 +1270,55 @@ pub const AppState = struct {
         };
     }
 
+    pub fn requestShaderPresetLoad(self: *Self, path: []const u8) !void {
+        const owned_path = try self.alloc.dupe(u8, path);
+        if (self.settings.shader_preset_path) |old_path| self.alloc.free(old_path);
+        self.settings.shader_preset_path = owned_path;
+        settings.clearShaderParamSettings(self.alloc, &self.settings.shader_params);
+        self.should_load_shader = true;
+        self.should_clear_shader = false;
+    }
+
+    /// Open the in-app shader picker on the shader library: the downloaded
+    /// shaders on Android, the imported ones in the browser. It starts in the
+    /// folder of the current preset.
     pub fn openShaderFilePicker(self: *Self, target: settings.ParamTarget) void {
+        const root_path = shaderLibraryPath(self.alloc) catch |err| {
+            std.log.err("failed to resolve shader root path: {s}", .{@errorName(err)});
+            return;
+        };
+        defer self.alloc.free(root_path);
+
+        self.closeShaderFilePicker();
+        self.shader_file_picker_root = self.alloc.dupe(u8, root_path) catch @panic("OOM");
         self.shader_target = target;
         self.show_custom_file_picker = true;
 
-        self.loadShaderFilePickerEntries() catch |err| {
-            std.log.err("failed to load shader file picker entries: {s}", .{@errorName(err)});
-            self.shader_file_picker_error = std.fmt.allocPrint(
-                self.alloc,
-                "Failed to list shaders: {s}",
-                .{@errorName(err)},
-            ) catch null;
-        };
+        const preset_dir = if (self.settings.shader_preset_path) |preset|
+            relativeShaderDir(root_path, preset)
+        else
+            null;
+        self.setShaderFilePickerCurrentDir(preset_dir orelse "");
+        // The preset's folder may be gone (e.g. replaced by a new import).
+        if (self.shader_file_picker_error != null and preset_dir != null) self.setShaderFilePickerCurrentDir("");
+    }
+
+    /// Show a shader folder the browser just copied into the library.
+    pub fn showImportedShaderFolder(self: *Self, folder: []const u8) void {
+        if (!self.show_custom_file_picker) self.openShaderFilePicker(.main);
+        self.setShaderFilePickerCurrentDir(folder);
+    }
+
+    fn shaderLibraryPath(alloc: std.mem.Allocator) ![]u8 {
+        // Mounted and filled by web/bridge.js.
+        if (features.wasm) return alloc.dupe(u8, "/shaders");
+        return paths.shaderDownloadAndroidPath(alloc);
+    }
+
+    /// The folder of `preset` relative to `root`, if it is inside it.
+    fn relativeShaderDir(root: []const u8, preset: []const u8) ?[]const u8 {
+        if (!std.mem.startsWith(u8, preset, root) or preset.len <= root.len or preset[root.len] != '/') return null;
+        return std.fs.path.dirname(preset[root.len + 1 ..]);
     }
 
     pub fn closeShaderFilePicker(self: *Self) void {
@@ -1176,6 +1327,10 @@ pub const AppState = struct {
         if (self.shader_file_picker_current_dir.len > 0) {
             self.alloc.free(self.shader_file_picker_current_dir);
             self.shader_file_picker_current_dir = &.{};
+        }
+        if (self.shader_file_picker_root) |root| {
+            self.alloc.free(root);
+            self.shader_file_picker_root = null;
         }
         self.clearShaderFilePickerEntries();
         if (self.shader_file_picker_error) |old| {
@@ -1194,11 +1349,7 @@ pub const AppState = struct {
         const entry = self.shader_file_picker_entries.items[index];
         std.debug.assert(entry.kind == .file);
 
-        const root_path = paths.shaderDownloadAndroidPath(self.alloc) catch |err| {
-            std.log.err("failed to resolve shader root path: {s}", .{@errorName(err)});
-            return;
-        };
-        defer self.alloc.free(root_path);
+        const root_path = self.shader_file_picker_root orelse return;
         const shader_path = if (self.shader_file_picker_current_dir.len == 0)
             std.fs.path.join(self.alloc, &.{ root_path, entry.label }) catch @panic("Failed to allocate!")
         else
@@ -1206,13 +1357,7 @@ pub const AppState = struct {
         defer self.alloc.free(shader_path);
 
         switch (self.shader_target) {
-            .main => {
-                if (self.settings.shader_preset_path) |old| self.alloc.free(old);
-                self.settings.shader_preset_path = self.alloc.dupe(u8, shader_path) catch @panic("Failed to allocate!");
-                settings.clearShaderParamSettings(self.alloc, &self.settings.shader_params);
-                self.should_load_shader = true;
-                self.should_clear_shader = false;
-            },
+            .main => self.requestShaderPresetLoad(shader_path) catch @panic("Failed to allocate!"),
             .border => {},
         }
 
@@ -1248,18 +1393,21 @@ pub const AppState = struct {
     fn loadShaderFilePickerEntries(self: *Self) !void {
         self.clearShaderFilePickerEntries();
 
-        const root_path = try paths.shaderDownloadAndroidPath(self.alloc);
-        defer self.alloc.free(root_path);
+        const root_path = self.shader_file_picker_root orelse return error.ShaderFilePickerNotOpen;
         const dir_path = if (self.shader_file_picker_current_dir.len == 0)
             try self.alloc.dupe(u8, root_path)
         else
             try std.fs.path.join(self.alloc, &.{ root_path, self.shader_file_picker_current_dir });
         defer self.alloc.free(dir_path);
 
-        var dir = try std.Io.Dir.openDirAbsolute(self.io, dir_path, .{ .iterate = true });
-        defer dir.close(self.io);
-
-        try self.collectShaderFilePickerEntries(dir);
+        if (features.wasm) {
+            // std.Io's directory iteration fails on Emscripten's file system.
+            try self.collectShaderFilePickerEntriesLibc(dir_path);
+        } else {
+            var dir = try std.Io.Dir.openDirAbsolute(self.io, dir_path, .{ .iterate = true });
+            defer dir.close(self.io);
+            try self.collectShaderFilePickerEntries(dir);
+        }
         std.mem.sort(ShaderFilePickerEntry, self.shader_file_picker_entries.items, {}, lessThanShaderFilePickerEntry);
     }
 
@@ -1267,28 +1415,36 @@ pub const AppState = struct {
         var it = dir.iterate();
         while (try it.next(self.io)) |entry| {
             switch (entry.kind) {
-                .file => {
-                    if (!std.mem.endsWith(u8, entry.name, ".slangp")) continue;
-                    const label = try self.alloc.dupe(u8, entry.name);
-                    errdefer self.alloc.free(label);
-
-                    try self.shader_file_picker_entries.append(self.alloc, .{
-                        .kind = .file,
-                        .label = label,
-                    });
-                },
-                .directory => {
-                    const label = try self.alloc.dupe(u8, entry.name);
-                    errdefer self.alloc.free(label);
-
-                    try self.shader_file_picker_entries.append(self.alloc, .{
-                        .kind = .directory,
-                        .label = label,
-                    });
-                },
+                .file => try self.addShaderFilePickerEntry(.file, entry.name),
+                .directory => try self.addShaderFilePickerEntry(.directory, entry.name),
                 else => {},
             }
         }
+    }
+
+    fn collectShaderFilePickerEntriesLibc(self: *Self, dir_path: []const u8) !void {
+        const dir_path_z = try self.alloc.dupeZ(u8, dir_path);
+        defer self.alloc.free(dir_path_z);
+
+        const dir = c.opendir(dir_path_z.ptr) orelse return error.FileNotFound;
+        defer _ = c.closedir(dir);
+        while (@as(?*c.struct_dirent, c.readdir(dir))) |entry| {
+            const name = std.mem.sliceTo(&entry.d_name, 0);
+            if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+            switch (entry.d_type) {
+                c.DT_REG => try self.addShaderFilePickerEntry(.file, name),
+                c.DT_DIR => try self.addShaderFilePickerEntry(.directory, name),
+                else => {},
+            }
+        }
+    }
+
+    /// Folders and `.slangp` presets are listed; other files are skipped.
+    fn addShaderFilePickerEntry(self: *Self, kind: ShaderFilePickerEntry.Kind, name: []const u8) !void {
+        if (kind == .file and !std.mem.endsWith(u8, name, ".slangp")) return;
+        const label = try self.alloc.dupe(u8, name);
+        errdefer self.alloc.free(label);
+        try self.shader_file_picker_entries.append(self.alloc, .{ .kind = kind, .label = label });
     }
 
     fn setShaderFilePickerCurrentDir(self: *Self, rel_dir: []const u8) void {
@@ -1418,20 +1574,28 @@ pub const AppState = struct {
 
     pub fn togglePause(self: *Self) void {
         if (self.isConnectedClient()) return;
+        const game = self.game.?;
+        const paused = !self.paused;
 
-        self.emulation_lock.lockUncancelable(self.io);
-        defer self.emulation_lock.unlock(self.io);
+        // Interrupt audio backpressure before waiting for emulation_lock. The
+        // worker can otherwise hold that lock while waiting for buffer space.
+        game.system.setAudioPaused(paused);
 
-        self.paused = !self.paused;
+        {
+            self.emulation_lock.lockUncancelable(self.io);
+            defer self.emulation_lock.unlock(self.io);
 
-        if (self.isConnectedHost()) {
-            std.log.info("netplay: host changed pause state to {any}", .{self.paused});
-            self.netplay.session_manager.send(.init(&.{
-                .control = .{ .paused = self.paused },
-            })) catch |err| {
-                std.log.err("netplay: failed to send pause control: {s}", .{@errorName(err)});
-                self.netplay.session_manager.disconnect();
-            };
+            self.paused = paused;
+
+            if (self.isConnectedHost()) {
+                std.log.info("netplay: host changed pause state to {any}", .{self.paused});
+                self.netplay.session_manager.send(.init(&.{
+                    .control = .{ .paused = self.paused },
+                })) catch |err| {
+                    std.log.err("netplay: failed to send pause control: {s}", .{@errorName(err)});
+                    self.netplay.session_manager.disconnect();
+                };
+            }
         }
     }
 
@@ -1442,9 +1606,7 @@ pub const AppState = struct {
             self.clearControllerState();
         }
 
-        if (self.system) |*system| {
-            system.setAudioPaused(suspended);
-        }
+        if (self.game) |game| game.system.setAudioPaused(suspended);
     }
 
     pub fn toggleDebug(self: *Self) void {
@@ -1483,20 +1645,21 @@ pub const AppState = struct {
     }
 
     pub fn startHostSession(self: *Self) !void {
-        if (!self.emulation_running or self.rom_bytes == null or self.current_rom_path == null) return error.NoGameRunning;
-        if (self.rom_bytes.?.len > netplay_protocol.max_rom_size) return error.RomTooLarge;
+        if (!self.isEmulationRunning()) return error.NoGameRunning;
+        const game = self.game.?;
+        if (game.rom_bytes.len > netplay_protocol.max_rom_size) return error.RomTooLarge;
 
         self.clearSessionPresentation();
 
         const framebuffer = blk: {
             self.emulation_lock.lockSharedUncancelable(self.io);
             defer self.emulation_lock.unlockShared(self.io);
-            break :blk try self.alloc.dupe(u8, self.system.?.frame_buffer());
+            break :blk try self.alloc.dupe(u8, game.system.frame_buffer());
         };
         errdefer self.alloc.free(framebuffer);
 
         var rom_hash: [32]u8 = undefined;
-        std.crypto.hash.Blake3.hash(self.rom_bytes.?, &rom_hash, .{});
+        std.crypto.hash.Blake3.hash(game.rom_bytes, &rom_hash, .{});
 
         const rom_name = self.romDisplayName();
         defer self.alloc.free(rom_name);
@@ -1511,13 +1674,13 @@ pub const AppState = struct {
 
         std.log.info("netplay: preparing host session for '{s}' (rom={d} bytes, hash={x})", .{
             display_name,
-            self.rom_bytes.?.len,
+            game.rom_bytes.len,
             rom_hash[0..8],
         });
 
         try self.netplay.session_manager.startHost(.init(.{
             .name = protocol_name,
-            .rom_size = @intCast(self.rom_bytes.?.len),
+            .rom_size = @intCast(game.rom_bytes.len),
             .rom_hash = rom_hash,
             .framebuffer = framebuffer,
         }));
@@ -1561,8 +1724,8 @@ pub const AppState = struct {
 
         if (builtin.abi.isAndroid()) {
             self.show_android_multiplayer_ui = false;
-            self.render_home_ui = !self.emulation_running;
-            if (self.emulation_running and !(self.netplay.active_session_role == .client and self.netplay.network_rom)) {
+            self.render_home_ui = !self.hasLoadedGame();
+            if (self.isEmulationRunning() and !(self.netplay.active_session_role == .client and self.game.?.origin == .network)) {
                 self.ui.setWindowFullscreen(true);
             }
         }
@@ -1573,8 +1736,8 @@ pub const AppState = struct {
     pub fn closeAndroidSessionUI(self: *Self) void {
         self.show_android_multiplayer_ui = false;
         self.handleSessionWindowClosed();
-        self.render_home_ui = !self.emulation_running;
-        if (self.emulation_running) self.ui.setWindowFullscreen(true);
+        self.render_home_ui = !self.hasLoadedGame();
+        if (self.isEmulationRunning()) self.ui.setWindowFullscreen(true);
     }
 
     fn closeSessionWindow(self: *Self, window: *Window) void {
@@ -1626,7 +1789,7 @@ pub const AppState = struct {
                         if (builtin.abi.isAndroid()) {
                             self.show_android_multiplayer_ui = false;
                             self.render_home_ui = false;
-                            if (self.emulation_running) self.ui.setWindowFullscreen(true);
+                            if (self.isEmulationRunning()) self.ui.setWindowFullscreen(true);
                         } else {
                             self.closeSessionWindow(self.netplay.session_window_handle.?);
                         }
@@ -1743,7 +1906,8 @@ pub const AppState = struct {
     }
 
     fn provideJoinData(self: *Self) !void {
-        if (self.netplay.active_session_role != .host or self.rom_bytes == null) return error.InvalidSessionState;
+        if (self.netplay.active_session_role != .host or !self.isEmulationRunning()) return error.InvalidSessionState;
+        const game = self.game.?;
 
         std.log.info("netplay: capturing host state at frame boundary for client join", .{});
 
@@ -1753,24 +1917,24 @@ pub const AppState = struct {
         self.netplay.resyncing = true;
         self.netplay.ready = false;
         self.netplay.lead_paused = false;
-        if (self.system) |*system| system.setAudioPaused(true);
+        game.system.setAudioPaused(true);
 
         std.log.info("netplay: host emulation paused at join snapshot boundary until client is ready", .{});
         errdefer {
             self.netplay.resyncing = false;
-            if (self.system) |*system| system.setAudioPaused(self.paused);
+            game.system.setAudioPaused(self.paused);
         }
 
-        var snapshot = try self.system.?.saveState(self.alloc);
+        var snapshot = try game.system.saveState(self.alloc);
         defer snapshot.deinit(self.alloc);
 
-        self.system.?.apu.resetOutputBuffers();
+        game.system.apu.resetOutputBuffers();
 
         const encoded = try netplay_snapshot.encode(self.alloc, &snapshot);
         defer self.alloc.free(encoded);
 
         var rom_hash: [32]u8 = undefined;
-        std.crypto.hash.Blake3.hash(self.rom_bytes.?, &rom_hash, .{});
+        std.crypto.hash.Blake3.hash(game.rom_bytes, &rom_hash, .{});
 
         self.netplay.epoch +%= 1;
         self.netplay.frame = 0;
@@ -1785,7 +1949,7 @@ pub const AppState = struct {
 
         std.log.info("netplay: sending initial state (name='{s}', rom={d} bytes, snapshot={d} bytes, epoch={d}, frame={d}, speed={s})", .{
             safe_name,
-            self.rom_bytes.?.len,
+            game.rom_bytes.len,
             encoded.len,
             self.netplay.epoch,
             self.netplay.frame,
@@ -1794,7 +1958,7 @@ pub const AppState = struct {
 
         try self.netplay.session_manager.send(.init(&.{ .join_data = .{
             .name = safe_name,
-            .rom = self.rom_bytes.?,
+            .rom = game.rom_bytes,
             .rom_hash = rom_hash,
             .snapshot = encoded,
             .speed = @intFromEnum(self.settings.emulation_speed),
@@ -1814,7 +1978,7 @@ pub const AppState = struct {
 
         switch (message.*) {
             .join_data => |*data| {
-                if (self.netplay.network_rom) return error.UnexpectedSessionMessage;
+                if (self.isEmulationRunning() and self.game.?.origin == .network) return error.UnexpectedSessionMessage;
 
                 try self.installNetworkGame(data);
             },
@@ -1834,7 +1998,7 @@ pub const AppState = struct {
                 self.netplay.resyncing = false;
                 self.netplay.ready = true;
                 self.netplay.lead_paused = false;
-                if (self.system) |*system| system.setAudioPaused(self.paused);
+                self.game.?.system.setAudioPaused(self.paused);
 
                 std.log.info("netplay: peer is ready; authoritative play active (epoch={d}, frame={d}, player2=0x{x})", .{
                     ready.epoch,
@@ -1897,7 +2061,7 @@ pub const AppState = struct {
                     std.log.info("netplay: applying host pause state {any}", .{paused});
 
                     self.paused = paused;
-                    if (self.system) |*system| system.setAudioPaused(paused);
+                    self.game.?.system.setAudioPaused(paused);
                 },
                 .speed => |value| {
                     const speed = std.enums.fromInt(EmulationSpeed, value) orelse return error.InvalidEmulationSpeed;
@@ -1905,7 +2069,7 @@ pub const AppState = struct {
                     std.log.info("netplay: applying host emulation speed {s}", .{@tagName(speed)});
 
                     self.settings.emulation_speed = speed;
-                    if (self.system) |*system| system.apu.device.setSpeed(speed.multiplier());
+                    self.game.?.system.apu.device.setSpeed(speed.multiplier());
                 },
             },
             .rebase => |rebase| try self.applyRebase(rebase),
@@ -1962,62 +2126,24 @@ pub const AppState = struct {
             self.alloc.destroy(snapshot);
         }
 
+        if (comptime features.wasm) return error.Unsupported;
+
         const rom_bytes = try self.alloc.dupe(u8, data.rom);
-        var committed = false;
-        errdefer if (!committed) self.alloc.free(rom_bytes);
-
-        var rom = try Rom.initWithOptions(self.alloc, self.io, data.name, rom_bytes, .{ .disable_battery_ram = true });
-        errdefer if (!committed) rom.deinit();
-
-        const new_system = try self.alloc.create(System);
-        var new_system_initialized = false;
-        var new_system_moved = false;
-        errdefer if (!new_system_moved) {
-            if (new_system_initialized) new_system.deinit();
-            self.alloc.destroy(new_system);
-        };
-
-        new_system.* = try System.init(self.alloc, self.io, &rom, .{});
-        new_system_initialized = true;
-        try new_system.loadState(snapshot);
+        const game = try Game.init(self.alloc, self.io, data.name, rom_bytes, .network);
+        try game.system.loadState(snapshot);
 
         std.log.debug("netplay: network snapshot applied to new system", .{});
 
-        const new_path = try self.alloc.dupe(u8, data.name);
-        errdefer if (!committed) self.alloc.free(new_path);
-
-        if (self.emulation_running) {
-            self.stopEmulationThread();
-            if (!self.netplay.network_rom) self.saveCurrentGame();
-            self.rom.?.deinit();
-            self.system.?.deinit();
-            self.alloc.free(self.current_rom_path.?);
-            self.alloc.free(self.rom_bytes.?);
+        if (self.game != null) {
+            self.clearControllerState();
+            self.requestGameStop();
+            std.debug.assert(self.finishGameStop());
         }
-
-        self.rom_bytes = rom_bytes;
-        self.rom = rom;
-
-        new_system.bus.rom = &self.rom.?;
-        new_system.ppu.rom = &self.rom.?;
-        new_system.apu.dmc.rom = &self.rom.?;
-
-        self.system = new_system.*;
-        new_system_moved = true;
-        self.alloc.destroy(new_system);
-        self.current_rom_path = new_path;
-        committed = true;
-
-        self.netplay.network_rom = true;
-        self.emulation_running = true;
-        self.render_home_ui = false;
-        self.render_debug_ui = false;
-        self.paused = false;
 
         self.netplay.client_saved_speed = self.settings.emulation_speed;
         self.settings.emulation_speed = speed;
-        self.system.?.apu.device.setSpeed(speed.multiplier());
-        self.system.?.apu.device.setProducerBlocking(false);
+        game.system.apu.device.setSpeed(speed.multiplier());
+        game.system.apu.device.setProducerBlocking(false);
 
         std.log.debug("netplay: authoritative client audio backpressure disabled", .{});
 
@@ -2025,8 +2151,7 @@ pub const AppState = struct {
         self.netplay.frame = data.frame;
         self.netplay.lead_paused = false;
 
-        self.publishFrame(self.system.?.frame_buffer());
-        try self.startEmulationThread();
+        try self.installGame(game);
 
         const player2: u8 = @bitCast(self.controllerSnapshot().player2);
 
@@ -2044,24 +2169,25 @@ pub const AppState = struct {
     }
 
     fn applyAuthoritativeFrame(self: *Self, frame: netplay_protocol.Frame) !void {
-        if (self.netplay.active_session_role != .client or !self.netplay.network_rom) return error.InvalidSessionState;
+        if (self.netplay.active_session_role != .client or !self.isEmulationRunning() or self.game.?.origin != .network) return error.InvalidSessionState;
         try netplay_protocol.validateNext(self.netplay.epoch, self.netplay.frame + 1, frame.epoch, frame.frame);
 
         self.emulation_lock.lockUncancelable(self.io);
         defer self.emulation_lock.unlock(self.io);
 
-        self.system.?.applyControllerSnapshot(.{ .player1 = @bitCast(frame.player1), .player2 = @bitCast(frame.player2) });
-        self.system.?.run_frame();
+        const game = self.game.?;
+        game.system.applyControllerSnapshot(.{ .player1 = @bitCast(frame.player1), .player2 = @bitCast(frame.player2) });
+        game.system.run_frame();
         _ = self.emulation_speed_frame_count.fetchAdd(1, .monotonic);
-        self.publishFrame(self.system.?.frame_buffer());
+        self.publishFrame(game.system.frame_buffer());
         self.netplay.frame = frame.frame;
 
         var digest_value: ?[32]u8 = null;
         if (frame.digest != null) {
-            var snapshot = try self.system.?.saveState(self.alloc);
+            var snapshot = try game.system.saveState(self.alloc);
             defer snapshot.deinit(self.alloc);
 
-            digest_value = try netplay_snapshot.digest(&snapshot);
+            digest_value = try netplay_snapshot.digest(self.alloc, &snapshot);
 
             std.log.debug("netplay: client computed checkpoint digest (epoch={d}, frame={d}, digest={x})", .{
                 self.netplay.epoch,
@@ -2070,7 +2196,7 @@ pub const AppState = struct {
             });
 
             if (builtin.mode == .Debug) {
-                logCheckpointComponents("client", self.netplay.epoch, self.netplay.frame, &snapshot);
+                logCheckpointComponents(self.alloc, "client", self.netplay.epoch, self.netplay.frame, &snapshot);
             }
         }
 
@@ -2084,19 +2210,19 @@ pub const AppState = struct {
         } }));
     }
 
-    fn publishAuthoritativeFrame(self: *Self, controllers: System.ControllerSnapshot) void {
+    fn publishAuthoritativeFrame(self: *Self, game: *Game, controllers: System.ControllerSnapshot) void {
         self.netplay.frame +%= 1;
 
         var digest_value: ?[32]u8 = null;
         if (self.netplay.frame % 60 == 0) {
-            var snapshot = self.system.?.saveState(self.alloc) catch |err| {
+            var snapshot = game.system.saveState(self.alloc) catch |err| {
                 std.log.err("netplay: failed to capture host checkpoint at frame {d}: {s}", .{ self.netplay.frame, @errorName(err) });
                 self.netplay.session_manager.disconnect();
                 return;
             };
             defer snapshot.deinit(self.alloc);
 
-            digest_value = netplay_snapshot.digest(&snapshot) catch |err| {
+            digest_value = netplay_snapshot.digest(self.alloc, &snapshot) catch |err| {
                 std.log.err("netplay: failed to hash host checkpoint at frame {d}: {s}", .{ self.netplay.frame, @errorName(err) });
                 self.netplay.session_manager.disconnect();
                 return;
@@ -2112,7 +2238,7 @@ pub const AppState = struct {
             });
 
             if (builtin.mode == .Debug) {
-                logCheckpointComponents("host", self.netplay.epoch, self.netplay.frame, &snapshot);
+                logCheckpointComponents(self.alloc, "host", self.netplay.epoch, self.netplay.frame, &snapshot);
             }
         }
 
@@ -2132,8 +2258,8 @@ pub const AppState = struct {
         };
     }
 
-    fn logCheckpointComponents(side: []const u8, epoch: u32, frame: u64, snapshot: *const System.Snapshot) void {
-        const components = netplay_snapshot.componentDigests(snapshot) catch |err| {
+    fn logCheckpointComponents(alloc: std.mem.Allocator, side: []const u8, epoch: u32, frame: u64, snapshot: *const System.Snapshot) void {
+        const components = netplay_snapshot.componentDigests(alloc, snapshot) catch |err| {
             std.log.warn("netplay: failed to compute {s} checkpoint component diagnostics: {s}", .{ side, @errorName(err) });
             return;
         };
@@ -2151,16 +2277,17 @@ pub const AppState = struct {
 
     fn sendRebase(self: *Self) !void {
         const previous_epoch = self.netplay.epoch;
+        const game = self.game.?;
 
         std.log.info("netplay: capturing authoritative rebase (previous_epoch={d}, frame={d})", .{
             previous_epoch,
             self.netplay.frame,
         });
 
-        var snapshot = try self.system.?.saveState(self.alloc);
+        var snapshot = try game.system.saveState(self.alloc);
         defer snapshot.deinit(self.alloc);
 
-        self.system.?.apu.resetOutputBuffers();
+        game.system.apu.resetOutputBuffers();
 
         const encoded = try netplay_snapshot.encode(self.alloc, &snapshot);
         defer self.alloc.free(encoded);
@@ -2171,7 +2298,7 @@ pub const AppState = struct {
         self.netplay.resyncing = true;
         self.netplay.ready = false;
         self.netplay.lead_paused = false;
-        if (self.system) |*system| system.setAudioPaused(true);
+        game.system.setAudioPaused(true);
         self.netplay.session_manager.markResyncing();
 
         std.log.info("netplay: sending authoritative rebase (epoch={d}, snapshot={d} bytes)", .{
@@ -2207,12 +2334,13 @@ pub const AppState = struct {
         self.emulation_lock.lockUncancelable(self.io);
         defer self.emulation_lock.unlock(self.io);
 
-        try self.system.?.loadState(snapshot);
+        const game = self.game.?;
+        try game.system.loadState(snapshot);
 
         self.netplay.epoch = rebase.epoch;
         self.netplay.frame = rebase.frame;
 
-        self.publishFrame(self.system.?.frame_buffer());
+        self.publishFrame(game.system.frame_buffer());
 
         const player2: u8 = @bitCast(self.controllerSnapshot().player2);
 
@@ -2249,7 +2377,7 @@ pub const AppState = struct {
     fn handleSessionEnded(self: *Self) void {
         const was_host = self.netplay.active_session_role == .host;
         const was_client = self.netplay.active_session_role == .client;
-        const stopped_client_game = was_client and self.netplay.network_rom;
+        const stopped_client_game = was_client and self.game != null and self.game.?.origin == .network;
 
         std.log.info("netplay: cleaning up ended session (role={s}, unload_network_game={any})", .{
             @tagName(self.netplay.active_session_role),
@@ -2257,7 +2385,9 @@ pub const AppState = struct {
         });
 
         if (stopped_client_game) {
-            self.unloadCurrentRomInternal();
+            self.clearControllerState();
+            self.requestGameStop();
+            std.debug.assert(self.finishGameStop());
             if (builtin.abi.isAndroid()) self.ui.setWindowFullscreen(false);
         } else {
             self.emulation_lock.lockUncancelable(self.io);
@@ -2272,7 +2402,7 @@ pub const AppState = struct {
         self.netplay.lead_paused = false;
         self.netplay.active_session_role = .none;
 
-        if (self.system) |*system| system.setAudioPaused(false);
+        if (self.isEmulationRunning()) self.game.?.system.setAudioPaused(false);
 
         if (!stopped_client_game) self.emulation_lock.unlock(self.io);
 
@@ -2280,8 +2410,8 @@ pub const AppState = struct {
             if (builtin.abi.isAndroid()) {
                 if (self.show_android_multiplayer_ui) {
                     self.show_android_multiplayer_ui = false;
-                    self.render_home_ui = !self.emulation_running;
-                    if (self.emulation_running) self.ui.setWindowFullscreen(true);
+                    self.render_home_ui = !self.hasLoadedGame();
+                    if (self.isEmulationRunning()) self.ui.setWindowFullscreen(true);
                 }
             } else {
                 self.closeSessionWindow(self.netplay.session_window_handle.?);
@@ -2427,6 +2557,10 @@ fn deinitShaderRuntimeState(alloc: std.mem.Allocator, app_state: *AppState) void
     if (app_state.shader_file_picker_current_dir.len > 0) {
         alloc.free(app_state.shader_file_picker_current_dir);
         app_state.shader_file_picker_current_dir = &.{};
+    }
+    if (app_state.shader_file_picker_root) |root| {
+        alloc.free(root);
+        app_state.shader_file_picker_root = null;
     }
 }
 
