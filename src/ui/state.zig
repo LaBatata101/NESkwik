@@ -135,8 +135,12 @@ const Netplay = struct {
     session_peer: ?[32]u8 = null,
     connection_stats: ?ness.netplay_session.ConnectionStats = null,
     connection_stats_sample_time_ms: i64 = 0,
+    /// Null when the user closed the session window; host sessions keep running.
     session_window_handle: ?*Window = null,
     active_session_role: ness.netplay_session.Role = .none,
+    /// Last session state delivered by `pollEvent`, to tell the handshake
+    /// completing apart from a resynchronization finishing.
+    observed_session_state: ness.netplay_session.State = .idle,
 
     epoch: u32 = 0,
     frame: u64 = 0,
@@ -1771,25 +1775,27 @@ pub const AppState = struct {
                 .state => |state| {
                     std.log.debug("netplay: application observed state {s}", .{@tagName(state)});
 
+                    const previous = self.netplay.observed_session_state;
+                    self.netplay.observed_session_state = state;
+
                     if (state == .waiting and self.netplay.active_session_role == .host) {
                         self.netplay.session_peer = null;
                     }
 
-                    if (state == .connected and self.netplay.active_session_role == .client) {
+                    // Resynchronization also ends in `connected`; only the handshake joins the peer.
+                    const joined = state == .connected and previous == .joining;
+                    if (joined and self.netplay.active_session_role == .client) {
                         self.ui.main_window.ctx.setTimer("connected_to_host_toast", 2500);
 
                         if (builtin.abi.isAndroid()) {
                             self.show_android_multiplayer_ui = false;
                             self.render_home_ui = false;
                             if (self.isEmulationRunning()) self.ui.setWindowFullscreen(true);
-                        } else {
-                            self.closeSessionWindow(self.netplay.session_window_handle.?);
+                        } else if (self.netplay.session_window_handle) |window| {
+                            self.closeSessionWindow(window);
                         }
-                    } else if (state == .connected and
-                        self.netplay.active_session_role == .host and
-                        !builtin.abi.isAndroid())
-                    {
-                        self.netplay.session_window_handle.?.setWindowSize(600, 400);
+                    } else if (joined and self.netplay.active_session_role == .host and !builtin.abi.isAndroid()) {
+                        if (self.netplay.session_window_handle) |window| window.setWindowSize(600, 400);
                     }
                 },
                 .session_code => {
@@ -2364,7 +2370,7 @@ pub const AppState = struct {
                     if (self.isEmulationRunning()) self.ui.setWindowFullscreen(true);
                 }
             } else {
-                self.closeSessionWindow(self.netplay.session_window_handle.?);
+                if (self.netplay.session_window_handle) |window| self.closeSessionWindow(window);
             }
         }
 
