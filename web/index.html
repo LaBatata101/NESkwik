@@ -15,10 +15,33 @@
     #loading { position: fixed; inset: 0; display: grid; place-content: center; gap: .75rem; text-align: center; background: #090b10; color: #d8dee9; z-index: 10; }
     #loading[hidden] { display: none; }
     #status { color: #f19a9a; max-width: min(32rem, 90vw); }
+    #crash { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 44rem); place-content: center; padding: 1rem; background: rgb(9 11 16 / .85); color: #d8dee9; z-index: 20; }
+    #crash[hidden] { display: none; }
+    #crash .panel { display: flex; flex-direction: column; gap: .75rem; max-height: calc(100dvh - 2rem); padding: 1.25rem; border: 1px solid #3b4252; border-radius: .5rem; background: #12151c; }
+    #crash h1 { margin: 0; font-size: 1.15rem; color: #f19a9a; }
+    #crash p { margin: 0; }
+    #crash pre { margin: 0; padding: .6rem .75rem; border-radius: .35rem; background: #090b10; font: .8rem/1.4 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #crash #crash-stack { min-height: 4rem; overflow: auto; white-space: pre; }
+    #crash .actions { display: flex; justify-content: flex-end; gap: .5rem; }
+    #crash button { padding: .45rem .9rem; border: 1px solid #3b4252; border-radius: .35rem; background: #1b1f29; color: inherit; font: inherit; cursor: pointer; }
+    #crash button:hover, #crash button:focus-visible { border-color: #81a1c1; }
   </style>
 </head>
 <body>
   <div id="loading"><strong>Loading NESkwik…</strong><span id="status"></span></div>
+  <div id="crash" role="alertdialog" aria-modal="true" aria-labelledby="crash-title" hidden>
+    <div class="panel">
+      <h1 id="crash-title">NESkwik crashed</h1>
+      <p>The program crashed with the following message:</p>
+      <pre id="crash-message"></pre>
+      <p>Stack trace:</p>
+      <pre id="crash-stack"></pre>
+      <div class="actions">
+        <button id="crash-copy" type="button">Copy details</button>
+        <button id="crash-reload" type="button">Reload</button>
+      </div>
+    </div>
+  </div>
   <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
   <input id="rom-picker" type="file" accept=".nes,application/octet-stream" hidden>
   <input id="shader-picker" type="file" webkitdirectory multiple hidden>

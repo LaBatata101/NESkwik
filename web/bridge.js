@@ -92,6 +92,39 @@ Module.preRun.push(() => {
   }
 
 
+  // Called on the main thread by `neskwik_wasm_show_panic` (web/lib.js). Only
+  // the first panic is shown: the app is stopped after it.
+  let panicShown = false;
+  Module.showPanic = function (message, stack) {
+    if (panicShown) return;
+    panicShown = true;
+
+    const details = `The program crashed with the following message:\n"${message}"\n\nStack trace:\n${stack}\n`;
+    document.getElementById("loading").hidden = true;
+    document.getElementById("crash-message").textContent = message;
+    document.getElementById("crash-stack").textContent = stack || "Stack trace unavailable.";
+
+    const copy = document.getElementById("crash-copy");
+    copy.onclick = async function () {
+      try {
+        await navigator.clipboard.writeText(details);
+        copy.textContent = "Copied";
+      } catch {
+        // The clipboard needs a secure context; let the user copy it by hand.
+        getSelection().selectAllChildren(document.getElementById("crash-stack"));
+      }
+    };
+    const reload = document.getElementById("crash-reload");
+    reload.onclick = () => location.reload();
+
+    const dialog = document.getElementById("crash");
+    // SDL's fill-document mode moves every element but the canvas into a
+    // hidden container.
+    document.body.append(dialog);
+    dialog.hidden = false;
+    reload.focus();
+  };
+
   Module.onRuntimeInitialized = function () {
     const loading = document.getElementById("loading");
     if (loading) loading.hidden = true;
