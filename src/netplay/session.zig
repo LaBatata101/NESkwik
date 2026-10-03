@@ -317,7 +317,7 @@ pub const SessionManager = struct {
         var endpoint = EndpointRef.Owned.init(
             try iroh.Endpoint.bind(self.alloc, .{ .preset = self.preset, .alpns = &.{protocol.alpn} }),
         );
-        defer endpoint.value.deinit();
+        defer closeAndFreeEndpoint(&endpoint.value);
         std.log.info("netplay: host endpoint bound", .{});
 
         try self.publishEndpoint(endpoint.borrow());
@@ -447,7 +447,7 @@ pub const SessionManager = struct {
         var endpoint = EndpointRef.Owned.init(
             try iroh.Endpoint.bind(self.alloc, .{ .preset = self.preset }),
         );
-        defer endpoint.value.deinit();
+        defer closeAndFreeEndpoint(&endpoint.value);
         std.log.info("netplay: client endpoint bound", .{});
 
         try self.publishEndpoint(endpoint.borrow());
@@ -845,6 +845,18 @@ fn isExpectedFromPeer(role: Role, message: protocol.Message) bool {
         .none => unreachable,
     };
 }
+
+/// iroh expects `close` before an endpoint is dropped; otherwise its background
+/// tasks keep running on the shared runtime. The shutdown worker may already
+/// have closed it, but it never sees an endpoint bound after the session was
+/// cancelled.
+fn closeAndFreeEndpoint(endpoint: *iroh.Endpoint) void {
+    if (!endpoint.isClosed()) endpoint.close() catch |err| {
+        std.log.warn("netplay: endpoint close failed: {s}", .{@errorName(err)});
+    };
+    endpoint.deinit();
+}
+
 fn verifyAbi() !void {
     const actual = iroh.runtimeAbiVersion();
     if (actual != iroh.abi_version) {

@@ -100,7 +100,11 @@ static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::ne
 fn runtime() -> Result<&'static tokio::runtime::Runtime, IrohError> {
     RUNTIME
         .get_or_init(|| {
+            // A netplay session drives one endpoint with at most one
+            // connection. The default of one worker per core multiplies
+            // threads and the malloc arenas they retain memory in.
             tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_all()
                 .build()
                 .map_err(|error| error.to_string())
