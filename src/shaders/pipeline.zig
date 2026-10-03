@@ -304,22 +304,24 @@ fn reflectResources(
                     var field_type: FieldType = classifyFieldName(member_name) orelse
                         .{ .Other = try alloc.dupe(u8, member_name) };
 
-                    // Detect size variants for pass aliases (e.g. `MyPassSize`, `MyPass0Size`)
-                    if (field_type == .Other) {
-                        if (std.mem.indexOf(u8, member_name, "Size")) |idx| {
-                            const var_name = member_name[0..idx];
+                    // Detect size variants for pass aliases (e.g. `MyPassSize`, `PassOutputSize0`).
+                    // They are always vec4; float parameters such as `MaxSpotSize` are not.
+                    if (field_type == .Other and msize == 16) {
+                        const id_start = std.mem.trimEnd(u8, member_name, "0123456789").len;
+                        if (std.mem.endsWith(u8, member_name[0..id_start], "Size")) {
+                            const var_name = member_name[0 .. id_start - "Size".len];
                             const is_builtin = std.mem.eql(u8, var_name, "Original") or
                                 std.mem.eql(u8, var_name, "Source") or
                                 std.mem.eql(u8, var_name, "Output") or
                                 std.mem.eql(u8, var_name, "Final");
-                            if (!is_builtin) {
+                            if (var_name.len > 0 and !is_builtin) {
                                 // Free what classifyFieldName set (nothing, we set Other above)
                                 alloc.free(field_type.Other);
-                                const suffix = member_name[idx + 4 ..];
-                                if (suffix.len > 0 and std.ascii.isDigit(suffix[0])) {
+                                const suffix = member_name[id_start..];
+                                if (suffix.len > 0) {
                                     field_type = .{ .SizeVariantWithId = .{
                                         .name = try alloc.dupe(u8, var_name),
-                                        .id = try std.fmt.parseInt(usize, suffix[0..1], 10),
+                                        .id = try std.fmt.parseInt(usize, suffix, 10),
                                     } };
                                 } else {
                                     field_type = .{ .SizeVariant = try alloc.dupe(u8, var_name) };

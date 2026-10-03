@@ -29,6 +29,13 @@ fn lex(alloc: std.mem.Allocator, source: []const u8) ![]Token {
     while (pos < source.len) {
         const start = pos;
         switch (source[pos]) {
+            '/' => {
+                pos += 1;
+                // `//` line comment
+                if (pos < source.len and source[pos] == '/') {
+                    while (pos < source.len and source[pos] != '\n' and source[pos] != '\r') pos += 1;
+                }
+            },
             '#' => {
                 pos += 1;
                 while (pos < source.len and std.ascii.isAlphabetic(source[pos])) pos += 1;
@@ -125,6 +132,10 @@ fn lex(alloc: std.mem.Allocator, source: []const u8) ![]Token {
                 }
 
                 while (pos < source.len and (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_')) pos += 1;
+                if (pos == start) {
+                    pos += 1; // stray '.' outside a value
+                    continue;
+                }
                 const value = source[start..pos];
                 try tokens.append(alloc, .{
                     .type = .Id,
@@ -145,12 +156,9 @@ pub const ScaleType = enum {
     viewport,
     absolute,
 
-    fn fromSlice(slice: []const u8) @This() {
+    fn fromSlice(slice: []const u8) !@This() {
         const trimmed = std.mem.trim(u8, slice, &std.ascii.whitespace);
-        if (std.mem.eql(u8, trimmed, "source")) return .source;
-        if (std.mem.eql(u8, trimmed, "viewport")) return .viewport;
-        if (std.mem.eql(u8, trimmed, "absolute")) return .absolute;
-        unreachable;
+        return std.meta.stringToEnum(@This(), trimmed) orelse error.InvalidScaleType;
     }
 };
 
@@ -160,12 +168,9 @@ pub const WrapMode = enum {
     repeat,
     mirrored_repeat,
 
-    fn fromSlice(slice: []const u8) @This() {
-        if (std.mem.eql(u8, slice, "clamp_to_border")) return .clamp_to_border;
-        if (std.mem.eql(u8, slice, "clamp_to_edge")) return .clamp_to_edge;
-        if (std.mem.eql(u8, slice, "repeat")) return .repeat;
-        if (std.mem.eql(u8, slice, "mirrored_repeat")) return .mirrored_repeat;
-        unreachable;
+    fn fromSlice(slice: []const u8) !@This() {
+        const trimmed = std.mem.trim(u8, slice, &std.ascii.whitespace);
+        return std.meta.stringToEnum(@This(), trimmed) orelse error.InvalidWrapMode;
     }
 };
 
@@ -294,6 +299,7 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
         const token = tokens[pos];
         switch (token.type) {
             .Id => {
+                if (tokens[pos + 1].type != .Eq) continue;
                 const field = token.value;
                 pos += 2; // Id + Eq
                 const value_tok = tokens[pos];
@@ -321,7 +327,7 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
                 } else if (std.mem.endsWith(u8, field, "_wrap_mode")) {
                     const base = field[0 .. field.len - "_wrap_mode".len];
                     if (textures.getEntry(base)) |entry| {
-                        entry.value_ptr.*.wrap_mode = WrapMode.fromSlice(value_tok.value);
+                        entry.value_ptr.*.wrap_mode = try WrapMode.fromSlice(value_tok.value);
                         continue;
                     }
                 } else if (std.mem.endsWith(u8, field, "_mipmap")) {
@@ -332,7 +338,7 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
                     }
                 }
 
-                if (is_shader_param(field)) {
+                const pass_field = parsePassField(field) orelse {
                     const value: TypeUnion = blk: {
                         if (is_float(value_tok.value)) {
                             break :blk .{ .Float = try std.fmt.parseFloat(f32, value_tok.value) };
@@ -346,38 +352,31 @@ pub fn parse_slangp(alloc: std.mem.Allocator, source: []const u8) !ShaderConfig 
                     };
                     try shader_params.put(try alloc.dupe(u8, field), value);
                     continue;
-                }
+                };
 
-                const pass_id = try get_field_pass_id(field);
+                const pass_id = pass_field.id;
+                if (pass_id >= total_passes) continue;
                 passes[pass_id].id = pass_id;
-                if (std.mem.startsWith(u8, field, "shader")) {
-                    passes[pass_id].path = value_tok.value;
-                } else if (std.mem.startsWith(u8, field, "filter_linear")) {
-                    passes[pass_id].params.filter_linear = std.mem.eql(u8, value_tok.value, "true");
-                } else if (std.mem.startsWith(u8, field, "scale_type_x")) {
-                    passes[pass_id].params.scale_type_x = ScaleType.fromSlice(value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "scale_type_y")) {
-                    passes[pass_id].params.scale_type_y = ScaleType.fromSlice(value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "scale_type")) {
-                    passes[pass_id].params.scale_type = ScaleType.fromSlice(value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "scale_x")) {
-                    passes[pass_id].params.scale_x = try std.fmt.parseFloat(f32, value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "scale_y")) {
-                    passes[pass_id].params.scale_y = try std.fmt.parseFloat(f32, value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "scale")) {
-                    passes[pass_id].params.scale = try std.fmt.parseFloat(f32, value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "wrap_mode")) {
-                    passes[pass_id].params.wrap_mode = WrapMode.fromSlice(value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "alias")) {
-                    passes[pass_id].params.alias = try alloc.dupe(u8, value_tok.value);
-                } else if (std.mem.startsWith(u8, field, "mipmap_input")) {
-                    passes[pass_id].params.mipmap_input = std.mem.eql(u8, value_tok.value, "true");
-                } else if (std.mem.startsWith(u8, field, "float_framebuffer")) {
-                    passes[pass_id].params.float_framebuffer = std.mem.eql(u8, value_tok.value, "true");
-                } else if (std.mem.startsWith(u8, field, "srgb_framebuffer")) {
-                    passes[pass_id].params.srgb_framebuffer = std.mem.eql(u8, value_tok.value, "true");
-                } else if (std.mem.startsWith(u8, field, "frame_count_mod")) {
-                    passes[pass_id].params.frame_count_mod = try std.fmt.parseInt(u32, value_tok.value, 10);
+                const params = &passes[pass_id].params;
+                const value = value_tok.value;
+                switch (pass_field.key) {
+                    .shader => passes[pass_id].path = value,
+                    .filter_linear => params.filter_linear = std.mem.eql(u8, value, "true"),
+                    .scale_type_x => params.scale_type_x = try ScaleType.fromSlice(value),
+                    .scale_type_y => params.scale_type_y = try ScaleType.fromSlice(value),
+                    .scale_type => params.scale_type = try ScaleType.fromSlice(value),
+                    .scale_x => params.scale_x = try std.fmt.parseFloat(f32, value),
+                    .scale_y => params.scale_y = try std.fmt.parseFloat(f32, value),
+                    .scale => params.scale = try std.fmt.parseFloat(f32, value),
+                    .wrap_mode => params.wrap_mode = try WrapMode.fromSlice(value),
+                    .alias => {
+                        if (params.alias) |old| alloc.free(old);
+                        params.alias = try alloc.dupe(u8, value);
+                    },
+                    .mipmap_input => params.mipmap_input = std.mem.eql(u8, value, "true"),
+                    .float_framebuffer => params.float_framebuffer = std.mem.eql(u8, value, "true"),
+                    .srgb_framebuffer => params.srgb_framebuffer = std.mem.eql(u8, value, "true"),
+                    .frame_count_mod => params.frame_count_mod = try std.fmt.parseInt(u32, value, 10),
                 }
             },
             else => {},
@@ -400,12 +399,32 @@ fn is_float(value: []const u8) bool {
     return true;
 }
 
-fn is_shader_param(field: []const u8) bool {
-    if (field.len == 0) return false;
-    for (field) |ch| {
-        if (!std.ascii.isAlphabetic(ch) and ch != '_' and ch != '-') return false;
-    }
-    return true;
+const PassKey = enum {
+    shader,
+    filter_linear,
+    scale_type_x,
+    scale_type_y,
+    scale_type,
+    scale_x,
+    scale_y,
+    scale,
+    wrap_mode,
+    alias,
+    mipmap_input,
+    float_framebuffer,
+    srgb_framebuffer,
+    frame_count_mod,
+};
+
+/// Splits a per-pass field like `scale_type_x3` into its key and pass index.
+/// Returns null for anything else (shader parameters such as `JINC2_SINC`).
+fn parsePassField(field: []const u8) ?struct { key: PassKey, id: usize } {
+    var digits_start = field.len;
+    while (digits_start > 0 and std.ascii.isDigit(field[digits_start - 1])) digits_start -= 1;
+    if (digits_start == field.len) return null;
+    const key = std.meta.stringToEnum(PassKey, field[0..digits_start]) orelse return null;
+    const id = std.fmt.parseInt(usize, field[digits_start..], 10) catch return null;
+    return .{ .key = key, .id = id };
 }
 
 pub fn get_field_pass_id(field: []const u8) !usize {
@@ -598,4 +617,32 @@ test "parse_slangp_with_textures" {
     const sampler_lut = shader_config.textures.get("SamplerLUT1").?;
     try std.testing.expectEqual(WrapMode.repeat, sampler_lut.wrap_mode);
     try std.testing.expect(sampler_lut.mipmap);
+}
+
+test "parse_slangp_with_line_comments" {
+    const alloc = std.testing.allocator;
+    const source =
+        \\shaders = 2
+        \\
+        \\// Monitor-like spot size (less variation than TVs)
+        \\MaxSpotSize = 0.95
+        \\// From https://github.com/Calinou/free-blue-noise-textures. Using
+        \\textures = BlueNoiseTex
+        \\BlueNoiseTex = shaders/crt-beans/blue_noise.png
+        \\
+        \\//======== Linearize gamma.
+        \\shader0 = shaders/crt-beans/linearize.slang
+        \\alias0 = Linearized
+        \\shader1 = shaders/crt-beans/output.slang
+    ;
+    var shader_config = try parse_slangp(alloc, source);
+    defer shader_config.deinit(alloc);
+
+    try std.testing.expectEqual(2, shader_config.total_passes);
+    try std.testing.expectEqualStrings("shaders/crt-beans/linearize.slang", shader_config.passes[0].path);
+    try std.testing.expectEqualStrings("Linearized", shader_config.passes[0].params.alias.?);
+    try std.testing.expectEqualStrings("shaders/crt-beans/output.slang", shader_config.passes[1].path);
+    try std.testing.expectEqualStrings("shaders/crt-beans/blue_noise.png", shader_config.textures.get("BlueNoiseTex").?.path);
+    try std.testing.expectEqual(1, shader_config.shader_params_initial_values.count());
+    try std.testing.expectEqual(0.95, shader_config.shader_params_initial_values.get("MaxSpotSize").?.Float);
 }

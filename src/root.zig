@@ -58,5 +58,6 @@ pub const NES_VISIBLE_HEIGHT = NES_HEIGHT - OVERSCAN_TOP - OVERSCAN_BOTTOM;
 pub const DEBUG_WIDTH = 250;
 
 test {
+    _ = @import("shaders/slangp.zig");
     std.testing.refAllDecls(@This());
 }
