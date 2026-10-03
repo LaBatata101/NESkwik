@@ -2,6 +2,7 @@ const std = @import("std");
 const iroh = @import("iroh");
 const env = @import("../env.zig");
 const protocol = @import("protocol.zig");
+const types = @import("types.zig");
 const Ref = @import("../utils/types.zig").Ref;
 
 const EndpointRef = Ref(iroh.Endpoint);
@@ -9,69 +10,28 @@ const ConnectionRef = Ref(iroh.Connection);
 const BiStreamRef = Ref(iroh.BiStream);
 const SendStreamRef = Ref(iroh.SendStream);
 const RecvStreamRef = Ref(iroh.RecvStream);
-pub const MessageRef = Ref(protocol.Message);
-pub const PreviewRef = Ref(protocol.Preview);
-pub const BytesRef = Ref([]u8);
+pub const MessageRef = types.MessageRef;
+pub const PreviewRef = types.PreviewRef;
+pub const BytesRef = types.BytesRef;
 
-pub const Role = enum { none, host, client };
+pub const Role = types.Role;
+pub const State = types.State;
+pub const Event = types.Event;
+pub const EventRef = types.EventRef;
 pub const ConnectionStats = iroh.ConnectionStats;
 pub const ConnectionRoute = iroh.ConnectionRoute;
-pub const State = enum {
-    idle,
-    creating,
-    waiting,
-    connecting,
-    preview,
-    joining,
-    connected,
-    resyncing,
-    disconnecting,
-    failed,
-};
-
-pub const Event = union(enum) {
-    state: State,
-    session_code: []u8,
-    preview: protocol.Preview,
-    peer: [32]u8,
-    message: protocol.Message,
-    join_requested,
-    peer_disconnected,
-    disconnected,
-    failed: []u8,
-
-    pub fn deinit(self: *Event, alloc: std.mem.Allocator) void {
-        switch (self.*) {
-            .session_code, .failed => |value| alloc.free(value),
-            .preview => |*value| {
-                alloc.free(value.name);
-                alloc.free(value.framebuffer);
-            },
-            .message => |*value| value.deinit(alloc),
-            else => {},
-        }
-    }
-
-    pub fn takeSessionCode(self: *Event) BytesRef.Owned {
-        const value = self.session_code;
-        self.* = .{ .state = .idle };
-
-        return .init(value);
-    }
-
-    pub fn takePreview(self: *Event) PreviewRef.Owned {
-        const value = self.preview;
-        self.* = .{ .state = .idle };
-
-        return .init(value);
-    }
-};
-pub const EventRef = Ref(Event);
 
 const max_queue_items = 128;
 
+/// An encoded message waiting for the worker. The tag lets the worker tell
+/// handshake responses apart without decoding its own output.
+const Outgoing = struct {
+    tag: protocol.MessageTag,
+    bytes: []u8,
+};
+
 /// Owns the complete blocking iroh lifecycle. UI and emulation code interact
-/// through bounded queues and synchronized value snapshots, never borrowed FFI
+/// through queues and synchronized value snapshots, never borrowed FFI
 /// handles.
 pub const SessionManager = struct {
     alloc: std.mem.Allocator,
@@ -89,10 +49,8 @@ pub const SessionManager = struct {
     // them only so shutdown can interrupt blocking iroh operations.
     endpoint: ?EndpointRef.Borrowed = null,
     connection: ?ConnectionRef.Borrowed = null,
-    outgoing: std.ArrayList(BytesRef.Owned) = .empty,
+    outgoing: std.ArrayList(Outgoing) = .empty,
     events: std.ArrayList(EventRef.Owned) = .empty,
-    host_preview: ?PreviewRef.Owned = null,
-    connect_ticket: ?BytesRef.Owned = null,
     preset: iroh.Preset = .n0,
 
     const Self = @This();
@@ -168,15 +126,13 @@ pub const SessionManager = struct {
         self.cancelled = false;
         self.graceful_shutdown = false;
         self.preset = preset;
-        self.host_preview = preview;
         errdefer {
-            self.host_preview = null;
             self.role = .none;
             self.state = .idle;
         }
 
-        try self.pushEvent(.init(.{ .state = .creating }));
-        self.worker = try std.Thread.spawn(.{}, hostMain, .{self});
+        self.worker = try std.Thread.spawn(.{}, hostMain, .{ self, preview });
+        self.pushEvent(.init(.{ .state = .creating }));
 
         std.log.debug("netplay: host worker started", .{});
     }
@@ -194,8 +150,7 @@ pub const SessionManager = struct {
             return err;
         };
 
-        std.log.info("netplay: client connection requested (code_length={d}, ticket_length={d}, endpoint preset={s})", .{
-            std.mem.trim(u8, code, " \t\r\n").len,
+        std.log.info("netplay: client connection requested (ticket_length={d}, endpoint preset={s})", .{
             ticket.len,
             @tagName(preset),
         });
@@ -208,21 +163,21 @@ pub const SessionManager = struct {
         try verifyAbi();
         self.clear();
 
+        const owned_ticket = try self.alloc.dupe(u8, ticket);
+        errdefer self.alloc.free(owned_ticket);
+
         self.role = .client;
         self.state = .connecting;
         self.cancelled = false;
         self.graceful_shutdown = false;
         self.preset = preset;
-        self.connect_ticket = BytesRef.Owned.init(try self.alloc.dupe(u8, ticket));
         errdefer {
-            self.alloc.free(self.connect_ticket.?.value);
-            self.connect_ticket = null;
             self.role = .none;
             self.state = .idle;
         }
 
-        try self.pushEvent(.init(.{ .state = .connecting }));
-        self.worker = try std.Thread.spawn(.{}, clientMain, .{self});
+        self.worker = try std.Thread.spawn(.{}, clientMain, .{ self, BytesRef.Owned.init(owned_ticket) });
+        self.pushEvent(.init(.{ .state = .connecting }));
         self.timeout_worker = std.Thread.spawn(.{}, timeoutMain, .{ self, State.connecting }) catch |err| blk: {
             std.log.err("netplay: failed to start setup-timeout worker: {s}", .{@errorName(err)});
             break :blk null;
@@ -231,78 +186,87 @@ pub const SessionManager = struct {
         std.log.debug("netplay: client and setup-timeout workers started", .{});
     }
 
+    /// Fails when the session ended or moved on before the user confirmed.
     pub fn acceptPreview(self: *Self) !void {
         if (self.getState() != .preview) return error.InvalidSessionState;
 
         std.log.info("netplay: client accepted preview and requested to join", .{});
-        try self.send(.init(&.{ .join = {} }));
+        self.send(.init(&.{ .join = {} }));
 
         self.setState(.joining);
         self.restartTimeout(.joining);
     }
 
-    pub fn send(self: *Self, message_ref: MessageRef.Borrowed) !void {
+    /// Queues `message` for the peer. Messages for a closed session are
+    /// dropped. A full queue means the peer stopped reading, which fails the
+    /// session.
+    pub fn send(self: *Self, message_ref: MessageRef.Borrowed) void {
         const message = message_ref.get().*;
-        const encoded = protocol.encode(self.alloc, message) catch |err| {
-            std.log.err("netplay: failed to encode outgoing {s} message: {s}", .{ @tagName(message), @errorName(err) });
-            return err;
-        };
-        errdefer self.alloc.free(encoded);
+        const encoded = protocol.encode(self.alloc, message) catch @panic("OOM");
 
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        if (self.cancelled or self.role == .none) return error.SessionClosed;
+        if (self.cancelled or self.role == .none) {
+            std.log.debug("netplay: dropping {s} message for a closed session", .{@tagName(message)});
+            self.alloc.free(encoded);
+            return;
+        }
+
         if (self.outgoing.items.len >= max_queue_items) {
             std.log.err("netplay: outgoing queue full; cannot queue {s} message (role={s}, capacity={d})", .{
                 @tagName(message),
                 @tagName(self.role),
                 max_queue_items,
             });
-            return error.OutgoingQueueFull;
+            self.alloc.free(encoded);
+            self.abortLocked("The peer stopped receiving messages");
+            return;
         }
 
-        try self.outgoing.append(self.alloc, .init(encoded));
+        self.outgoing.append(self.alloc, .{ .tag = message, .bytes = encoded }) catch @panic("OOM");
         logMessage(.queued, self.role, message, self.outgoing.items.len, encoded.len);
         self.wake.signal(self.io);
     }
 
+    /// Payload events of a session the application already left are dropped.
     pub fn pollEvent(self: *Self) ?EventRef.Owned {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        if (self.events.items.len == 0) return null;
-        return self.events.orderedRemove(0);
+        while (self.events.items.len != 0) {
+            var event = self.events.orderedRemove(0);
+            if (self.cancelled and event.value.isPayload()) {
+                std.log.debug("netplay: discarding {s} event of a closed session", .{@tagName(event.value)});
+                event.value.deinit(self.alloc);
+                continue;
+            }
+            return event;
+        }
+        return null;
     }
 
     pub fn cancel(self: *Self) void {
         self.mutex.lockUncancelable(self.io);
-        if (self.role == .none or self.cancelled) {
-            self.mutex.unlock(self.io);
-            return;
-        }
+        defer self.mutex.unlock(self.io);
+
+        if (self.role == .none or self.cancelled) return;
 
         std.log.info("netplay: cancelling {s} session from state {s}", .{ @tagName(self.role), @tagName(self.state) });
         self.cancelled = true;
 
         if (self.state != .failed) {
             self.state = .disconnecting;
-            self.pushEvent(.init(.{ .state = .disconnecting })) catch {};
+            self.pushEvent(.init(.{ .state = .disconnecting }));
         }
 
         self.wake.broadcast(self.io);
         self.startShutdown();
-        self.mutex.unlock(self.io);
     }
 
     pub fn disconnect(self: *Self) void {
         std.log.info("netplay: graceful disconnect requested", .{});
-
-        var notice_queued = true;
-        self.send(.init(&.{ .disconnect = "peer left the session" })) catch |err| {
-            notice_queued = false;
-            std.log.warn("netplay: could not queue disconnect notice: {s}", .{@errorName(err)});
-        };
+        self.send(.init(&.{ .disconnect = "peer left the session" }));
 
         self.mutex.lockUncancelable(self.io);
         self.graceful_shutdown = true;
@@ -310,10 +274,10 @@ pub const SessionManager = struct {
         // During preview the client worker is waiting on the outgoing queue
         // and owns the stream. Let it send the decline before closing the
         // transport; finishWorker will complete the normal cleanup.
-        if (notice_queued and self.role == .client and self.state == .preview and !self.cancelled) {
+        if (!self.cancelled and self.role == .client and self.state == .preview) {
             std.log.info("netplay: client declining session preview", .{});
             self.state = .disconnecting;
-            self.pushEvent(.init(.{ .state = .disconnecting })) catch {};
+            self.pushEvent(.init(.{ .state = .disconnecting }));
             self.wake.broadcast(self.io);
             self.mutex.unlock(self.io);
             return;
@@ -337,14 +301,18 @@ pub const SessionManager = struct {
         }
     }
 
-    fn hostMain(self: *Self) void {
+    fn hostMain(self: *Self, preview: PreviewRef.Owned) void {
         std.log.debug("netplay: host worker entered", .{});
+        defer {
+            self.alloc.free(preview.value.name);
+            self.alloc.free(preview.value.framebuffer);
+        }
 
-        self.runHost() catch |err| self.reportFailure(err);
+        self.runHost(preview.value) catch |err| self.reportFailure(err);
         self.finishWorker();
     }
 
-    fn runHost(self: *Self) !void {
+    fn runHost(self: *Self, preview: protocol.Preview) !void {
         std.log.info("netplay: host binding endpoint (preset={s}, ALPN={s})", .{ @tagName(self.preset), protocol.alpn });
         var endpoint = EndpointRef.Owned.init(
             try iroh.Endpoint.bind(self.alloc, .{ .preset = self.preset, .alpns = &.{protocol.alpn} }),
@@ -360,18 +328,14 @@ pub const SessionManager = struct {
 
         const code = try protocol.makeSessionCode(self.alloc, ticket);
         std.log.info("netplay: session code generated (length={d}); waiting for one client", .{code.len});
-        try self.pushEventLocked(.init(.{ .session_code = code }));
+        self.pushEventLocked(.init(.{ .session_code = code }));
 
-        const preview = self.takeHostPreview() orelse return error.MissingPreview;
-        defer self.alloc.free(preview.value.name);
-        defer self.alloc.free(preview.value.framebuffer);
-
-        const encoded_preview = try protocol.encode(self.alloc, .{ .preview = preview.value });
+        const encoded_preview = try protocol.encode(self.alloc, .{ .preview = preview });
         defer self.alloc.free(encoded_preview);
 
         std.log.info("netplay: host sending preview for '{s}' (rom={d} bytes, framebuffer={d} bytes, framed={d} bytes)", .{
-            preview.value.name,
-            preview.value.rom_size,
+            preview.name,
+            preview.rom_size,
             protocol.framebuffer_size,
             encoded_preview.len,
         });
@@ -413,7 +377,7 @@ pub const SessionManager = struct {
         peer_joined: *bool,
     ) !bool {
         const remote = try connection.get().remoteId();
-        try self.pushEventLocked(.init(.{ .peer = remote.bytes }));
+        self.pushEventLocked(.init(.{ .peer = remote.bytes }));
         std.log.info("netplay: host connected to peer {x}", .{remote.bytes[0..8]});
 
         std.log.debug("netplay: host opening bidirectional stream", .{});
@@ -442,14 +406,15 @@ pub const SessionManager = struct {
         }
 
         std.log.info("netplay: host received join request", .{});
-        try self.pushEventLocked(.init(.join_requested));
+        self.pushEventLocked(.init(.join_requested));
         self.setState(.joining);
 
         const join_data = try self.waitOutgoing();
-        defer self.alloc.free(join_data.value);
+        defer self.alloc.free(join_data.bytes);
+        std.debug.assert(join_data.tag == .join_data);
 
-        std.log.info("netplay: host sending ROM and snapshot transfer ({d} framed bytes)", .{join_data.value.len});
-        try send_stream.get().writeAll(join_data.value);
+        std.log.info("netplay: host sending ROM and snapshot transfer ({d} framed bytes)", .{join_data.bytes.len});
+        try send_stream.get().writeAll(join_data.bytes);
 
         var ready = try recvMessage(self.alloc, recv_stream);
         if (ready.value != .ready) {
@@ -462,21 +427,22 @@ pub const SessionManager = struct {
             .{ ready.value.ready.epoch, ready.value.ready.frame },
         );
 
-        try self.pushEventLocked(.init(.{ .message = ready.value }));
+        self.pushEventLocked(.init(.{ .message = ready.value }));
         self.setState(.connected);
 
         try self.runConnected(send_stream, recv_stream);
         return true;
     }
 
-    fn clientMain(self: *Self) void {
+    fn clientMain(self: *Self, ticket: BytesRef.Owned) void {
         std.log.debug("netplay: client worker entered", .{});
+        defer self.alloc.free(ticket.value);
 
-        self.runClient() catch |err| self.reportFailure(err);
+        self.runClient(ticket.value) catch |err| self.reportFailure(err);
         self.finishWorker();
     }
 
-    fn runClient(self: *Self) !void {
+    fn runClient(self: *Self, ticket: []const u8) !void {
         std.log.info("netplay: client binding local endpoint (preset={s})", .{@tagName(self.preset)});
         var endpoint = EndpointRef.Owned.init(
             try iroh.Endpoint.bind(self.alloc, .{ .preset = self.preset }),
@@ -487,15 +453,12 @@ pub const SessionManager = struct {
         try self.publishEndpoint(endpoint.borrow());
         defer self.joinShutdown();
 
-        const ticket = self.takeConnectTicket() orelse return error.MissingTicket;
-        defer self.alloc.free(ticket.value);
-
         std.log.info("netplay: client connecting to host (ticket_length={d}, ALPN={s})", .{
-            ticket.value.len,
+            ticket.len,
             protocol.alpn,
         });
 
-        var connection = ConnectionRef.Owned.init(try endpoint.value.connect(ticket.value, protocol.alpn));
+        var connection = ConnectionRef.Owned.init(try endpoint.value.connect(ticket, protocol.alpn));
         defer connection.value.deinit();
         std.log.info("netplay: client connection established", .{});
 
@@ -503,7 +466,7 @@ pub const SessionManager = struct {
         const remote = try connection.value.remoteId();
         std.log.info("netplay: client connected to peer {x}", .{remote.bytes[0..8]});
 
-        try self.pushEventLocked(.init(.{ .peer = remote.bytes }));
+        self.pushEventLocked(.init(.{ .peer = remote.bytes }));
         std.log.debug("netplay: client waiting for bidirectional stream", .{});
 
         var stream = BiStreamRef.Owned.init(try connection.value.acceptBi());
@@ -525,28 +488,26 @@ pub const SessionManager = struct {
         const preview = preview_message.value.preview;
 
         std.log.info("netplay: client received preview for '{s}' ({d} bytes)", .{ preview.name, preview.rom_size });
-        try self.pushEventLocked(.init(.{ .preview = preview }));
+        self.pushEventLocked(.init(.{ .preview = preview }));
         self.setState(.preview);
 
-        const response_bytes = try self.waitOutgoing();
-        defer self.alloc.free(response_bytes.value);
+        // `acceptPreview` and `disconnect` are the only messages sent during preview.
+        const response = try self.waitOutgoing();
+        defer self.alloc.free(response.bytes);
 
-        var response = MessageRef.Owned.init(try protocol.decode(self.alloc, response_bytes.value));
-        defer response.value.deinit(self.alloc);
-
-        switch (response.value) {
+        switch (response.tag) {
             .join => {
                 std.log.debug("netplay: client sending join request", .{});
-                try send_stream.get().writeAll(response_bytes.value);
+                try send_stream.get().writeAll(response.bytes);
             },
-            .disconnect => |reason| {
-                std.log.info("netplay: client sending preview decline: {s}", .{reason});
-                send_stream.get().writeAll(response_bytes.value) catch |err| {
+            .disconnect => {
+                std.log.info("netplay: client sending preview decline", .{});
+                send_stream.get().writeAll(response.bytes) catch |err| {
                     std.log.debug("netplay: preview decline send interrupted by shutdown: {s}", .{@errorName(err)});
                 };
                 return;
             },
-            else => return error.UnexpectedHandshakeMessage,
+            else => unreachable,
         }
 
         var join_data = try recvMessage(self.alloc, recv_stream);
@@ -562,20 +523,22 @@ pub const SessionManager = struct {
             join_data.value.join_data.frame,
         });
 
-        try self.pushEventLocked(.init(.{ .message = join_data.value }));
+        self.pushEventLocked(.init(.{ .message = join_data.value }));
 
         const ready = try self.waitOutgoing();
-        defer self.alloc.free(ready.value);
+        defer self.alloc.free(ready.bytes);
+        std.debug.assert(ready.tag == .ready);
 
         std.log.debug("netplay: client sending ready acknowledgement", .{});
-        try send_stream.get().writeAll(ready.value);
+        try send_stream.get().writeAll(ready.bytes);
 
         self.setState(.connected);
         try self.runConnected(send_stream, recv_stream);
     }
 
     fn runConnected(self: *Self, send_stream: SendStreamRef.Borrowed, recv_stream: RecvStreamRef.Borrowed) !void {
-        std.log.info("netplay: connected message loop started for {s}", .{@tagName(self.getRole())});
+        const role = self.getRole();
+        std.log.info("netplay: connected message loop started for {s}", .{@tagName(role)});
 
         const sender = try std.Thread.spawn(.{}, sendMain, .{ self, send_stream });
         defer {
@@ -601,22 +564,31 @@ pub const SessionManager = struct {
             if (message.value == .disconnect) {
                 std.log.info("netplay: peer requested disconnect: {s}", .{message.value.disconnect});
                 message.value.deinit(self.alloc);
-                try self.pushEventLocked(.init(.peer_disconnected));
+                self.pushEventLocked(.init(.peer_disconnected));
                 return;
             }
 
-            logMessage(.received, self.getRole(), message.value, null, null);
-            try self.pushEventLocked(.init(.{ .message = message.value }));
+            if (!isExpectedFromPeer(role, message.value)) {
+                std.log.err("netplay: unexpected {s} message from peer (role={s})", .{
+                    @tagName(message.value),
+                    @tagName(role),
+                });
+                message.value.deinit(self.alloc);
+                return error.UnexpectedSessionMessage;
+            }
+
+            logMessage(.received, role, message.value, null, null);
+            self.pushEventLocked(.init(.{ .message = message.value }));
         }
     }
 
     fn sendMain(self: *Self, stream: SendStreamRef.Borrowed) void {
         std.log.debug("netplay: sender worker started", .{});
 
-        while (self.waitOutgoing()) |encoded| {
-            defer self.alloc.free(encoded.value);
+        while (self.waitOutgoing()) |outgoing| {
+            defer self.alloc.free(outgoing.bytes);
 
-            stream.get().writeAll(encoded.value) catch |err| {
+            stream.get().writeAll(outgoing.bytes) catch |err| {
                 std.log.err("netplay: stream write failed: {s}", .{@errorName(err)});
                 self.reportFailure(err);
                 self.cancel();
@@ -627,7 +599,7 @@ pub const SessionManager = struct {
         }
     }
 
-    fn waitOutgoing(self: *Self) !BytesRef.Owned {
+    fn waitOutgoing(self: *Self) !Outgoing {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -652,64 +624,51 @@ pub const SessionManager = struct {
             @tagName(self.role),
         });
 
-        self.pushEvent(.init(.{ .state = state })) catch {};
+        self.pushEvent(.init(.{ .state = state }));
     }
 
-    fn pushEventLocked(self: *Self, event: EventRef.Owned) !void {
+    fn pushEventLocked(self: *Self, event: EventRef.Owned) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        try self.pushEvent(event);
+        self.pushEvent(event);
     }
 
-    /// Takes ownership of `event`, releasing it if it cannot be queued.
-    fn pushEvent(self: *Self, event: EventRef.Owned) !void {
-        var owned = event;
-        errdefer owned.value.deinit(self.alloc);
-
-        if (self.events.items.len >= max_queue_items) {
-            std.log.err("netplay: application event queue full; cannot queue {s} event (capacity={d})", .{
-                @tagName(owned.value),
-                max_queue_items,
-            });
-            return error.EventQueueFull;
-        }
-
-        self.events.append(self.alloc, owned) catch |err| {
-            std.log.err("netplay: failed to queue {s} application event: {s}", .{
-                @tagName(owned.value),
-                @errorName(err),
-            });
-            return err;
-        };
+    /// Takes ownership of `event`.
+    fn pushEvent(self: *Self, event: EventRef.Owned) void {
+        self.events.append(self.alloc, event) catch @panic("OOM");
     }
 
+    /// Reports a worker error. The worker cleans up the transport itself.
     fn reportFailure(self: *Self, err: anyerror) void {
-        if (self.isCancelled()) return;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        if (self.cancelled) return;
 
         const detail = iroh.lastErrorMessage();
-        if (detail.len != 0) {
-            std.log.err("netplay: session failed: {s}; iroh: {s}", .{ @errorName(err), detail });
-        } else {
-            std.log.err("netplay: session failed: {s}", .{@errorName(err)});
-        }
-
-        const fail_message = if (detail.len != 0)
+        const message = if (detail.len != 0)
             std.fmt.allocPrint(self.alloc, "{s}: {s}", .{ @errorName(err), detail }) catch @panic("OOM")
         else
             self.alloc.dupe(u8, @errorName(err)) catch @panic("OOM");
 
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+        std.log.err("netplay: session failed: {s}", .{message});
+        self.failLocked(message);
+    }
 
-        if (self.cancelled) {
-            self.alloc.free(fail_message);
-            return;
-        }
+    /// Fails a running session from outside its worker and interrupts the transport.
+    fn abortLocked(self: *Self, detail: []const u8) void {
+        self.cancelled = true;
+        self.failLocked(self.alloc.dupe(u8, detail) catch @panic("OOM"));
+        self.wake.broadcast(self.io);
+        self.startShutdown();
+    }
 
+    /// Takes ownership of `message`.
+    fn failLocked(self: *Self, message: []u8) void {
         self.state = .failed;
-        self.pushEvent(.init(.{ .state = .failed })) catch {};
-        self.pushEvent(.init(.{ .failed = fail_message })) catch {};
+        self.pushEvent(.init(.{ .state = .failed }));
+        self.pushEvent(.init(.{ .failed = message }));
     }
 
     fn finishWorker(self: *Self) void {
@@ -726,8 +685,8 @@ pub const SessionManager = struct {
         self.role = .none;
         if (!failed) self.state = .idle;
 
-        self.pushEvent(.init(.disconnected)) catch {};
-        if (!failed) self.pushEvent(.init(.{ .state = .idle })) catch {};
+        self.pushEvent(.init(.disconnected));
+        if (!failed) self.pushEvent(.init(.{ .state = .idle }));
 
         self.mutex.unlock(self.io);
 
@@ -760,35 +719,25 @@ pub const SessionManager = struct {
 
         const deadline = milliTimestamp(self.io) + 30_000;
         while (milliTimestamp(self.io) < deadline) {
-            self.mutex.lockUncancelable(self.io);
-            const pending = self.role == .client and self.state == armed_state and !self.cancelled;
-            self.mutex.unlock(self.io);
-
-            if (!pending) return;
+            if (!self.isTimeoutPending(armed_state)) return;
             sleep(self.io, 10 * std.time.ns_per_ms);
         }
 
         self.mutex.lockUncancelable(self.io);
-        if (self.role != .client or self.state != armed_state or self.cancelled) {
-            self.mutex.unlock(self.io);
-            return;
-        }
+        defer self.mutex.unlock(self.io);
 
-        self.cancelled = true;
-        self.state = .failed;
+        // The session may have progressed while the lock was released.
+        if (self.role != .client or self.state != armed_state or self.cancelled) return;
 
         std.log.err("netplay: client setup timed out in state {s} after 30 seconds", .{@tagName(armed_state)});
-        self.pushEvent(.init(.{ .state = .failed })) catch {};
+        self.abortLocked("Connection/setup timed out after 30 seconds");
+    }
 
-        const message = self.alloc.dupe(u8, "Connection/setup timed out after 30 seconds") catch |err| blk: {
-            std.log.err("netplay: failed to allocate timeout error detail: {s}", .{@errorName(err)});
-            break :blk null;
-        };
-        if (message) |value| self.pushEvent(.init(.{ .failed = value })) catch {};
+    fn isTimeoutPending(self: *Self, armed_state: State) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        self.wake.broadcast(self.io);
-        self.startShutdown();
-        self.mutex.unlock(self.io);
+        return self.role == .client and self.state == armed_state and !self.cancelled;
     }
 
     fn startShutdown(self: *Self) void {
@@ -878,37 +827,8 @@ pub const SessionManager = struct {
         return self.cancelled;
     }
 
-    fn takeHostPreview(self: *Self) ?PreviewRef.Owned {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
-        const result = self.host_preview;
-        self.host_preview = null;
-
-        return result;
-    }
-
-    fn takeConnectTicket(self: *Self) ?BytesRef.Owned {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
-        const result = self.connect_ticket;
-        self.connect_ticket = null;
-
-        return result;
-    }
-
     fn clear(self: *Self) void {
-        if (self.host_preview) |preview| {
-            self.alloc.free(preview.value.name);
-            self.alloc.free(preview.value.framebuffer);
-        }
-        self.host_preview = null;
-
-        if (self.connect_ticket) |ticket| self.alloc.free(ticket.value);
-        self.connect_ticket = null;
-
-        for (self.outgoing.items) |encoded| self.alloc.free(encoded.value);
+        for (self.outgoing.items) |outgoing| self.alloc.free(outgoing.bytes);
         self.outgoing.clearRetainingCapacity();
 
         for (self.events.items) |*event| event.value.deinit(self.alloc);
@@ -916,6 +836,15 @@ pub const SessionManager = struct {
     }
 };
 
+/// After the handshake the host only hears acknowledgements (and `ready` after
+/// a rebase); the client only hears authoritative frames, controls and rebases.
+fn isExpectedFromPeer(role: Role, message: protocol.Message) bool {
+    return switch (role) {
+        .host => message == .ready or message == .ack,
+        .client => message == .frame or message == .control or message == .rebase,
+        .none => unreachable,
+    };
+}
 fn verifyAbi() !void {
     const actual = iroh.runtimeAbiVersion();
     if (actual != iroh.abi_version) {
@@ -981,7 +910,8 @@ fn recvMessage(alloc: std.mem.Allocator, stream: RecvStreamRef.Borrowed) !Messag
     defer alloc.free(header);
 
     const len = std.mem.readInt(u32, header[0..4], .little);
-    if (len == 0 or len > protocol.max_message_size) return error.MessageTooLarge;
+    if (len == 0) return error.TruncatedMessage;
+    if (len > protocol.max_message_size) return error.MessageTooLarge;
 
     const body = try stream.get().readExact(alloc, len);
     defer alloc.free(body);
@@ -1043,20 +973,41 @@ test "session state starts idle and validates codes synchronously" {
     try std.testing.expectError(error.InvalidSessionCode, manager.connect("bad-code"));
 }
 
-test "owned event payload is released when the queue is full" {
+test "payload events of a cancelled session are discarded" {
     const alloc = std.testing.allocator;
     var manager = SessionManager.init(alloc, std.testing.io);
     defer manager.deinit();
 
-    for (0..max_queue_items) |_| {
-        try manager.pushEventLocked(.init(.{ .state = .idle }));
-    }
+    manager.pushEventLocked(.init(.{ .session_code = try alloc.dupe(u8, "neskwik:ticket") }));
+    manager.pushEventLocked(.init(.join_requested));
+    manager.pushEventLocked(.init(.disconnected));
+    manager.cancelled = true;
 
-    const code = try alloc.dupe(u8, "neskwik:ticket");
-    try std.testing.expectError(
-        error.EventQueueFull,
-        manager.pushEventLocked(.init(.{ .session_code = code })),
-    );
+    var event = manager.pollEvent().?;
+    defer event.value.deinit(alloc);
+    try std.testing.expect(event.value == .disconnected);
+    try std.testing.expect(manager.pollEvent() == null);
+}
+
+test "connected peers only accept their role's messages" {
+    const hash: protocol.Digest = [_]u8{0} ** 32;
+    const framebuffer = [_]u8{0} ** 4;
+    const messages = [_]protocol.Message{
+        .{ .preview = .{ .name = "x", .rom_size = 0, .rom_hash = hash, .framebuffer = &framebuffer } },
+        .{ .join = {} },
+        .{ .join_data = .{ .name = "x", .rom = "", .snapshot = "", .speed = 0, .epoch = 0, .frame = 0 } },
+        .{ .ready = .{ .epoch = 0, .frame = 0, .player2 = 0 } },
+        .{ .frame = .{ .epoch = 0, .frame = 0, .player1 = 0, .player2 = 0 } },
+        .{ .ack = .{ .epoch = 0, .frame = 0, .player2 = 0 } },
+        .{ .control = .{ .paused = true } },
+        .{ .rebase = .{ .epoch = 0, .frame = 0, .snapshot = "" } },
+    };
+    for (messages) |message| {
+        const host_expected = message == .ready or message == .ack;
+        const client_expected = message == .frame or message == .control or message == .rebase;
+        try std.testing.expectEqual(host_expected, isExpectedFromPeer(.host, message));
+        try std.testing.expectEqual(client_expected, isExpectedFromPeer(.client, message));
+    }
 }
 
 test "local loopback session" {
@@ -1085,10 +1036,9 @@ test "local loopback session" {
             defer event.value.deinit(alloc);
 
             switch (event.value) {
-                .join_requested => try host.send(.init(&.{ .join_data = .{
+                .join_requested => host.send(.init(&.{ .join_data = .{
                     .name = "loopback.nes",
                     .rom = "rom",
-                    .rom_hash = [_]u8{0x11} ** 32,
                     .snapshot = "state",
                     .speed = 1,
                     .epoch = 1,
@@ -1112,14 +1062,14 @@ test "local loopback session" {
             switch (event.value) {
                 .preview => try client.acceptPreview(),
                 .message => |message| switch (message) {
-                    .join_data => |data| try client.send(.init(&.{ .ready = .{
+                    .join_data => |data| client.send(.init(&.{ .ready = .{
                         .epoch = data.epoch,
                         .frame = data.frame,
                         .player2 = 7,
                     } })),
                     .frame => |frame| {
                         frame_received = true;
-                        try client.send(.init(&.{ .ack = .{
+                        client.send(.init(&.{ .ack = .{
                             .epoch = frame.epoch,
                             .frame = frame.frame,
                             .player2 = 7,
@@ -1135,7 +1085,7 @@ test "local loopback session" {
         }
 
         if (host_connected and client_connected and !frame_received) {
-            try host.send(.init(&.{ .frame = .{
+            host.send(.init(&.{ .frame = .{
                 .epoch = 1,
                 .frame = 1,
                 .player1 = 1,
@@ -1240,10 +1190,9 @@ test "local loopback session preview decline" {
             defer event.value.deinit(alloc);
 
             switch (event.value) {
-                .join_requested => try host.send(.init(&.{ .join_data = .{
+                .join_requested => host.send(.init(&.{ .join_data = .{
                     .name = "declined.nes",
                     .rom = "rom",
-                    .rom_hash = [_]u8{0x11} ** 32,
                     .snapshot = "state",
                     .speed = 1,
                     .epoch = 1,
@@ -1266,7 +1215,7 @@ test "local loopback session preview decline" {
             switch (event.value) {
                 .preview => try joined_client.acceptPreview(),
                 .message => |message| if (message == .join_data) {
-                    try joined_client.send(.init(&.{ .ready = .{
+                    joined_client.send(.init(&.{ .ready = .{
                         .epoch = message.join_data.epoch,
                         .frame = message.join_data.frame,
                         .player2 = 0,

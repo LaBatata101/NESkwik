@@ -27,10 +27,9 @@ pub const Preview = struct {
 pub const JoinData = struct {
     /// Display filename associated with the transferred ROM.
     name: []const u8,
-    /// Complete, uncompressed ROM bytes.
+    /// Complete, uncompressed ROM bytes. The client verifies them against the
+    /// approved `Preview.rom_hash`.
     rom: []const u8,
-    /// BLAKE3 digest used to verify `rom`.
-    rom_hash: Digest,
     /// Encoded emulator snapshot from which both peers begin.
     snapshot: []const u8,
     /// Wire value of the host's emulation-speed setting.
@@ -108,16 +107,7 @@ pub const Message = union(enum(u8)) {
     }
 };
 
-pub const IncomingRole = enum { host, client };
 pub const MessageTag = std.meta.Tag(Message);
-
-pub fn validateIncomingMessage(role: IncomingRole, tag: MessageTag) !void {
-    const allowed = switch (role) {
-        .host => tag == .ready or tag == .ack,
-        .client => tag == .join_data or tag == .frame or tag == .control or tag == .rebase,
-    };
-    if (!allowed) return error.UnexpectedSessionMessage;
-}
 
 pub fn validateReady(expected_epoch: u32, expected_frame: u64, accepting_ready: bool, ready: Ack) !void {
     if (!accepting_ready) return error.DuplicateReady;
@@ -130,75 +120,82 @@ pub fn parseSessionCode(code: []const u8) ![]const u8 {
     if (!std.mem.startsWith(u8, trimmed, session_code_prefix)) return error.InvalidSessionCode;
 
     const ticket = trimmed[session_code_prefix.len..];
-    try validateTicket(ticket);
+    if (!isValidTicket(ticket)) return error.InvalidSessionCode;
     return ticket;
 }
 
-pub fn makeSessionCode(alloc: std.mem.Allocator, ticket: []const u8) ![]u8 {
-    try validateTicket(ticket);
+/// `ticket` comes from the local iroh endpoint.
+pub fn makeSessionCode(alloc: std.mem.Allocator, ticket: []const u8) std.mem.Allocator.Error![]u8 {
+    std.debug.assert(isValidTicket(ticket));
     return std.fmt.allocPrint(alloc, session_code_prefix ++ "{s}", .{ticket});
 }
 
-fn validateTicket(ticket: []const u8) !void {
-    if (ticket.len == 0 or ticket.len > 4096) return error.InvalidSessionCode;
+fn isValidTicket(ticket: []const u8) bool {
+    if (ticket.len == 0 or ticket.len > 4096) return false;
     for (ticket) |byte| {
-        if (!std.ascii.isPrint(byte)) return error.InvalidSessionCode;
+        if (!std.ascii.isPrint(byte)) return false;
     }
+    return true;
 }
 
 /// Wire framing is a little-endian u32 payload length followed by a tagged payload.
+/// Outgoing messages are built locally, so their limits are asserted rather than checked.
 pub fn encode(alloc: std.mem.Allocator, message: Message) ![]u8 {
     var framed: std.Io.Writer.Allocating = .init(alloc);
     errdefer framed.deinit();
-    try framed.writer.writeAll(&[_]u8{0} ** 4);
-    try writeInt(&framed.writer, u8, @intFromEnum(message));
+    // An allocating writer only fails when out of memory.
+    writePayload(alloc, &framed.writer, message) catch return error.OutOfMemory;
+
+    const payload_len = framed.written().len - 4;
+    std.debug.assert(payload_len <= max_message_size);
+    std.mem.writeInt(u32, framed.written()[0..4], @intCast(payload_len), .little);
+    return try framed.toOwnedSlice();
+}
+
+fn writePayload(alloc: std.mem.Allocator, writer: *std.Io.Writer, message: Message) !void {
+    try writer.writeAll(&[_]u8{0} ** 4);
+    try writeInt(writer, u8, @intFromEnum(message));
     switch (message) {
         .preview => |value| {
-            try writeString(&framed.writer, value.name, max_display_name);
-            try writeInt(&framed.writer, u32, value.rom_size);
-            try framed.writer.writeAll(&value.rom_hash);
-            try writeCompressedBytes(alloc, &framed.writer, value.framebuffer, framebuffer_size);
+            try writeString(writer, value.name, max_display_name);
+            try writeInt(writer, u32, value.rom_size);
+            try writer.writeAll(&value.rom_hash);
+            try writeCompressedBytes(alloc, writer, value.framebuffer, framebuffer_size);
         },
         .join => {},
         .join_data => |value| {
-            try writeString(&framed.writer, value.name, max_display_name);
-            try writeCompressedBytes(alloc, &framed.writer, value.rom, max_rom_size);
-            try framed.writer.writeAll(&value.rom_hash);
-            try writeBytes(&framed.writer, value.snapshot, max_snapshot_size);
-            try writeInt(&framed.writer, u8, value.speed);
-            try writeInt(&framed.writer, u32, value.epoch);
-            try writeInt(&framed.writer, u64, value.frame);
+            try writeString(writer, value.name, max_display_name);
+            try writeCompressedBytes(alloc, writer, value.rom, max_rom_size);
+            try writeBytes(writer, value.snapshot, max_snapshot_size);
+            try writeInt(writer, u8, value.speed);
+            try writeInt(writer, u32, value.epoch);
+            try writeInt(writer, u64, value.frame);
         },
-        .ready, .ack => |value| try writeAck(&framed.writer, value),
+        .ready, .ack => |value| try writeAck(writer, value),
         .frame => |value| {
-            try writeInt(&framed.writer, u32, value.epoch);
-            try writeInt(&framed.writer, u64, value.frame);
-            try writeInt(&framed.writer, u8, value.player1);
-            try writeInt(&framed.writer, u8, value.player2);
-            try writeDigest(&framed.writer, value.digest);
+            try writeInt(writer, u32, value.epoch);
+            try writeInt(writer, u64, value.frame);
+            try writeInt(writer, u8, value.player1);
+            try writeInt(writer, u8, value.player2);
+            try writeDigest(writer, value.digest);
         },
         .control => |value| switch (value) {
             .paused => |paused| {
-                try writeInt(&framed.writer, u8, 0);
-                try writeInt(&framed.writer, u8, @intFromBool(paused));
+                try writeInt(writer, u8, 0);
+                try writeInt(writer, u8, @intFromBool(paused));
             },
             .speed => |speed| {
-                try writeInt(&framed.writer, u8, 1);
-                try writeInt(&framed.writer, u8, speed);
+                try writeInt(writer, u8, 1);
+                try writeInt(writer, u8, speed);
             },
         },
         .rebase => |value| {
-            try writeInt(&framed.writer, u32, value.epoch);
-            try writeInt(&framed.writer, u64, value.frame);
-            try writeBytes(&framed.writer, value.snapshot, max_snapshot_size);
+            try writeInt(writer, u32, value.epoch);
+            try writeInt(writer, u64, value.frame);
+            try writeBytes(writer, value.snapshot, max_snapshot_size);
         },
-        .disconnect => |reason| try writeString(&framed.writer, reason, 1024),
+        .disconnect => |reason| try writeString(writer, reason, 1024),
     }
-    const payload_len = framed.written().len - 4;
-    if (payload_len > max_message_size) return error.MessageTooLarge;
-
-    std.mem.writeInt(u32, framed.written()[0..4], @intCast(payload_len), .little);
-    return try framed.toOwnedSlice();
 }
 
 /// Decodes one complete framed message and rejects trailing or truncated data.
@@ -210,10 +207,10 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) !Message {
     return decodePayload(alloc, bytes[4..]);
 }
 
-/// Decodes a payload after its framing header has already been consumed.
+/// Decodes a payload after its framing header has already been consumed and
+/// its length checked against `max_message_size`.
 pub fn decodePayload(alloc: std.mem.Allocator, payload: []const u8) !Message {
     if (payload.len == 0) return error.TruncatedMessage;
-    if (payload.len > max_message_size) return error.MessageTooLarge;
 
     var reader: std.Io.Reader = .fixed(payload);
     const tag = std.enums.fromInt(std.meta.Tag(Message), try readInt(&reader, u8)) orelse
@@ -237,14 +234,11 @@ pub fn decodePayload(alloc: std.mem.Allocator, payload: []const u8) !Message {
             errdefer alloc.free(name);
             const rom = try readCompressedBytes(alloc, &reader, max_rom_size);
             errdefer alloc.free(rom);
-            var hash: Digest = undefined;
-            try reader.readSliceAll(&hash);
             const snapshot = try readBytes(alloc, &reader, max_snapshot_size);
             errdefer alloc.free(snapshot);
             break :blk .{ .join_data = .{
                 .name = name,
                 .rom = rom,
-                .rom_hash = hash,
                 .snapshot = snapshot,
                 .speed = try readInt(&reader, u8),
                 .epoch = try readInt(&reader, u32),
@@ -328,8 +322,7 @@ fn readDigest(reader: *std.Io.Reader) !?Digest {
 }
 
 fn writeString(writer: *std.Io.Writer, value: []const u8, max: usize) !void {
-    if (value.len > max) return error.StringTooLong;
-    if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidUtf8;
+    std.debug.assert(std.unicode.utf8ValidateSlice(value));
     try writeBytes(writer, value, max);
 }
 
@@ -341,7 +334,7 @@ fn readString(alloc: std.mem.Allocator, reader: *std.Io.Reader, max: usize) ![]u
 }
 
 fn writeBytes(writer: *std.Io.Writer, value: []const u8, max: usize) !void {
-    if (value.len > max) return error.PayloadTooLarge;
+    std.debug.assert(value.len <= max);
     try writeInt(writer, u32, @intCast(value.len));
     try writer.writeAll(value);
 }
@@ -356,16 +349,13 @@ fn readBytes(alloc: std.mem.Allocator, reader: *std.Io.Reader, max: usize) ![]u8
 }
 
 fn writeCompressedBytes(alloc: std.mem.Allocator, writer: *std.Io.Writer, value: []const u8, size_limit: usize) !void {
-    if (value.len > size_limit) return error.PayloadTooLarge;
+    std.debug.assert(value.len <= size_limit);
 
-    const compressed = try compressBytes(alloc, value);
+    const compressed = try compress.compressBytes(alloc, value, .{ .level = .fast });
     defer alloc.free(compressed);
-    var compressed_hash: Digest = undefined;
-    std.crypto.hash.Blake3.hash(compressed, &compressed_hash, .{});
 
     try writeInt(writer, u32, @intCast(value.len));
     try writeInt(writer, u32, @intCast(compressed.len));
-    try writer.writeAll(&compressed_hash);
     try writer.writeAll(compressed);
 }
 
@@ -374,48 +364,12 @@ fn readCompressedBytes(alloc: std.mem.Allocator, reader: *std.Io.Reader, size_li
     if (uncompressed_len > size_limit) return error.PayloadTooLarge;
 
     const compressed_len = try readInt(reader, u32);
-    const remaining = reader.end - reader.seek;
-    if (remaining < @sizeOf(Digest) or compressed_len > remaining - @sizeOf(Digest)) {
-        return error.TruncatedMessage;
-    }
+    const compressed_bytes = reader.take(compressed_len) catch return error.TruncatedMessage;
 
-    var expected_hash: Digest = undefined;
-    reader.readSliceAll(&expected_hash) catch return error.TruncatedMessage;
-
-    const compressed_bytes = try alloc.alloc(u8, compressed_len);
-    defer alloc.free(compressed_bytes);
-    reader.readSliceAll(compressed_bytes) catch return error.TruncatedMessage;
-
-    var actual_hash: Digest = undefined;
-    std.crypto.hash.Blake3.hash(compressed_bytes, &actual_hash, .{});
-
-    if (!std.mem.eql(u8, &actual_hash, &expected_hash)) return error.CompressedPayloadHashMismatch;
-
-    return decompressBytes(alloc, compressed_bytes, uncompressed_len);
-}
-
-fn compressBytes(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var reader: std.Io.Reader = .fixed(bytes);
-    var writer: std.Io.Writer.Allocating = .init(alloc);
-    errdefer writer.deinit();
-
-    try compress.compressAlloc(alloc, &reader, &writer.writer, .{ .level = .fast });
-    return try writer.toOwnedSlice();
-}
-
-fn decompressBytes(alloc: std.mem.Allocator, compressed_bytes: []const u8, expected_len: usize) ![]u8 {
-    var reader: std.Io.Reader = .fixed(compressed_bytes);
-    const output = try alloc.alloc(u8, expected_len);
-    errdefer alloc.free(output);
-    var writer: std.Io.Writer = .fixed(output);
-
-    var decompressor: std.compress.flate.Decompress = .init(&reader, .gzip, &.{});
-    _ = decompressor.reader.streamRemaining(&writer) catch |err| switch (err) {
-        error.ReadFailed, error.WriteFailed => return error.InvalidCompressedPayload,
+    return compress.decompressBytes(alloc, compressed_bytes, uncompressed_len) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidCompressedData => return error.InvalidCompressedPayload,
     };
-    if (writer.end != expected_len) return error.InvalidCompressedPayload;
-
-    return output;
 }
 
 fn writeInt(writer: *std.Io.Writer, comptime T: type, value: T) !void {
@@ -436,7 +390,9 @@ test "session codes are prefixed and trimmed" {
     try std.testing.expectError(error.InvalidSessionCode, parseSessionCode("ticket"));
     try std.testing.expectError(error.InvalidSessionCode, parseSessionCode("neskwik:"));
     try std.testing.expectError(error.InvalidSessionCode, parseSessionCode("neskwik:bad\nvalue"));
-    try std.testing.expectError(error.InvalidSessionCode, makeSessionCode(alloc, "bad\nvalue"));
+    const code = try makeSessionCode(alloc, "ticket");
+    defer alloc.free(code);
+    try std.testing.expectEqualStrings("neskwik:ticket", code);
 }
 
 test "every protocol message round trips" {
@@ -446,7 +402,7 @@ test "every protocol message round trips" {
     const messages = [_]Message{
         .{ .preview = .{ .name = "game.nes", .rom_size = 123, .rom_hash = hash, .framebuffer = &framebuffer } },
         .{ .join = {} },
-        .{ .join_data = .{ .name = "game.nes", .rom = "rom", .rom_hash = hash, .snapshot = "state", .speed = 100, .epoch = 2, .frame = 9 } },
+        .{ .join_data = .{ .name = "game.nes", .rom = "rom", .snapshot = "state", .speed = 100, .epoch = 2, .frame = 9 } },
         .{ .ready = .{ .epoch = 2, .frame = 9, .player2 = 3 } },
         .{ .frame = .{ .epoch = 2, .frame = 10, .player1 = 1, .player2 = 2, .digest = hash } },
         .{ .ack = .{ .epoch = 2, .frame = 10, .player2 = 4, .digest = hash } },
@@ -486,7 +442,6 @@ test "preview framebuffer and ROM are compressed on the wire" {
     const encoded_join = try encode(alloc, .{ .join_data = .{
         .name = "game.nes",
         .rom = rom,
-        .rom_hash = hash,
         .snapshot = "state",
         .speed = 1,
         .epoch = 2,
@@ -515,7 +470,6 @@ test "maximum ROM and snapshot fit in one join message" {
     const encoded = try encode(alloc, .{ .join_data = .{
         .name = "maximum.nes",
         .rom = rom,
-        .rom_hash = [_]u8{0} ** 32,
         .snapshot = snapshot,
         .speed = 1,
         .epoch = 1,
@@ -525,22 +479,23 @@ test "maximum ROM and snapshot fit in one join message" {
     try std.testing.expect(encoded.len - 4 <= max_message_size);
 }
 
-test "compressed payloads reject corruption and oversized output" {
+test "compressed payloads reject length mismatches and oversized output" {
     const alloc = std.testing.allocator;
     const input = [_]u8{0x42} ** 4096;
     var encoded: std.Io.Writer.Allocating = .init(alloc);
     defer encoded.deinit();
     try writeCompressedBytes(alloc, &encoded.writer, &input, input.len);
 
+    // The payload must expand to exactly the declared length.
     const bytes = encoded.written();
-    bytes[bytes.len - 1] ^= 0xff;
-    var corrupt_reader: std.Io.Reader = .fixed(bytes);
+    std.mem.writeInt(u32, bytes[0..4], input.len - 1, .little);
+    var mismatched_reader: std.Io.Reader = .fixed(bytes);
     try std.testing.expectError(
-        error.CompressedPayloadHashMismatch,
-        readCompressedBytes(alloc, &corrupt_reader, input.len),
+        error.InvalidCompressedPayload,
+        readCompressedBytes(alloc, &mismatched_reader, input.len),
     );
 
-    var oversized_header: [8 + @sizeOf(Digest)]u8 = undefined;
+    var oversized_header: [8]u8 = undefined;
     std.mem.writeInt(u32, oversized_header[0..4], 4097, .little);
     std.mem.writeInt(u32, oversized_header[4..8], 0, .little);
     var oversized_reader: std.Io.Reader = .fixed(&oversized_header);
@@ -549,10 +504,9 @@ test "compressed payloads reject corruption and oversized output" {
         readCompressedBytes(alloc, &oversized_reader, input.len),
     );
 
-    var impossible_compressed_len: [8 + @sizeOf(Digest)]u8 = undefined;
+    var impossible_compressed_len: [8]u8 = undefined;
     std.mem.writeInt(u32, impossible_compressed_len[0..4], 1, .little);
     std.mem.writeInt(u32, impossible_compressed_len[4..8], std.math.maxInt(u32), .little);
-    @memset(impossible_compressed_len[8..], 0);
     var impossible_reader: std.Io.Reader = .fixed(&impossible_compressed_len);
     try std.testing.expectError(
         error.TruncatedMessage,
@@ -569,7 +523,6 @@ test "protocol rejects malformed framing and ordering" {
     try std.testing.expectError(error.UnknownMessageTag, decode(alloc, &unknown));
     try std.testing.expectError(error.OutOfOrderFrame, validateNext(1, 4, 1, 5));
     try std.testing.expectError(error.UnexpectedEpoch, validateNext(1, 4, 2, 4));
-    try std.testing.expectError(error.InvalidUtf8, encode(alloc, .{ .disconnect = &[_]u8{0xff} }));
 
     var oversized = [_]u8{0} ** 5;
     std.mem.writeInt(u32, oversized[0..4], max_message_size + 1, .little);
@@ -587,26 +540,6 @@ test "acknowledgements discard stale epochs and reject future positions" {
     );
     try std.testing.expectError(error.InvalidAcknowledgement, validateAcknowledgement(2, 10, 3, 0));
     try std.testing.expectError(error.InvalidAcknowledgement, validateAcknowledgement(2, 10, 2, 11));
-}
-
-test "incoming messages are restricted by session role" {
-    const all_tags = std.enums.values(MessageTag);
-    for (all_tags) |tag| {
-        const host_allowed = tag == .ready or tag == .ack;
-        const client_allowed = tag == .join_data or tag == .frame or tag == .control or tag == .rebase;
-
-        if (host_allowed) {
-            try validateIncomingMessage(.host, tag);
-        } else {
-            try std.testing.expectError(error.UnexpectedSessionMessage, validateIncomingMessage(.host, tag));
-        }
-
-        if (client_allowed) {
-            try validateIncomingMessage(.client, tag);
-        } else {
-            try std.testing.expectError(error.UnexpectedSessionMessage, validateIncomingMessage(.client, tag));
-        }
-    }
 }
 
 test "ready must match the active synchronization point and cannot repeat" {

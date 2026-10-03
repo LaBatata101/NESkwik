@@ -1015,10 +1015,7 @@ pub const AppState = struct {
             std.log.info("netplay: host changed emulation speed to {s}", .{@tagName(speed)});
             self.netplay.session_manager.send(.init(&.{
                 .control = .{ .speed = @intFromEnum(speed) },
-            })) catch |err| {
-                std.log.err("netplay: failed to send speed control: {s}", .{@errorName(err)});
-                self.netplay.session_manager.disconnect();
-            };
+            }));
         }
     }
 
@@ -1591,10 +1588,7 @@ pub const AppState = struct {
                 std.log.info("netplay: host changed pause state to {any}", .{self.paused});
                 self.netplay.session_manager.send(.init(&.{
                     .control = .{ .paused = self.paused },
-                })) catch |err| {
-                    std.log.err("netplay: failed to send pause control: {s}", .{@errorName(err)});
-                    self.netplay.session_manager.disconnect();
-                };
+                }));
             }
         }
     }
@@ -1645,7 +1639,7 @@ pub const AppState = struct {
     }
 
     pub fn startHostSession(self: *Self) !void {
-        if (!self.isEmulationRunning()) return error.NoGameRunning;
+        std.debug.assert(self.isEmulationRunning());
         const game = self.game.?;
         if (game.rom_bytes.len > netplay_protocol.max_rom_size) return error.RomTooLarge;
 
@@ -1664,9 +1658,7 @@ pub const AppState = struct {
         const rom_name = self.romDisplayName();
         defer self.alloc.free(rom_name);
 
-        var name_len = @min(rom_name.len, netplay_protocol.max_display_name);
-        while (name_len > 0 and !std.unicode.utf8ValidateSlice(rom_name[0..name_len])) name_len -= 1;
-        const display_name = if (name_len == 0) "game.nes" else rom_name[0..name_len];
+        const display_name = netplayDisplayName(rom_name);
         const preview_name = try self.alloc.dupe(u8, display_name);
         errdefer self.alloc.free(preview_name);
         const protocol_name = try self.alloc.dupe(u8, display_name);
@@ -1836,25 +1828,13 @@ pub const AppState = struct {
                     self.netplay.session_manager.cancel();
                 },
                 .message => |*message| {
-                    const session_active = self.netplay.session_manager.isActive();
-                    const process_authoritative_frame = session_active and
-                        self.netplay.active_session_role == .client and message.* == .frame;
+                    self.handleNetplayMessage(message) catch |err| {
+                        std.log.err("netplay: failed to handle {s} message: {s}", .{ @tagName(message.*), @errorName(err) });
+                        self.setSessionError(@errorName(err));
+                        self.netplay.session_manager.disconnect();
+                    };
 
-                    if (!session_active) {
-                        std.log.debug("netplay: discarding queued {s} message after transport closed", .{@tagName(message.*)});
-                    } else {
-                        self.handleNetplayMessage(message) catch |err| {
-                            if (err == error.SessionClosed) {
-                                std.log.debug("netplay: {s} message processing was interrupted by session shutdown", .{@tagName(message.*)});
-                            } else {
-                                std.log.err("netplay: failed to handle {s} message: {s}", .{ @tagName(message.*), @errorName(err) });
-                                self.setSessionError(@errorName(err));
-                                self.netplay.session_manager.disconnect();
-                            }
-                        };
-                    }
-
-                    if (process_authoritative_frame) {
+                    if (message.* == .frame) {
                         authoritative_frames_processed += 1;
                         if (authoritative_frames_processed >= MAX_NETPLAY_FRAMES_PER_UPDATE) return;
                     }
@@ -1906,7 +1886,8 @@ pub const AppState = struct {
     }
 
     fn provideJoinData(self: *Self) !void {
-        if (self.netplay.active_session_role != .host or !self.isEmulationRunning()) return error.InvalidSessionState;
+        // Unloading the game leaves the session first, which drops pending join requests.
+        std.debug.assert(self.netplay.active_session_role == .host and self.isEmulationRunning());
         const game = self.game.?;
 
         std.log.info("netplay: capturing host state at frame boundary for client join", .{});
@@ -1933,9 +1914,6 @@ pub const AppState = struct {
         const encoded = try netplay_snapshot.encode(self.alloc, &snapshot);
         defer self.alloc.free(encoded);
 
-        var rom_hash: [32]u8 = undefined;
-        std.crypto.hash.Blake3.hash(game.rom_bytes, &rom_hash, .{});
-
         self.netplay.epoch +%= 1;
         self.netplay.frame = 0;
         self.netplay.last_ack = 0;
@@ -1943,9 +1921,7 @@ pub const AppState = struct {
         const name = self.romDisplayName();
         defer self.alloc.free(name);
 
-        var name_len = @min(name.len, netplay_protocol.max_display_name);
-        while (name_len > 0 and !std.unicode.utf8ValidateSlice(name[0..name_len])) name_len -= 1;
-        const safe_name = if (name_len == 0) "game.nes" else name[0..name_len];
+        const safe_name = netplayDisplayName(name);
 
         std.log.info("netplay: sending initial state (name='{s}', rom={d} bytes, snapshot={d} bytes, epoch={d}, frame={d}, speed={s})", .{
             safe_name,
@@ -1956,10 +1932,9 @@ pub const AppState = struct {
             @tagName(self.settings.emulation_speed),
         });
 
-        try self.netplay.session_manager.send(.init(&.{ .join_data = .{
+        self.netplay.session_manager.send(.init(&.{ .join_data = .{
             .name = safe_name,
             .rom = game.rom_bytes,
-            .rom_hash = rom_hash,
             .snapshot = encoded,
             .speed = @intFromEnum(self.settings.emulation_speed),
             .epoch = self.netplay.epoch,
@@ -1967,21 +1942,17 @@ pub const AppState = struct {
         } }));
     }
 
+    /// ROM name as sent to peers: valid UTF-8 within the protocol's length limit.
+    fn netplayDisplayName(name: []const u8) []const u8 {
+        var len = @min(name.len, netplay_protocol.max_display_name);
+        while (len > 0 and !std.unicode.utf8ValidateSlice(name[0..len])) len -= 1;
+        return if (len == 0) "game.nes" else name[0..len];
+    }
+
+    /// The session worker only delivers messages valid for the current role.
     fn handleNetplayMessage(self: *Self, message: *netplay_protocol.Message) !void {
-        const incoming_role: netplay_protocol.IncomingRole = switch (self.netplay.active_session_role) {
-            .host => .host,
-            .client => .client,
-            .none => return error.UnexpectedSessionMessage,
-        };
-
-        try netplay_protocol.validateIncomingMessage(incoming_role, std.meta.activeTag(message.*));
-
         switch (message.*) {
-            .join_data => |*data| {
-                if (self.isEmulationRunning() and self.game.?.origin == .network) return error.UnexpectedSessionMessage;
-
-                try self.installNetworkGame(data);
-            },
+            .join_data => |*data| try self.installNetworkGame(data),
             .ready => |ready| {
                 self.emulation_lock.lockUncancelable(self.io);
                 defer self.emulation_lock.unlock(self.io);
@@ -2073,22 +2044,22 @@ pub const AppState = struct {
                 },
             },
             .rebase => |rebase| try self.applyRebase(rebase),
-            else => return error.UnexpectedSessionMessage,
+            .preview, .join, .disconnect => unreachable,
         }
     }
 
     fn installNetworkGame(self: *Self, data: *netplay_protocol.JoinData) !void {
-        std.log.info("netplay: validating network game (name='{s}', rom={d} bytes, snapshot={d} bytes, hash={x}, epoch={d}, frame={d})", .{
+        std.log.info("netplay: validating network game (name='{s}', rom={d} bytes, snapshot={d} bytes, epoch={d}, frame={d})", .{
             data.name,
             data.rom.len,
             data.snapshot.len,
-            data.rom_hash[0..8],
             data.epoch,
             data.frame,
         });
 
         const speed = std.enums.fromInt(EmulationSpeed, data.speed) orelse return error.InvalidEmulationSpeed;
-        const preview_hash = self.netplay.session_preview_hash orelse return error.MissingSessionPreview;
+        // The worker only delivers join data after the approved preview.
+        const preview_hash = self.netplay.session_preview_hash.?;
 
         if (data.rom.len != self.netplay.session_preview_size) {
             std.log.err("netplay: transferred ROM size differs from approved preview (preview={d}, transfer={d})", .{
@@ -2100,14 +2071,6 @@ pub const AppState = struct {
 
         var actual_hash: [32]u8 = undefined;
         std.crypto.hash.Blake3.hash(data.rom, &actual_hash, .{});
-
-        if (!std.mem.eql(u8, &actual_hash, &data.rom_hash)) {
-            std.log.err("netplay: transferred ROM hash mismatch (expected={x}, actual={x})", .{
-                data.rom_hash[0..8],
-                actual_hash[0..8],
-            });
-            return error.RomHashMismatch;
-        }
 
         if (!std.mem.eql(u8, &actual_hash, &preview_hash)) {
             std.log.err("netplay: transferred ROM hash differs from approved preview (preview={x}, transfer={x})", .{
@@ -2125,8 +2088,6 @@ pub const AppState = struct {
             snapshot.deinit(self.alloc);
             self.alloc.destroy(snapshot);
         }
-
-        if (comptime features.wasm) return error.Unsupported;
 
         const rom_bytes = try self.alloc.dupe(u8, data.rom);
         const game = try Game.init(self.alloc, self.io, data.name, rom_bytes, .network);
@@ -2161,7 +2122,7 @@ pub const AppState = struct {
             data.frame,
         });
 
-        try self.netplay.session_manager.send(.init(&.{ .ready = .{
+        self.netplay.session_manager.send(.init(&.{ .ready = .{
             .epoch = data.epoch,
             .frame = data.frame,
             .player2 = player2,
@@ -2169,7 +2130,10 @@ pub const AppState = struct {
     }
 
     fn applyAuthoritativeFrame(self: *Self, frame: netplay_protocol.Frame) !void {
-        if (self.netplay.active_session_role != .client or !self.isEmulationRunning() or self.game.?.origin != .network) return error.InvalidSessionState;
+        // Frames only flow after the network game was installed, and leaving
+        // the session drops the ones still queued.
+        std.debug.assert(self.netplay.active_session_role == .client and
+            self.isEmulationRunning() and self.game.?.origin == .network);
         try netplay_protocol.validateNext(self.netplay.epoch, self.netplay.frame + 1, frame.epoch, frame.frame);
 
         self.emulation_lock.lockUncancelable(self.io);
@@ -2187,7 +2151,7 @@ pub const AppState = struct {
             var snapshot = try game.system.saveState(self.alloc);
             defer snapshot.deinit(self.alloc);
 
-            digest_value = try netplay_snapshot.digest(self.alloc, &snapshot);
+            digest_value = netplay_snapshot.digest(&snapshot);
 
             std.log.debug("netplay: client computed checkpoint digest (epoch={d}, frame={d}, digest={x})", .{
                 self.netplay.epoch,
@@ -2196,13 +2160,13 @@ pub const AppState = struct {
             });
 
             if (builtin.mode == .Debug) {
-                logCheckpointComponents(self.alloc, "client", self.netplay.epoch, self.netplay.frame, &snapshot);
+                logCheckpointComponents("client", self.netplay.epoch, self.netplay.frame, &snapshot);
             }
         }
 
         const local_player2: u8 = @bitCast(self.controllerSnapshot().player2);
 
-        try self.netplay.session_manager.send(.init(&.{ .ack = .{
+        self.netplay.session_manager.send(.init(&.{ .ack = .{
             .epoch = self.netplay.epoch,
             .frame = self.netplay.frame,
             .player2 = local_player2,
@@ -2222,11 +2186,7 @@ pub const AppState = struct {
             };
             defer snapshot.deinit(self.alloc);
 
-            digest_value = netplay_snapshot.digest(self.alloc, &snapshot) catch |err| {
-                std.log.err("netplay: failed to hash host checkpoint at frame {d}: {s}", .{ self.netplay.frame, @errorName(err) });
-                self.netplay.session_manager.disconnect();
-                return;
-            };
+            digest_value = netplay_snapshot.digest(&snapshot);
 
             self.netplay.checkpoint_frame = self.netplay.frame;
             self.netplay.checkpoint_digest = digest_value;
@@ -2238,7 +2198,7 @@ pub const AppState = struct {
             });
 
             if (builtin.mode == .Debug) {
-                logCheckpointComponents(self.alloc, "host", self.netplay.epoch, self.netplay.frame, &snapshot);
+                logCheckpointComponents("host", self.netplay.epoch, self.netplay.frame, &snapshot);
             }
         }
 
@@ -2248,21 +2208,11 @@ pub const AppState = struct {
             .player1 = @bitCast(controllers.player1),
             .player2 = @bitCast(controllers.player2),
             .digest = digest_value,
-        } })) catch |err| {
-            std.log.err("netplay: failed to queue authoritative frame (epoch={d}, frame={d}): {s}", .{
-                self.netplay.epoch,
-                self.netplay.frame,
-                @errorName(err),
-            });
-            self.netplay.session_manager.disconnect();
-        };
+        } }));
     }
 
-    fn logCheckpointComponents(alloc: std.mem.Allocator, side: []const u8, epoch: u32, frame: u64, snapshot: *const System.Snapshot) void {
-        const components = netplay_snapshot.componentDigests(alloc, snapshot) catch |err| {
-            std.log.warn("netplay: failed to compute {s} checkpoint component diagnostics: {s}", .{ side, @errorName(err) });
-            return;
-        };
+    fn logCheckpointComponents(side: []const u8, epoch: u32, frame: u64, snapshot: *const System.Snapshot) void {
+        const components = netplay_snapshot.componentDigests(snapshot);
 
         std.log.debug("netplay: {s} checkpoint components (epoch={d}, frame={d}, cpu={x}, bus={x}, ppu={x}, apu={x})", .{
             side,
@@ -2306,7 +2256,7 @@ pub const AppState = struct {
             encoded.len,
         });
 
-        try self.netplay.session_manager.send(.init(&.{ .rebase = .{
+        self.netplay.session_manager.send(.init(&.{ .rebase = .{
             .epoch = self.netplay.epoch,
             .frame = 0,
             .snapshot = encoded,
@@ -2344,7 +2294,7 @@ pub const AppState = struct {
 
         const player2: u8 = @bitCast(self.controllerSnapshot().player2);
 
-        try self.netplay.session_manager.send(.init(&.{ .ready = .{
+        self.netplay.session_manager.send(.init(&.{ .ready = .{
             .epoch = rebase.epoch,
             .frame = rebase.frame,
             .player2 = player2,

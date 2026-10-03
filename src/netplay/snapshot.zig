@@ -28,15 +28,12 @@ pub fn encode(alloc: std.mem.Allocator, snapshot: *const System.Snapshot) ![]u8 
     var body: std.Io.Writer.Allocating = .init(alloc);
     defer body.deinit();
 
-    try writeCanonicalRef(&body.writer, CPU.Snapshot, &snapshot.cpu);
-    try writeCanonicalBus(&body.writer, &snapshot.bus);
-    try writeCanonicalRef(&body.writer, PPU.Snapshot, &snapshot.ppu);
-    try writeCanonicalRef(&body.writer, APU.Snapshot, &snapshot.apu);
-    if (body.written().len > protocol.max_snapshot_size) return error.SnapshotTooLarge;
+    // An allocating writer only fails when out of memory.
+    writeEncodedState(&body.writer, snapshot) catch return error.OutOfMemory;
+    std.debug.assert(body.written().len <= protocol.max_snapshot_size);
 
-    const compressed = try compressBytes(alloc, body.written());
+    const compressed = try compress.compressBytes(alloc, body.written(), .{});
     defer alloc.free(compressed);
-    if (compressed.len > protocol.max_snapshot_size) return error.SnapshotTooLarge;
 
     const result = try alloc.alloc(u8, HEADER_SIZE + compressed.len);
     @memcpy(result[0..MAGIC.len], &MAGIC);
@@ -58,7 +55,10 @@ pub fn decode(alloc: std.mem.Allocator, encoded: []const u8) !*System.Snapshot {
     if (encoded.len != HEADER_SIZE + @as(usize, compressed_len))
         return error.InvalidNetworkSnapshot;
 
-    const body = try decompressBytes(alloc, encoded[HEADER_SIZE..], uncompressed_len);
+    const body = compress.decompressBytes(alloc, encoded[HEADER_SIZE..], uncompressed_len) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidCompressedData => return error.InvalidCompressedSnapshot,
+    };
     defer alloc.free(body);
 
     var reader: std.Io.Reader = .fixed(body);
@@ -80,63 +80,46 @@ pub fn decode(alloc: std.mem.Allocator, encoded: []const u8) !*System.Snapshot {
 
 /// Hashes only the emulation state represented on the network. In particular,
 /// changing `Snapshot.saved_at` cannot affect this digest.
-pub fn digest(alloc: std.mem.Allocator, snapshot: *const System.Snapshot) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(alloc);
-    defer buffer.deinit();
-
-    try writeCanonicalRef(&buffer.writer, CPU.Snapshot, &snapshot.cpu);
-    try writeCanonicalBus(&buffer.writer, &snapshot.bus);
-    try writeCanonicalRef(&buffer.writer, PPU.Snapshot, &snapshot.ppu);
-    try writeCanonicalApuDigest(&buffer.writer, snapshot.apu);
-    if (buffer.written().len > protocol.max_snapshot_size) return error.SnapshotTooLarge;
-
-    var result: protocol.Digest = undefined;
-    std.crypto.hash.Blake3.hash(buffer.written(), &result, .{});
-    return result;
+pub fn digest(snapshot: *const System.Snapshot) protocol.Digest {
+    return hashCanonical(writeDigestedState, .{snapshot});
 }
 
 /// Diagnostic hashes using the same canonical encoders as the full netplay
 /// digest. They identify a divergent subsystem without additional wire data.
-pub fn componentDigests(alloc: std.mem.Allocator, snapshot: *const System.Snapshot) !ComponentDigests {
+pub fn componentDigests(snapshot: *const System.Snapshot) ComponentDigests {
     return .{
-        .cpu = try digestCanonical(CPU.Snapshot, alloc, &snapshot.cpu),
-        .bus = try digestCanonicalBus(alloc, &snapshot.bus),
-        .ppu = try digestCanonical(PPU.Snapshot, alloc, &snapshot.ppu),
-        .apu = try digestCanonicalApu(alloc, &snapshot.apu),
+        .cpu = hashCanonical(writeCanonicalRef, .{ CPU.Snapshot, &snapshot.cpu }),
+        .bus = hashCanonical(writeCanonicalBus, .{&snapshot.bus}),
+        .ppu = hashCanonical(writeCanonicalRef, .{ PPU.Snapshot, &snapshot.ppu }),
+        .apu = hashCanonical(writeCanonicalApuDigest, .{snapshot.apu}),
     };
 }
 
-fn digestCanonical(comptime T: type, alloc: std.mem.Allocator, value: *const T) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(alloc);
-    defer buffer.deinit();
-
-    try writeCanonicalRef(&buffer.writer, T, value);
+/// Streams `write(writer, args...)` into BLAKE3 without buffering the state.
+fn hashCanonical(comptime write: anytype, args: anytype) protocol.Digest {
+    var buffer: [256]u8 = undefined;
+    var hashing: std.Io.Writer.Hashing(std.crypto.hash.Blake3) = .init(&buffer);
+    // Hashing writers never fail.
+    @call(.auto, write, .{&hashing.writer} ++ args) catch unreachable;
+    hashing.writer.flush() catch unreachable;
 
     var result: protocol.Digest = undefined;
-    std.crypto.hash.Blake3.hash(buffer.written(), &result, .{});
+    hashing.hasher.final(&result);
     return result;
 }
 
-fn digestCanonicalBus(alloc: std.mem.Allocator, value: *const Bus.Snapshot) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(alloc);
-    defer buffer.deinit();
-
-    try writeCanonicalBus(&buffer.writer, value);
-
-    var result: protocol.Digest = undefined;
-    std.crypto.hash.Blake3.hash(buffer.written(), &result, .{});
-    return result;
+fn writeEncodedState(writer: *std.Io.Writer, snapshot: *const System.Snapshot) !void {
+    try writeCanonicalRef(writer, CPU.Snapshot, &snapshot.cpu);
+    try writeCanonicalBus(writer, &snapshot.bus);
+    try writeCanonicalRef(writer, PPU.Snapshot, &snapshot.ppu);
+    try writeCanonicalRef(writer, APU.Snapshot, &snapshot.apu);
 }
 
-fn digestCanonicalApu(alloc: std.mem.Allocator, value: *const APU.Snapshot) !protocol.Digest {
-    var buffer: std.Io.Writer.Allocating = .init(alloc);
-    defer buffer.deinit();
-
-    try writeCanonicalApuDigest(&buffer.writer, value.*);
-
-    var result: protocol.Digest = undefined;
-    std.crypto.hash.Blake3.hash(buffer.written(), &result, .{});
-    return result;
+fn writeDigestedState(writer: *std.Io.Writer, snapshot: *const System.Snapshot) !void {
+    try writeCanonicalRef(writer, CPU.Snapshot, &snapshot.cpu);
+    try writeCanonicalBus(writer, &snapshot.bus);
+    try writeCanonicalRef(writer, PPU.Snapshot, &snapshot.ppu);
+    try writeCanonicalApuDigest(writer, snapshot.apu);
 }
 
 /// Hashes NES-visible APU state while excluding audio-renderer bookkeeping.
@@ -303,7 +286,6 @@ fn readCanonicalMapper(alloc: std.mem.Allocator, reader: *std.Io.Reader) !Mapper
 }
 
 fn writeCanonicalSlice(writer: *std.Io.Writer, value: []const u8) !void {
-    if (value.len > protocol.max_snapshot_size) return error.SnapshotTooLarge;
     try writeCanonical(writer, u32, @intCast(value.len));
     try writer.writeAll(value);
 }
@@ -488,30 +470,6 @@ fn deinitCanonicalValue(comptime T: type, value: *T, alloc: std.mem.Allocator) v
     }
 }
 
-fn compressBytes(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var reader: std.Io.Reader = .fixed(bytes);
-    var writer: std.Io.Writer.Allocating = .init(alloc);
-    errdefer writer.deinit();
-
-    try compress.compressAlloc(alloc, &reader, &writer.writer, .{});
-    return try writer.toOwnedSlice();
-}
-
-fn decompressBytes(alloc: std.mem.Allocator, compressed: []const u8, expected_len: usize) ![]u8 {
-    var reader: std.Io.Reader = .fixed(compressed);
-    const output = try alloc.alloc(u8, expected_len);
-    errdefer alloc.free(output);
-    var writer: std.Io.Writer = .fixed(output);
-
-    var decompressor: std.compress.flate.Decompress = .init(&reader, .gzip, &.{});
-    _ = decompressor.reader.streamRemaining(&writer) catch |err| switch (err) {
-        error.ReadFailed, error.WriteFailed => return error.InvalidCompressedSnapshot,
-    };
-    if (writer.end != expected_len) return error.InvalidCompressedSnapshot;
-
-    return output;
-}
-
 fn initTestSnapshot(snapshot: *System.Snapshot) void {
     @memset(std.mem.asBytes(snapshot), 0);
     snapshot.bus.rom.mapper = .{ .mapper0 = .{ .prg_ram = &.{}, .chr_ram = &.{} } };
@@ -542,8 +500,8 @@ test "canonical network snapshot encode decode" {
     try std.testing.expectEqual(@as(i64, 0), decoded.saved_at);
     try std.testing.expectEqual(snapshot.cpu.pc, decoded.cpu.pc);
     try std.testing.expectEqual(snapshot.bus.cycles, decoded.bus.cycles);
-    try std.testing.expectEqual(try digest(alloc, &snapshot), try digest(alloc, decoded));
-    try std.testing.expectEqual(try componentDigests(alloc, &snapshot), try componentDigests(alloc, decoded));
+    try std.testing.expectEqual(digest(&snapshot), digest(decoded));
+    try std.testing.expectEqual(componentDigests(&snapshot), componentDigests(decoded));
 
     var bad = try alloc.dupe(u8, encoded);
     defer alloc.free(bad);
@@ -567,14 +525,14 @@ test "network representation ignores saved_at" {
 
     const baseline_encoded = try encode(alloc, &snapshot);
     defer alloc.free(baseline_encoded);
-    const baseline_digest = try digest(alloc, &snapshot);
+    const baseline_digest = digest(&snapshot);
 
     snapshot.saved_at = 1_750_000_000;
     const timestamped_encoded = try encode(alloc, &snapshot);
     defer alloc.free(timestamped_encoded);
 
     try std.testing.expectEqualSlices(u8, baseline_encoded, timestamped_encoded);
-    try std.testing.expectEqual(baseline_digest, try digest(alloc, &snapshot));
+    try std.testing.expectEqual(baseline_digest, digest(&snapshot));
 }
 
 test "canonical network snapshot supports every mapper variant" {
@@ -634,12 +592,11 @@ test "canonical network snapshot supports every mapper variant" {
         }
 
         try std.testing.expectEqual(std.meta.activeTag(mapper), std.meta.activeTag(decoded.bus.rom.mapper));
-        try std.testing.expectEqual(try digest(alloc, &snapshot), try digest(alloc, decoded));
+        try std.testing.expectEqual(digest(&snapshot), digest(decoded));
     }
 }
 
 test "netplay digest excludes presentation-only APU bookkeeping" {
-    const alloc = std.testing.allocator;
     var snapshot: System.Snapshot = undefined;
     initTestSnapshot(&snapshot);
 
@@ -652,7 +609,7 @@ test "netplay digest excludes presentation-only APU bookkeeping" {
     snapshot.ppu.sprite_data = &sprite_data;
     snapshot.ppu.frame_buffer = &frame_buffer;
 
-    const baseline = try digest(alloc, &snapshot);
+    const baseline = digest(&snapshot);
 
     snapshot.apu.next_transfer_cyc = 1234;
     snapshot.apu.last_frame_cyc = 5678;
@@ -661,9 +618,9 @@ test "netplay digest excludes presentation-only APU bookkeeping" {
     snapshot.apu.triangle.waveform_last_amp = 13;
     snapshot.apu.noise.waveform_last_amp = 14;
     snapshot.apu.dmc.waveform_last_amp = 15;
-    try std.testing.expectEqual(baseline, try digest(alloc, &snapshot));
+    try std.testing.expectEqual(baseline, digest(&snapshot));
 
     snapshot.apu.global_cycle = 1;
-    const changed = try digest(alloc, &snapshot);
+    const changed = digest(&snapshot);
     try std.testing.expect(!std.mem.eql(u8, &baseline, &changed));
 }

@@ -1578,6 +1578,38 @@ pub fn compressAlloc(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *
     try deflateCompressAlloc(alloc, .gzip, reader, writer, options);
 }
 
+/// Gzip-compresses `bytes` into a new allocation.
+pub fn compressBytes(alloc: std.mem.Allocator, bytes: []const u8, options: Options) std.mem.Allocator.Error![]u8 {
+    var reader: std.Io.Reader = .fixed(bytes);
+    var writer: std.Io.Writer.Allocating = .init(alloc);
+    errdefer writer.deinit();
+
+    // A fixed reader cannot fail and an allocating writer only fails when out of memory.
+    compressAlloc(alloc, &reader, &writer.writer, options) catch |err| switch (err) {
+        error.ReadFailed, error.UnfinishedBits => unreachable,
+        error.WriteFailed, error.OutOfMemory => return error.OutOfMemory,
+    };
+    return try writer.toOwnedSlice();
+}
+
+/// Decompresses gzip data that must expand to exactly `expected_len` bytes.
+pub fn decompressBytes(
+    alloc: std.mem.Allocator,
+    compressed: []const u8,
+    expected_len: usize,
+) error{ OutOfMemory, InvalidCompressedData }![]u8 {
+    var reader: std.Io.Reader = .fixed(compressed);
+    const output = try alloc.alloc(u8, expected_len);
+    errdefer alloc.free(output);
+    var writer: std.Io.Writer = .fixed(output);
+
+    var decompressor: std.compress.flate.Decompress = .init(&reader, .gzip, &.{});
+    _ = decompressor.reader.streamRemaining(&writer) catch return error.InvalidCompressedData;
+    if (writer.end != expected_len) return error.InvalidCompressedData;
+
+    return output;
+}
+
 pub const Compressor = Deflate(.gzip);
 
 pub fn compressor(writer: *std.Io.Writer, options: Options) !Compressor {

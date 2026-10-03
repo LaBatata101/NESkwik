@@ -460,7 +460,7 @@ fn drawDesktopMenu(ui: *UI, app_state: *AppState) void {
                     .hover_color = theme.accent_blue,
                     .text_color = theme.text_secondary,
                 }).clicked(ui.main_window.ctx)) {
-                    app_state.startHostSession() catch |err| std.log.err("failed to host session: {s}", .{@errorName(err)});
+                    app_state.startHostSession() catch |err| app_state.setSessionError(@errorName(err));
                     openSessionWindow(ui, app_state, "Host Session");
                 }
             }
@@ -1029,7 +1029,7 @@ fn drawAndroidSidepanel(ui: *UI, app_state: *AppState, root_id: clay.ElementId) 
                             openAndroidSessionUI(ui, app_state);
                         }
                         if (drawAndroidDrawerAction(ui, "Host Session", app_state.isEmulationRunning()).clicked(ui.main_window.ctx)) {
-                            app_state.startHostSession() catch |err| std.log.err("failed to host session: {s}", .{@errorName(err)});
+                            app_state.startHostSession() catch |err| app_state.setSessionError(@errorName(err));
                             openAndroidSessionUI(ui, app_state);
                         }
                     }
