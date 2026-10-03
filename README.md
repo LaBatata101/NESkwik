@@ -1,6 +1,6 @@
 # NESkwik
 
-NESkwik is a cross-platform (Linux, Windows, MacOS and Android) NES (Nintendo Entertainment System) emulator written in Zig. It has a custom desktop UI powered by [Clay](https://github.com/nicbarker/clay), audio output, gamepad support, P2P multiplayer, a simple debug UI, and support for [RetroArch shaders](https://github.com/libretro/slang-shaders).
+NESkwik is a cross-platform (Linux, Windows, macOS, Android, and the browser) NES (Nintendo Entertainment System) emulator written in Zig. It has a custom UI powered by [Clay](https://github.com/nicbarker/clay), audio output, gamepad support, P2P multiplayer on native platforms, a simple debug UI, and native support for [RetroArch shaders](https://github.com/libretro/slang-shaders).
 
 
 ## Screenshots
@@ -40,9 +40,10 @@ That totals to around **1900** supported games of the NES library.
 
 ## Build - Requirements
 
-- Zig 0.15.2.
-- Rust 1.91 or newer (for [`iroh-ffi`](https://github.com/n0-computer/iroh-ffi) used to implement multiplayer).
-- Vulkan runtime and development headers/library available on your system.
+- Zig 0.16.0.
+- Rust 1.91 or newer for native netplay, provided by [`iroh-ffi`](https://github.com/n0-computer/iroh-ffi).
+- Vulkan runtime and development headers/library for the native shader renderer.
+- [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) for the browser build (see [Browser / WebAssembly](#browser--webassembly)).
 
 ### Android
 
@@ -75,6 +76,30 @@ zig build --release=fast
 ```
 
 The final executable is located at `zig-out/bin/neskwik`.
+
+### Browser / WebAssembly
+
+Install and activate the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) so `emcc`, `em-config`, `embuilder`, and `emrun` are available on `PATH`, then run:
+
+```sh
+zig build --release=fast -Dtarget=wasm32-emscripten
+```
+The build output will be at `zig-out/web`.
+
+Zig 0.16's standard library does not compile for Emscripten as-is, so the build also patches a few files in the `lib/std` directory of the Zig installation running it.
+
+To build and run the WASM app, use:
+
+```sh
+zig build run --release=fast -Dtarget=wasm32-emscripten
+```
+
+What differs from the native builds:
+
+- RetroArch `.slangp` [shaders](https://github.com/libretro/slang-shaders) are supported. Shaders are compiled like on desktop and then translated to GLSL ES 3.00 for WebGL 2; the few presets that need features WebGL 2 lacks (such as `textureGather`) fail to load with an error message.
+- Settings, history, save states, battery saves, imported shaders, and the compiled shader cache are persisted in the browser's storage (IndexedDB).
+- Touch devices get the mobile layout.
+- Netplay is not available.
 
 ### Cross-compilation
 
@@ -185,6 +210,8 @@ Controls can be changed from the settings window.
 NESkwik doesn't ship with the RetroArch `.slangp` shaders, you'll have to clone the [https://github.com/libretro/slang-shaders](https://github.com/libretro/slang-shaders) repository and place somewhere in your system. And then, you can select the shader by going to the "**Shader**" tab in the settings window. 
 
 The border shaders can be selected from a couple of options in the "**Shader**" tab.
+
+In the browser, shaders are imported into the browser's storage first; see [Browser / WebAssembly](#browser--webassembly).
 
 ## Tests
 
