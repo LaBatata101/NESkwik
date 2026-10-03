@@ -15,6 +15,9 @@ const customPanic = ness.customPanic;
 
 pub const std_options: std.Options = .{
     .logFn = if (builtin.abi.isAndroid()) androidAndFileLogFn else logging.logFn,
+    // Emscripten has no sigaltstack (ENOSYS), which std.Thread treats as
+    // unreachable when attaching the segfault-handler stack to new threads.
+    .signal_stack_size = if (ness.features.wasm) null else (std.Options{}).signal_stack_size,
 };
 
 /// std.debug defaults to page_allocator, whose multithreaded WASM backend is

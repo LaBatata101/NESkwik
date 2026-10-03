@@ -346,6 +346,14 @@ fn addWasmApp(
         .root_module = app_module,
         .linkage = .static,
     });
+    if (optimize == .Debug) {
+        // Debug C code calls into the UBSan runtime, which Zig only links
+        // itself. emcc links here, so ship it in the archive, with Zig's
+        // compiler-rt for the f80 conversions it uses that Emscripten's
+        // builtins lack. Zig exports compiler-rt weakly, so the two do not clash.
+        app_object.bundle_ubsan_rt = true;
+        app_object.bundle_compiler_rt = true;
+    }
 
     // Zig only compiles; emcc links the app and every archive it depends on
     // and generates the JavaScript runtime.
@@ -387,6 +395,12 @@ fn addWasmApp(
     link.addFileArg(b.path("web/bridge.js"));
     link.addArg("--js-library");
     link.addFileArg(b.path("web/lib.js"));
+    if (optimize == .Debug) link.addArgs(&.{
+        // The default 16 MiB does not fit the static data of an unoptimized build.
+        "-sINITIAL_MEMORY=33554432",
+        // Keep function names so wasm stack traces in the browser are readable.
+        "--profiling-funcs",
+    });
 
     const install_assets = b.addInstallDirectory(.{
         .source_dir = js_output.dirname(),
